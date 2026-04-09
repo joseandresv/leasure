@@ -1,0 +1,17 @@
+{% if albums %}
+<div class="album-grid">
+{% for album in albums %}
+<div class="album-card"
+     hx-get="/api/youtube/albums/{{ album.id }}/html"
+     hx-target="#yt-detail"
+     hx-swap="innerHTML"
+     onclick="document.getElementById('yt-modal').showModal()">
+    <img src="{{ album.image_url or '/static/img/placeholder.svg' }}" alt="{{ album.name }}" loading="lazy">
+    <h4>{{ album.name }}</h4>
+    <p>{{ album.artist }}{% if album.year %} &middot; {{ album.year }}{% endif %}</p>
+</div>
+{% endfor %}
+</div>
+{% else %}
+<p>No albums found</p>
+{% endif %}

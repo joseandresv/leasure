@@ -1,0 +1,16 @@
+{% if tracks %}
+<div>
+{% for t in tracks %}
+<div class="queue-item">
+    <div class="track-info">
+        <div class="track-title">{{ t.title }}</div>
+        <div class="track-artist">{{ t.artist }}</div>
+    </div>
+    <span class="badge badge-{{ 'downloading' if t.status == 'downloading' else 'mp3' }}">{{ t.status }}</span>
+    <small>{{ t.format | upper }}</small>
+</div>
+{% endfor %}
+</div>
+{% else %}
+<p>No active downloads</p>
+{% endif %}

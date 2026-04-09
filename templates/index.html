@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}leasure{% endblock %}
+{% block content %}
+
+<h2>now playing</h2>
+<div hx-get="/api/downloads/queue/html" hx-trigger="load, every 3s" hx-swap="innerHTML">
+    <i>no active downloads</i>
+</div>
+
+<h2>collection</h2>
+<div hx-get="/api/home/carousel" hx-trigger="load" hx-swap="innerHTML">
+    <i>loading...</i>
+</div>
+
+<h2>connections</h2>
+<div class="grid-2">
+    <div>
+        <b>spotify</b><br>
+        <span hx-get="/api/spotify/status/html" hx-trigger="load" hx-swap="innerHTML">checking...</span>
+    </div>
+    <div>
+        <b>youtube music</b><br>
+        <span hx-get="/api/youtube/status/html" hx-trigger="load" hx-swap="innerHTML">checking...</span>
+    </div>
+</div>
+
+<h2>recent downloads</h2>
+<div hx-get="/api/downloads/history/html" hx-trigger="load" hx-swap="innerHTML">
+    <i>loading...</i>
+</div>
+
+{% endblock %}

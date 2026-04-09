@@ -1,0 +1,36 @@
+{% if tracks %}
+<table>
+    <thead>
+        <tr>
+            <th>Title</th>
+            <th>Artist</th>
+            <th>Album</th>
+            <th>Format</th>
+            <th>Engine</th>
+            <th>Downloaded</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for t in tracks %}
+        <tr>
+            <td>{{ t.title }}</td>
+            <td>{{ t.artist }}</td>
+            <td>{{ t.album or '-' }}</td>
+            <td>
+                {% if t.quality == 'flac_lossless' %}
+                <span class="badge badge-lossless">FLAC Lossless</span>
+                {% elif 'flac' in t.quality %}
+                <span class="badge">FLAC</span>
+                {% else %}
+                <span class="badge badge-mp3">MP3 320</span>
+                {% endif %}
+            </td>
+            <td>{{ t.engine_used or '-' }}</td>
+            <td><small>{{ t.downloaded_at[:16] if t.downloaded_at else '-' }}</small></td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p>No downloads yet</p>
+{% endif %}

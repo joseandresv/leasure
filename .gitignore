@@ -1,0 +1,16 @@
+.venv/
+.venv-spotdl/
+.env
+data/
+library/
+downloads/
+__pycache__/
+*.pyc
+*.egg-info/
+.cache/
+oauth.json
+*.pdf
+cookies.txt
+*.cookies.txt
+*_cookies.txt
+.claude/

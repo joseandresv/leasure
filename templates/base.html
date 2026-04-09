@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}leasure{% endblock %}</title>
+    <link rel="stylesheet" href="/static/css/app.css">
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+</head>
+<body>
+    <div class="site-header">
+        <h1>leasure</h1>
+        <div class="site-nav">
+            <a href="/" {% if request.url.path == '/' %}class="active"{% endif %}>home</a>
+            <a href="/spotify" {% if request.url.path == '/spotify' %}class="active"{% endif %}>spotify</a>
+            <a href="/youtube" {% if request.url.path == '/youtube' %}class="active"{% endif %}>youtube</a>
+            <a href="/downloads" {% if request.url.path == '/downloads' %}class="active"{% endif %}>downloads</a>
+            <a href="/library" {% if request.url.path == '/library' %}class="active"{% endif %}>library</a>
+            <a href="/device" {% if request.url.path == '/device' %}class="active"{% endif %}>device</a>
+        </div>
+    </div>
+
+    <div id="status-bar"
+         hx-get="/api/status/bar" hx-trigger="load, every 3s" hx-swap="innerHTML">
+        loading...
+    </div>
+
+    <div class="container">
+        {% block content %}{% endblock %}
+    </div>
+
+    <div class="site-footer">
+        leasure v0.1 &mdash; hifi walker h2 sync &mdash;
+        <span hx-get="/api/library/stats" hx-trigger="load, every 10s" hx-swap="innerHTML" style="display:inline">...</span>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

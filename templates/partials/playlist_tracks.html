@@ -1,0 +1,91 @@
+<div style="margin-bottom: 1rem;">
+    <h3 style="margin-bottom: 0.3rem;">{{ playlist.name }}</h3>
+    <small>{{ tracks|length }} tracks</small>
+    <div style="margin-top: 0.5rem; display: flex; gap: 0.5rem; align-items: center;">
+        <select id="dl-format-pl" class="format-select" style="display: inline-block; width: auto;">
+            <option value="mp3">MP3 320kbps</option>
+            <option value="flac">FLAC (YouTube)</option>
+            <option value="flac_lossless">FLAC Lossless</option>
+        </select>
+        <button class="outline" style="display: inline-block; width: auto;"
+                onclick="downloadAllSpPl()">
+            Download All
+        </button>
+    </div>
+</div>
+
+<div id="sp-pl-tracks">
+{% for track in tracks %}
+<div class="track-row">
+    <span class="track-num">{{ loop.index }}</span>
+    {% if track.album_image_url %}
+    <img src="{{ track.album_image_url }}" style="width: 40px; height: 40px; border-radius: 2px;">
+    {% endif %}
+    <div class="track-info">
+        <div class="track-title">{{ track.name }}</div>
+        <div class="track-artist">{{ track.artist }}{% if track.album %} &middot; {{ track.album }}{% endif %}</div>
+    </div>
+    <span class="track-duration">{{ (track.duration_ms // 60000) }}:{{ "%02d" | format((track.duration_ms // 1000) % 60) }}</span>
+    {% if track.download_status == 'done' %}
+    <span class="badge badge-done">Downloaded</span>
+    {% elif track.download_status in ['pending', 'downloading'] %}
+    <span class="badge badge-downloading">{{ track.download_status }}</span>
+    {% elif track.download_status == 'error' %}
+    <span class="badge badge-error">Error</span>
+    {% else %}
+    <button class="outline sp-dl-btn" style="padding: 0.2rem 0.6rem; font-size: 0.8rem;"
+            data-uri="{{ track.uri }}" data-title="{{ track.name | e }}" data-artist="{{ track.artist | e }}"
+            data-album="{{ (track.album or '') | e }}" data-tracknum="{{ track.track_number or 0 }}"
+            data-duration="{{ track.duration_ms or 0 }}" data-artwork="{{ track.album_image_url or '' }}"
+            data-artistid="{{ track.artist_id or '' }}"
+            onclick="downloadSpPlTrack(this)">
+        Download
+    </button>
+    {% endif %}
+</div>
+{% endfor %}
+</div>
+
+<script>
+function downloadSpPlTrack(btn) {
+    var format = document.getElementById('dl-format-pl').value;
+    var params = new URLSearchParams({
+        uri: btn.dataset.uri, title: btn.dataset.title, artist: btn.dataset.artist,
+        album: btn.dataset.album, track_number: btn.dataset.tracknum,
+        duration_ms: btn.dataset.duration, artwork_url: btn.dataset.artwork,
+        artist_id: btn.dataset.artistid || '', format: format
+    });
+    fetch('/api/spotify/download/track?' + params, { method: 'POST' })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.status === 'queued' || data.status === 'already_queued') {
+                btn.outerHTML = '<span class="badge badge-downloading">Queued</span>';
+            } else if (data.status === 'already_downloaded') {
+                btn.outerHTML = '<span class="badge badge-done">Downloaded</span>';
+            }
+        });
+}
+
+function downloadAllSpPl() {
+    var format = document.getElementById('dl-format-pl').value;
+    var playlistId = '{{ playlist.id | default("") }}';
+    if (playlistId) {
+        fetch('/api/spotify/download/playlist/' + playlistId + '?format=' + format, { method: 'POST' })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.error) {
+                    alert('Error: ' + data.error);
+                } else {
+                    alert('Queued ' + data.tracks_queued + ' tracks from "' + data.playlist + '"');
+                    // Mark all buttons as queued
+                    document.querySelectorAll('#sp-pl-tracks .sp-dl-btn').forEach(function(btn) {
+                        btn.outerHTML = '<span class="badge badge-downloading">Queued</span>';
+                    });
+                }
+            });
+    } else {
+        // Fallback: download individually
+        document.querySelectorAll('#sp-pl-tracks .sp-dl-btn').forEach(function(btn) { downloadSpPlTrack(btn); });
+    }
+}
+</script>

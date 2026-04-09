@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}leasure - downloads{% endblock %}
+{% block content %}
+<h2>download queue</h2>
+<div hx-get="/api/downloads/queue/html" hx-trigger="load, every 2s" hx-swap="innerHTML" id="download-queue">
+    <i>loading...</i>
+</div>
+
+<h2>history</h2>
+<div hx-get="/api/downloads/history/html" hx-trigger="load, every 10s" hx-swap="innerHTML" id="download-history">
+    <i>loading...</i>
+</div>
+{% endblock %}

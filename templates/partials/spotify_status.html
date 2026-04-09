@@ -1,0 +1,7 @@
+{% if connected %}
+<p><mark>Connected</mark> as <strong>{{ user }}</strong></p>
+{% elif auth_url %}
+<p>Not connected. <a href="{{ auth_url }}" role="button" class="outline">Connect Spotify</a></p>
+{% else %}
+<p>Spotify credentials not configured. Add SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET to .env</p>
+{% endif %}

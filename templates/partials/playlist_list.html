@@ -1,0 +1,22 @@
+<div class="album-grid">
+{% for pl in playlists %}
+<div class="album-card"
+     hx-get="/api/spotify/playlists/{{ pl.id }}/html"
+     hx-target="#album-detail"
+     hx-swap="innerHTML"
+     onclick="document.getElementById('album-modal').showModal()">
+    <img src="{{ pl.image_url or '/static/img/placeholder.svg' }}" alt="{{ pl.name }}" loading="lazy">
+    <h4>{{ pl.name }}</h4>
+    <p>{{ pl.total_tracks }} tracks &middot; {{ pl.owner }}</p>
+</div>
+{% endfor %}
+</div>
+
+{% if total > offset + limit %}
+<button hx-get="/api/spotify/playlists/html?offset={{ offset + limit }}&limit={{ limit }}"
+        hx-target="this"
+        hx-swap="outerHTML"
+        class="outline">
+    Load more ({{ offset + limit }} of {{ total }})
+</button>
+{% endif %}

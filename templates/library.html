@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}leasure - library{% endblock %}
+{% block content %}
+<h2>library</h2>
+<div hx-get="/api/library/stats/html" hx-trigger="load" hx-swap="innerHTML" id="library-stats">
+    <i>loading...</i>
+</div>
+
+<input type="search" placeholder="search title, artist, album..."
+       hx-get="/api/library/tracks/html"
+       hx-trigger="keyup changed delay:300ms"
+       hx-target="#track-list"
+       hx-swap="innerHTML"
+       name="q"
+       style="width: 100%; margin: 0.5rem 0;">
+
+<div hx-get="/api/library/tracks/html" hx-trigger="load" hx-swap="innerHTML" id="track-list">
+    <i>loading...</i>
+</div>
+{% endblock %}

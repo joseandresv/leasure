@@ -1,0 +1,16 @@
+<div class="album-grid">
+{% for pl in playlists %}
+<div class="album-card"
+     hx-get="/api/youtube/playlists/{{ pl.id }}/html"
+     hx-target="#yt-detail"
+     hx-swap="innerHTML"
+     onclick="document.getElementById('yt-modal').showModal()">
+    <img src="{{ pl.image_url or '/static/img/placeholder.svg' }}" alt="{{ pl.name }}" loading="lazy">
+    <h4>{{ pl.name }}</h4>
+    <p>{{ pl.count }} tracks</p>
+</div>
+{% endfor %}
+</div>
+{% if not playlists %}
+<p>No playlists found</p>
+{% endif %}

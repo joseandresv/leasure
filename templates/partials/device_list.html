@@ -1,0 +1,54 @@
+{% if devices %}
+{% for d in devices %}
+<div class="drive-card" style="{% if d.device_type == 'player' %}border-color: var(--pico-primary);{% endif %}">
+    <div class="drive-letter">{{ d.drive_letter }}:</div>
+    <div class="drive-info">
+        <div>
+            <strong>{{ d.free_gb }} GB free</strong> / {{ d.total_gb }} GB total
+        </div>
+        <small>
+            {% if d.device_type == 'player' %}
+                Music player detected
+            {% elif d.device_type == 'removable' %}
+                Removable drive
+            {% elif d.device_type == 'system' %}
+                System drive
+            {% else %}
+                Drive
+            {% endif %}
+            {% if d.has_music_files %} &middot; Music files found{% endif %}
+        </small>
+    </div>
+    {% if d.device_type != 'system' %}
+    <button class="outline" style="padding: 0.3rem 0.8rem; width: auto;"
+            onclick="selectDrive('{{ d.path }}')">
+        Select
+    </button>
+    {% endif %}
+</div>
+{% endfor %}
+
+<script>
+function selectDrive(path) {
+    document.getElementById('device-path').value = path;
+    var enc = encodeURIComponent(path);
+    htmx.ajax('GET', '/api/device/files/html?device_path=' + enc, '#device-files');
+    htmx.ajax('GET', '/api/device/diff/html?device_path=' + enc, '#sync-diff');
+}
+// Auto-select the first player/removable drive
+(function() {
+    var drives = {{ devices | tojson }};
+    var best = drives.find(d => d.device_type === 'player') || drives.find(d => d.device_type === 'removable');
+    if (best && !document.getElementById('device-path').value) {
+        selectDrive(best.path);
+    }
+})();
+</script>
+{% else %}
+<p>No external drives detected.</p>
+<small>
+    On WSL2, USB drives need to be mounted manually:<br>
+    <code>sudo mkdir -p /mnt/e && sudo mount -t drvfs E: /mnt/e</code><br>
+    Replace <code>E:</code> with your drive letter, then click Scan.
+</small>
+{% endif %}

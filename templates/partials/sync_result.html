@@ -1,0 +1,24 @@
+{% if error %}
+<article style="border-color: var(--pico-del-color);">
+    <p><strong>Sync failed:</strong> {{ error }}</p>
+</article>
+{% else %}
+<article style="border-color: var(--pico-ins-color);">
+    <header>Sync Complete</header>
+    <p>
+        <strong>{{ synced }}</strong> tracks synced
+        ({{ total_size_mb }} MB)
+        {% if playlists_generated %}&middot; <strong>{{ playlists_generated }}</strong> playlists generated{% endif %}
+    </p>
+    {% if errors %}
+    <details>
+        <summary>{{ errors | length }} error(s)</summary>
+        <ul>
+        {% for err in errors %}
+            <li><small>{{ err }}</small></li>
+        {% endfor %}
+        </ul>
+    </details>
+    {% endif %}
+</article>
+{% endif %}

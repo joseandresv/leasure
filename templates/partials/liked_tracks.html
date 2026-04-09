@@ -1,0 +1,68 @@
+<div style="margin-bottom: 1rem;">
+    <h3>Liked Songs</h3>
+    <small>{{ total }} songs</small>
+    <div style="margin-top: 0.5rem;">
+        <select id="dl-format-liked" class="format-select" style="display: inline-block; width: auto;">
+            <option value="mp3">MP3 320kbps</option>
+            <option value="flac">FLAC (YouTube)</option>
+            <option value="flac_lossless">FLAC Lossless</option>
+        </select>
+    </div>
+</div>
+
+<div>
+{% for track in tracks %}
+<div class="track-row">
+    <span class="track-num">{{ offset + loop.index }}</span>
+    {% if track.album_image_url %}
+    <img src="{{ track.album_image_url }}" style="width: 40px; height: 40px; border-radius: 2px;">
+    {% endif %}
+    <div class="track-info">
+        <div class="track-title">{{ track.name }}</div>
+        <div class="track-artist">{{ track.artist }}{% if track.album %} &middot; {{ track.album }}{% endif %}</div>
+    </div>
+    <span class="track-duration">{{ (track.duration_ms // 60000) }}:{{ "%02d" | format((track.duration_ms // 1000) % 60) }}</span>
+    {% if track.download_status == 'done' %}
+    <span class="badge badge-done">Downloaded</span>
+    {% elif track.download_status in ['pending', 'downloading'] %}
+    <span class="badge badge-downloading">{{ track.download_status }}</span>
+    {% else %}
+    <button class="outline" style="padding: 0.2rem 0.6rem; font-size: 0.8rem;"
+            onclick="downloadTrackLiked(this, '{{ track.uri }}', '{{ track.name | e }}', '{{ track.artist | e }}', '{{ (track.album or '') | e }}', {{ track.track_number or 0 }}, {{ track.duration_ms or 0 }}, '{{ track.album_image_url or '' }}')">
+        Download
+    </button>
+    {% endif %}
+</div>
+{% endfor %}
+</div>
+
+{% if total > offset + limit %}
+<button hx-get="/api/spotify/liked/html?offset={{ offset + limit }}&limit={{ limit }}"
+        hx-target="this"
+        hx-swap="outerHTML"
+        class="outline">
+    Load more ({{ offset + limit }} of {{ total }})
+</button>
+{% endif %}
+
+<script>
+function downloadTrackLiked(btn, uri, title, artist, album, trackNum, durationMs, artworkUrl) {
+    const format = document.getElementById('dl-format-liked').value;
+    const params = new URLSearchParams({
+        uri, title, artist, album,
+        track_number: trackNum,
+        duration_ms: durationMs,
+        artwork_url: artworkUrl,
+        format
+    });
+    fetch('/api/spotify/download/track?' + params, { method: 'POST' })
+        .then(r => r.json())
+        .then(data => {
+            if (data.status === 'queued' || data.status === 'already_queued') {
+                btn.outerHTML = '<span class="badge badge-downloading">Queued</span>';
+            } else if (data.status === 'already_downloaded') {
+                btn.outerHTML = '<span class="badge badge-done">Downloaded</span>';
+            }
+        });
+}
+</script>
