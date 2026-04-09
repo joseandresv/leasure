@@ -1,3 +1,5 @@
+from collections import defaultdict
+
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
@@ -83,3 +85,60 @@ async def list_tracks_html(
                                            "synced_at": t.synced_at}
                                           for t in tracks
                                       ]})
+
+
+@router.get("/graph")
+async def genre_graph(session: AsyncSession = Depends(get_session)):
+    """Return genre-based graph data for Sigma.js visualization."""
+    result = await session.execute(
+        select(
+            Track.album,
+            func.min(Track.album_artist).label("artist"),
+            func.min(Track.artwork_url).label("artwork_url"),
+            func.min(Track.genre).label("genre"),
+        )
+        .where(Track.status == "done", Track.album.isnot(None))
+        .group_by(Track.album)
+    )
+    albums = result.all()
+
+    nodes = []
+    genre_index = defaultdict(list)
+
+    for i, (album, artist, artwork, genre_str) in enumerate(albums):
+        node_id = f"album_{i}"
+        genres = [g.strip().lower() for g in genre_str.split(",")] if genre_str else []
+        nodes.append({
+            "id": node_id,
+            "label": album or "Unknown",
+            "artist": artist or "Unknown",
+            "image": artwork or "",
+            "genres": genres,
+        })
+        for genre in genres:
+            if genre:
+                genre_index[genre].append(node_id)
+
+    # Edges: connect albums sharing genres
+    edges = []
+    seen_edges = set()
+    for genre, album_ids in genre_index.items():
+        for a in album_ids:
+            for b in album_ids:
+                if a < b:
+                    edge_key = f"{a}-{b}"
+                    if edge_key not in seen_edges:
+                        edges.append({"source": a, "target": b, "genre": genre})
+                        seen_edges.add(edge_key)
+
+    # Assign colors to genres
+    palette = ["#0066ff", "#c9a961", "#00cc66", "#cc3333", "#ff9900",
+               "#9966ff", "#ff6699", "#00cccc", "#ff6600", "#6699ff"]
+    genre_colors = {}
+    for i, genre in enumerate(sorted(genre_index.keys())):
+        genre_colors[genre] = {
+            "color": palette[i % len(palette)],
+            "count": len(genre_index[genre]),
+        }
+
+    return {"nodes": nodes, "edges": edges, "genres": genre_colors}

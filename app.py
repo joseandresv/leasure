@@ -81,10 +81,14 @@ async def status_bar(session: AsyncSession = Depends(get_session)):
         select(Track).where(Track.status == "downloading").limit(1)
     )
     dl_track = downloading.scalar_one_or_none()
+    now_html = ""
     if dl_track:
-        queue_html += f' | now: {dl_track.artist} - {dl_track.title}'
+        now_html = (
+            f' | <span class="audio-bars"><span></span><span></span><span></span><span></span></span> '
+            f'{dl_track.artist} - {dl_track.title}'
+        )
 
-    return HTMLResponse(f'<span>{queue_html}</span>')
+    return HTMLResponse(f'<span>{queue_html}{now_html}</span>')
 
 
 @app.get("/api/home/carousel")
@@ -98,12 +102,12 @@ async def home_carousel(session: AsyncSession = Depends(get_session)):
     )
     albums = result.all()
     if not albums:
-        return HTMLResponse("<i>no music yet &mdash; download some tracks to see your collection spinning</i>")
+        return HTMLResponse('<i style="color:var(--text-muted)">no music yet &mdash; download some tracks to see your collection</i>')
 
     imgs = ""
     for url, album, artist in albums:
         if url:
-            imgs += f'<img src="{url}" alt="{album}" title="{artist} - {album}">'
+            imgs += f'<img src="{url}" alt="{album}" title="{artist} - {album}" data-vibrant>'
     # Duplicate for seamless loop
     html = f'<div class="lp-carousel"><div class="lp-carousel-inner">{imgs}{imgs}</div></div>'
 

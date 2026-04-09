@@ -1,3 +1,5 @@
+{% from "macros/components.html" import badge %}
+
 {% if tracks %}
 <table>
     <thead>
@@ -13,22 +15,28 @@
     <tbody>
     {% for t in tracks %}
         <tr>
-            <td>{{ t.track_number or '-' }}</td>
+            <td style="font-family: var(--font-mono); color: var(--text-muted);">{{ t.track_number or '-' }}</td>
             <td>{{ t.title }}</td>
             <td>{{ t.artist }}</td>
             <td>{{ t.album or '-' }}</td>
             <td>
                 {% if t.quality == 'flac_lossless' %}
-                <span class="badge badge-lossless">FLAC</span>
+                {{ badge('', quality='flac_lossless') }}
                 {% else %}
-                <span class="badge badge-mp3">MP3</span>
+                {{ badge('', quality='mp3') }}
                 {% endif %}
             </td>
-            <td>{{ 'Yes' if t.synced_at else 'No' }}</td>
+            <td>
+                {% if t.synced_at %}
+                <span class="badge badge-done">Yes</span>
+                {% else %}
+                <span style="color: var(--text-muted);">No</span>
+                {% endif %}
+            </td>
         </tr>
     {% endfor %}
     </tbody>
 </table>
 {% else %}
-<p>No tracks in library yet. Download some from Spotify or YouTube Music!</p>
+<p style="color: var(--text-muted);">No tracks in library yet. Download some from Spotify or YouTube Music!</p>
 {% endif %}

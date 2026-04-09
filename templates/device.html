@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Leasure - Device Sync{% endblock %}
+{% block title %}leasure - device sync{% endblock %}
 {% block content %}
 <hgroup>
     <h1>Device Sync</h1>
@@ -10,7 +10,7 @@
     <article>
         <header>
             Detected Drives
-            <button class="outline" style="float: right; padding: 0.2rem 0.6rem; width: auto; font-size: 0.85rem;"
+            <button class="outline"
                     hx-get="/api/device/detect/html" hx-target="#device-list" hx-swap="innerHTML">
                 Scan
             </button>
@@ -35,7 +35,7 @@
             <div>
                 <label for="device-path">Target Drive</label>
                 <input type="text" name="device_path" id="device-path" placeholder="/mnt/e" required
-                       style="font-family: monospace;">
+                       style="font-family: var(--font-mono);">
             </div>
             <fieldset>
                 <legend>What to sync</legend>
@@ -48,94 +48,23 @@
     <div id="sync-status"></div>
 </article>
 
-<script>
-function startSync(e) {
-    e.preventDefault();
-    var path = document.getElementById('device-path').value;
-    var scope = document.querySelector('input[name="scope"]:checked').value;
-    var btn = document.getElementById('sync-btn');
-    var status = document.getElementById('sync-status');
-
-    btn.disabled = true;
-    btn.setAttribute('aria-busy', 'true');
-    btn.textContent = 'Syncing...';
-
-    status.innerHTML = '<progress id="sync-progress" value="0" max="100"></progress>' +
-        '<p id="sync-detail" style="font-size: 0.85rem; margin-top: 0.5rem;"></p>';
-
-    var es = new EventSource('/api/device/sync/stream?device_path=' + encodeURIComponent(path) + '&scope=' + scope);
-
-    es.onmessage = function(event) {
-        var data = JSON.parse(event.data);
-        var progress = document.getElementById('sync-progress');
-        var detail = document.getElementById('sync-detail');
-
-        if (data.type === 'start') {
-            progress.max = data.total;
-            detail.textContent = 'Starting sync of ' + data.total + ' tracks...';
-        } else if (data.type === 'progress') {
-            progress.value = data.current;
-            detail.innerHTML = '<strong>' + data.synced + '/' + data.total + '</strong> &middot; ' +
-                data.artist + ' - ' + data.track;
-        } else if (data.type === 'playlists') {
-            detail.textContent = data.message;
-        } else if (data.type === 'done') {
-            es.close();
-            btn.disabled = false;
-            btn.removeAttribute('aria-busy');
-            btn.textContent = 'Start Sync';
-
-            var html = '<article style="border-color: var(--pico-ins-color);">' +
-                '<header>Sync Complete</header>' +
-                '<p><strong>' + data.synced + '</strong> tracks synced (' + data.size_mb + ' MB)';
-            if (data.playlists) html += ' &middot; <strong>' + data.playlists + '</strong> playlists generated';
-            html += '</p>';
-            if (data.errors && data.errors.length > 0) {
-                html += '<details><summary>' + data.errors.length + ' error(s)</summary><ul>';
-                data.errors.forEach(function(err) { html += '<li><small>' + err + '</small></li>'; });
-                html += '</ul></details>';
-            }
-            html += '</article>';
-            status.innerHTML = html;
-
-            // Refresh device files
-            htmx.ajax('GET', '/api/device/files/html?device_path=' + encodeURIComponent(path), '#device-files');
-            htmx.ajax('GET', '/api/device/diff/html?device_path=' + encodeURIComponent(path), '#sync-diff');
-        } else if (data.type === 'error') {
-            es.close();
-            btn.disabled = false;
-            btn.removeAttribute('aria-busy');
-            btn.textContent = 'Start Sync';
-            status.innerHTML = '<article style="border-color: var(--pico-del-color);"><p>' + data.message + '</p></article>';
-        }
-    };
-
-    es.onerror = function() {
-        es.close();
-        btn.disabled = false;
-        btn.removeAttribute('aria-busy');
-        btn.textContent = 'Start Sync';
-    };
-}
-</script>
-
 <article>
     <header>Sync Preview</header>
     <div id="sync-diff">
-        <p><small>Select a drive to see what will be synced</small></p>
+        <p><small style="color: var(--text-muted);">Select a drive to see what will be synced</small></p>
     </div>
 </article>
 
 <article>
     <header>
         Music on Device
-        <button class="outline" style="float: right; padding: 0.2rem 0.6rem; width: auto; font-size: 0.85rem;"
+        <button class="outline"
                 onclick="var p=document.getElementById('device-path').value; if(p) htmx.ajax('GET','/api/device/files/html?device_path='+encodeURIComponent(p),'#device-files')">
             Refresh
         </button>
     </header>
     <div id="device-files">
-        <p><small>Select a drive above to browse music on device</small></p>
+        <p><small style="color: var(--text-muted);">Select a drive above to browse music on device</small></p>
     </div>
 </article>
 {% endblock %}

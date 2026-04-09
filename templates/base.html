@@ -3,10 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="dark">
     <title>{% block title %}leasure{% endblock %}</title>
-    <link rel="stylesheet" href="/static/css/app.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/theme.css">
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/vibrant.js/1.0.0/Vibrant.min.js" defer></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/graphology/0.25.4/graphology.umd.min.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/graphology-layout-forceatlas2@0.10.1/dist/graphology-layout-forceatlas2.min.js" defer></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sigma.js/2.4.0/sigma.min.js" defer></script>
 </head>
 <body>
     <div class="site-header">
@@ -22,7 +30,7 @@
     </div>
 
     <div id="status-bar"
-         hx-get="/api/status/bar" hx-trigger="load, every 3s" hx-swap="innerHTML">
+         hx-get="/api/status/bar" hx-trigger="load, every 5s" hx-swap="innerHTML">
         loading...
     </div>
 
@@ -35,6 +43,16 @@
         <span hx-get="/api/library/stats" hx-trigger="load, every 10s" hx-swap="innerHTML" style="display:inline">...</span>
     </div>
 
-    <script src="/static/js/app.js"></script>
+    <!-- Toast notifications (Alpine.js) -->
+    <div class="toast-container"
+         x-data
+         x-show="$store.toast && $store.toast.items.length > 0">
+        <template x-for="t in ($store.toast ? $store.toast.items : [])" :key="t.id">
+            <div class="toast-item" :class="t.type" x-text="t.message"
+                 @click="$store.toast.remove(t.id)"></div>
+        </template>
+    </div>
+
+    <script src="/static/js/leasure.js"></script>
 </body>
 </html>

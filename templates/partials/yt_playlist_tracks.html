@@ -1,91 +1,9 @@
-<div style="margin-bottom: 1rem;">
-    {% if playlist.image_url %}
-    <img src="{{ playlist.image_url }}" style="width: 80px; height: 80px; border-radius: 4px; float: left; margin-right: 1rem;">
-    {% endif %}
-    <h3 style="margin-bottom: 0.3rem;">{{ playlist.name }}</h3>
-    {% if playlist.description %}<small>{{ playlist.description }}</small>{% endif %}
-    <div style="margin-top: 0.5rem; display: flex; gap: 0.5rem; align-items: center;">
-        <small>{{ tracks | length }} tracks</small>
-        <select id="dl-format-ytpl" class="format-select" style="display: inline-block; width: auto;">
-            <option value="mp3">MP3 320kbps</option>
-            <option value="flac">FLAC (YouTube)</option>
-            <option value="flac_lossless">FLAC Lossless</option>
-        </select>
-        <button class="outline" style="display: inline-block; width: auto;"
-                onclick="downloadAllYtPl()">
-            Download All
-        </button>
-    </div>
-</div>
+{% from "macros/components.html" import format_selector, track_row, album_header %}
 
-<div style="clear: both;" id="yt-pl-tracks">
+{{ album_header(playlist, 'youtube', download_all_url='/api/youtube/download/playlist/' + (playlist.id | default('', true)), format_id_suffix='ytpl', track_count=tracks|length) }}
+
+<div id="yt-pl-tracks">
 {% for track in tracks %}
-<div class="track-row">
-    <span class="track-num">{{ loop.index }}</span>
-    {% if track.image_url %}
-    <img src="{{ track.image_url }}" style="width: 40px; height: 40px; border-radius: 2px;" loading="lazy">
-    {% endif %}
-    <div class="track-info">
-        <div class="track-title">{{ track.name }}</div>
-        <div class="track-artist">{{ track.artist }}{% if track.album %} &middot; {{ track.album }}{% endif %}</div>
-    </div>
-    <span class="track-duration">
-        {% if track.duration_ms %}{{ (track.duration_ms // 60000) }}:{{ "%02d" | format((track.duration_ms // 1000) % 60) }}{% else %}--:--{% endif %}
-    </span>
-    {% if track.download_status == 'done' %}
-    <span class="badge badge-done">Downloaded</span>
-    {% elif track.download_status in ['pending', 'downloading'] %}
-    <span class="badge badge-downloading">{{ track.download_status }}</span>
-    {% else %}
-    <button class="outline yt-dl-btn" style="padding: 0.2rem 0.6rem; font-size: 0.8rem;"
-            data-vid="{{ track.id }}" data-title="{{ track.name | e }}" data-artist="{{ track.artist | e }}"
-            data-album="{{ (track.album or '') | e }}" data-duration="{{ track.duration_ms or 0 }}"
-            data-image="{{ track.image_url or '' }}"
-            onclick="dlYtPlTrack(this)">
-        Download
-    </button>
-    {% endif %}
-</div>
+{{ track_row(track, 'youtube', format_id_suffix='ytpl', show_art=true, show_album=true, index=loop.index) }}
 {% endfor %}
 </div>
-
-<script>
-function dlYtPlTrack(btn) {
-    var format = document.getElementById('dl-format-ytpl').value;
-    var params = new URLSearchParams({
-        video_id: btn.dataset.vid, title: btn.dataset.title, artist: btn.dataset.artist,
-        album: btn.dataset.album, track_number: 0, duration_ms: btn.dataset.duration,
-        image_url: btn.dataset.image, format: format
-    });
-    fetch('/api/youtube/download/track?' + params, { method: 'POST' })
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-            if (data.status === 'queued' || data.status === 'already_queued') {
-                btn.outerHTML = '<span class="badge badge-downloading">Queued</span>';
-            } else if (data.status === 'already_downloaded') {
-                btn.outerHTML = '<span class="badge badge-done">Downloaded</span>';
-            }
-        });
-}
-
-function downloadAllYtPl() {
-    var format = document.getElementById('dl-format-ytpl').value;
-    var playlistId = '{{ playlist.id | default("") }}';
-    if (playlistId) {
-        fetch('/api/youtube/download/playlist/' + playlistId + '?format=' + format, { method: 'POST' })
-            .then(function(r) { return r.json(); })
-            .then(function(data) {
-                if (data.error) {
-                    alert('Error: ' + data.error);
-                } else {
-                    alert('Queued ' + data.tracks_queued + ' tracks from "' + data.playlist + '"');
-                    document.querySelectorAll('#yt-pl-tracks .yt-dl-btn').forEach(function(btn) {
-                        btn.outerHTML = '<span class="badge badge-downloading">Queued</span>';
-                    });
-                }
-            });
-    } else {
-        document.querySelectorAll('#yt-pl-tracks .yt-dl-btn').forEach(function(btn) { dlYtPlTrack(btn); });
-    }
-}
-</script>

@@ -3,18 +3,34 @@
 {% block content %}
 <h2>library</h2>
 <div hx-get="/api/library/stats/html" hx-trigger="load" hx-swap="innerHTML" id="library-stats">
-    <i>loading...</i>
+    <i style="color: var(--text-muted);">loading...</i>
 </div>
 
-<input type="search" placeholder="search title, artist, album..."
-       hx-get="/api/library/tracks/html"
-       hx-trigger="keyup changed delay:300ms"
-       hx-target="#track-list"
-       hx-swap="innerHTML"
-       name="q"
-       style="width: 100%; margin: 0.5rem 0;">
+<div x-data="{ view: 'list' }">
+    <div class="view-toggle">
+        <button @click="view = 'list'" :class="view === 'list' && 'active'">List</button>
+        <button @click="view = 'graph'" :class="view === 'graph' && 'active'">Genre Map</button>
+    </div>
 
-<div hx-get="/api/library/tracks/html" hx-trigger="load" hx-swap="innerHTML" id="track-list">
-    <i>loading...</i>
+    <div x-show="view === 'list'">
+        <input type="search" placeholder="search title, artist, album..."
+               hx-get="/api/library/tracks/html"
+               hx-trigger="keyup changed delay:300ms"
+               hx-target="#track-list"
+               hx-swap="innerHTML"
+               name="q">
+
+        <div hx-get="/api/library/tracks/html" hx-trigger="load" hx-swap="innerHTML" id="track-list">
+            <i style="color: var(--text-muted);">loading...</i>
+        </div>
+    </div>
+
+    <div x-show="view === 'graph'" x-cloak>
+        <div id="genre-legend"></div>
+        <div id="genre-graph"
+             hx-get="/api/library/graph" hx-trigger="intersect once" hx-swap="none"
+             hx-on::after-request="initGraph(event)">
+        </div>
+    </div>
 </div>
 {% endblock %}

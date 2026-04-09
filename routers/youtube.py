@@ -9,6 +9,10 @@ from models import Playlist, PlaylistTrack, Track
 from services import youtube_client as yt
 from worker import download_worker
 
+
+def _is_htmx(request: Request) -> bool:
+    return request.headers.get("HX-Request") == "true"
+
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
 
@@ -202,6 +206,7 @@ async def liked_songs_html(request: Request, session: AsyncSession = Depends(get
 
 @router.post("/download/track")
 async def download_track(
+    request: Request,
     video_id: str,
     title: str,
     artist: str,
@@ -217,9 +222,17 @@ async def download_track(
     existing = result.scalar_one_or_none()
 
     if existing and existing.status == "done":
-        return {"status": "already_downloaded", "track_id": existing.id}
+        status = "already_downloaded"
+        if _is_htmx(request):
+            return templates.TemplateResponse(request=request, name="partials/download_badge.html",
+                                              context={"status": status})
+        return {"status": status, "track_id": existing.id}
     if existing and existing.status in ("pending", "downloading"):
-        return {"status": "already_queued", "track_id": existing.id}
+        status = "already_queued"
+        if _is_htmx(request):
+            return templates.TemplateResponse(request=request, name="partials/download_badge.html",
+                                              context={"status": status})
+        return {"status": status, "track_id": existing.id}
 
     quality = "mp3_320"
     if format == "flac":
@@ -246,11 +259,15 @@ async def download_track(
     await session.refresh(track)
 
     await download_worker.enqueue(track.id)
+    if _is_htmx(request):
+        return templates.TemplateResponse(request=request, name="partials/download_badge.html",
+                                          context={"status": "queued"})
     return {"status": "queued", "track_id": track.id}
 
 
 @router.post("/download/playlist/{playlist_id}")
 async def download_playlist(
+    request: Request,
     playlist_id: str,
     format: str = "mp3",
     session: AsyncSession = Depends(get_session),
@@ -326,4 +343,17 @@ async def download_playlist(
         queued.append({"track_id": track.id, "status": "queued"})
 
     await session.commit()
-    return {"playlist": pl_name, "tracks_queued": len(queued), "details": queued}
+    resp = {"playlist": pl_name, "tracks_queued": len(queued), "details": queued}
+    if _is_htmx(request):
+        # Re-render playlist tracks with updated statuses
+        for t in tracks_data:
+            if t["id"]:
+                stmt = select(Track).where(Track.youtube_id == t["id"])
+                result = await session.execute(stmt)
+                existing = result.scalar_one_or_none()
+                t["download_status"] = existing.status if existing else None
+        playlist_ctx = pl_info.copy()
+        playlist_ctx["id"] = playlist_id
+        return templates.TemplateResponse(request=request, name="partials/yt_playlist_tracks.html",
+                                          context={"playlist": playlist_ctx, "tracks": tracks_data})
+    return resp

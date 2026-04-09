@@ -2,15 +2,16 @@
 <div>
 {% for t in tracks %}
 <div class="queue-item">
+    <div class="audio-bars"><span></span><span></span><span></span><span></span></div>
     <div class="track-info">
         <div class="track-title">{{ t.title }}</div>
         <div class="track-artist">{{ t.artist }}</div>
     </div>
     <span class="badge badge-{{ 'downloading' if t.status == 'downloading' else 'mp3' }}">{{ t.status }}</span>
-    <small>{{ t.format | upper }}</small>
+    <small style="font-family: var(--font-mono); color: var(--text-muted);">{{ t.format | upper }}</small>
 </div>
 {% endfor %}
 </div>
 {% else %}
-<p>No active downloads</p>
+<p style="color: var(--text-muted);">No active downloads</p>
 {% endif %}

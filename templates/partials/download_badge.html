@@ -1,0 +1,9 @@
+{% if status == 'queued' or status == 'already_queued' %}
+<span class="badge badge-downloading">Queued</span>
+{% elif status == 'already_downloaded' %}
+<span class="badge badge-done">Downloaded</span>
+{% elif status == 'error' %}
+<span class="badge badge-error">Error</span>
+{% else %}
+<span class="badge badge-downloading">{{ status }}</span>
+{% endif %}

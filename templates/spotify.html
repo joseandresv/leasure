@@ -7,37 +7,31 @@
 </div>
 
 <div x-data="{ tab: 'albums' }">
-    <div style="margin: 0.5rem 0;">
-        [<a href="#" @click.prevent="tab = 'albums'" :style="tab === 'albums' && 'font-weight:bold'">albums</a>]
-        [<a href="#" @click.prevent="tab = 'playlists'" :style="tab === 'playlists' && 'font-weight:bold'">playlists</a>]
-        [<a href="#" @click.prevent="tab = 'liked'" :style="tab === 'liked' && 'font-weight:bold'">liked</a>]
+    <div class="tab-nav">
+        <a href="#" @click.prevent="tab = 'albums'" :class="tab === 'albums' && 'tab-active'">albums</a>
+        <a href="#" @click.prevent="tab = 'playlists'" :class="tab === 'playlists' && 'tab-active'">playlists</a>
+        <a href="#" @click.prevent="tab = 'liked'" :class="tab === 'liked' && 'tab-active'">liked</a>
     </div>
 
     <div x-show="tab === 'albums'">
         <div hx-get="/api/spotify/albums/html" hx-trigger="load" hx-swap="innerHTML" id="spotify-albums-content">
-            <i>loading albums...</i>
+            <i style="color: var(--text-muted);">loading albums...</i>
         </div>
     </div>
 
-    <div x-show="tab === 'playlists'">
+    <div x-show="tab === 'playlists'" x-cloak>
         <div hx-get="/api/spotify/playlists/html" hx-trigger="intersect once" hx-swap="innerHTML" id="spotify-playlists-content">
-            <i>loading playlists...</i>
+            <i style="color: var(--text-muted);">loading playlists...</i>
         </div>
     </div>
 
-    <div x-show="tab === 'liked'">
+    <div x-show="tab === 'liked'" x-cloak>
         <div hx-get="/api/spotify/liked/html" hx-trigger="intersect once" hx-swap="innerHTML" id="spotify-liked-content">
-            <i>loading liked songs...</i>
+            <i style="color: var(--text-muted);">loading liked songs...</i>
         </div>
     </div>
 </div>
 
-<dialog id="album-modal">
-    <header>
-        <span>details</span>
-        <button onclick="this.closest('dialog').close()">&times;</button>
-    </header>
-    <div id="album-detail" style="padding: 1rem; overflow-y: auto; max-height: calc(85vh - 3rem);">
-    </div>
-</dialog>
+{% from "macros/components.html" import modal %}
+{{ modal('album-modal') }}
 {% endblock %}

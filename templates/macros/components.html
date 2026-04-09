@@ -1,0 +1,175 @@
+{# Leasure — reusable Jinja2 macros #}
+
+{# Format selector dropdown — shared across all download contexts #}
+{% macro format_selector(id_suffix='') %}
+<select name="format" id="dl-format{{ '-' + id_suffix if id_suffix else '' }}" class="format-select">
+    <option value="mp3">MP3 320kbps</option>
+    <option value="flac">FLAC (YouTube)</option>
+    <option value="flac_lossless">FLAC Lossless</option>
+</select>
+{% endmacro %}
+
+{# Status/quality badge #}
+{% macro badge(status, quality='') %}
+{% if status == 'done' or status == 'already_downloaded' %}
+<span class="badge badge-done">Downloaded</span>
+{% elif status in ['pending', 'downloading', 'queued', 'already_queued'] %}
+<span class="badge badge-downloading">{{ status if status in ['pending', 'downloading'] else 'Queued' }}</span>
+{% elif status == 'error' %}
+<span class="badge badge-error">Error</span>
+{% elif quality == 'flac_lossless' %}
+<span class="badge badge-lossless">FLAC Lossless</span>
+{% elif quality and 'flac' in quality %}
+<span class="badge">FLAC</span>
+{% elif quality %}
+<span class="badge badge-mp3">MP3 320</span>
+{% endif %}
+{% endmacro %}
+
+{# Download button — pure HTMX, replaces itself with a badge on success #}
+{% macro download_button(track, source, format_id_suffix='') %}
+{% set endpoint = '/api/' + source + '/download/track' %}
+{% if source == 'spotify' %}
+<button class="outline dl-btn"
+        hx-post="{{ endpoint }}"
+        hx-vals='{{ {
+            "uri": track.uri | default(track.spotify_uri, true),
+            "title": track.name | default(track.title, true),
+            "artist": track.artist,
+            "album": track.album | default("", true),
+            "track_number": track.track_number | default(0, true),
+            "duration_ms": track.duration_ms | default(0, true),
+            "artwork_url": track.artwork_url | default(track.album_image_url | default("", true), true),
+            "artist_id": track.artist_id | default("", true)
+        } | tojson }}'
+        hx-include="#dl-format{{ '-' + format_id_suffix if format_id_suffix else '' }}"
+        hx-target="this"
+        hx-swap="outerHTML"
+        hx-indicator="this">
+    Download
+</button>
+{% elif source == 'youtube' %}
+<button class="outline dl-btn"
+        hx-post="{{ endpoint }}"
+        hx-vals='{{ {
+            "video_id": track.id | default(track.youtube_id, true),
+            "title": track.name | default(track.title, true),
+            "artist": track.artist,
+            "album": track.album | default("", true),
+            "track_number": track.track_number | default(0, true),
+            "duration_ms": track.duration_ms | default(0, true),
+            "image_url": track.image_url | default(track.artwork_url | default("", true), true)
+        } | tojson }}'
+        hx-include="#dl-format{{ '-' + format_id_suffix if format_id_suffix else '' }}"
+        hx-target="this"
+        hx-swap="outerHTML"
+        hx-indicator="this">
+    Download
+</button>
+{% endif %}
+{% endmacro %}
+
+{# Duration formatter #}
+{% macro duration(ms) %}
+{% if ms %}{{ (ms // 60000) }}:{{ "%02d" | format((ms // 1000) % 60) }}{% else %}--:--{% endif %}
+{% endmacro %}
+
+{# Track row — used in album details, playlists, liked songs #}
+{% macro track_row(track, source, format_id_suffix='', show_art=false, show_album=false, index=0) %}
+<div class="track-row" id="track-{{ track.id | default(track.uri | default(''), true) }}">
+    <span class="track-num">{{ track.track_number | default(index, true) }}</span>
+    {% if show_art and (track.image_url or track.album_image_url or track.artwork_url) %}
+    <img src="{{ track.image_url | default(track.album_image_url | default(track.artwork_url, true), true) }}"
+         class="track-art" loading="lazy" alt="">
+    {% endif %}
+    <div class="track-info">
+        <div class="track-title">{{ track.name | default(track.title, true) }}</div>
+        <div class="track-artist">{{ track.artist }}{% if show_album and track.album %} &middot; {{ track.album }}{% endif %}</div>
+    </div>
+    <span class="track-duration">{{ duration(track.duration_ms) }}</span>
+    {% if track.download_status == 'done' %}
+    {{ badge('done') }}
+    {% elif track.download_status in ['pending', 'downloading'] %}
+    {{ badge(track.download_status) }}
+    {% elif track.download_status == 'error' %}
+    {{ badge('error') }}
+    {% elif source == 'youtube' and not track.id %}
+    <span class="badge" style="opacity: 0.5;">No video</span>
+    {% else %}
+    {{ download_button(track, source, format_id_suffix) }}
+    {% endif %}
+</div>
+{% endmacro %}
+
+{# Album card — used in album grids and playlist grids #}
+{% macro album_card(item, detail_url, modal_id, show_year=false) %}
+<div class="album-card"
+     hx-get="{{ detail_url }}"
+     hx-target="#{{ modal_id }}-detail"
+     hx-swap="innerHTML"
+     onclick="document.getElementById('{{ modal_id }}').showModal()">
+    <img src="{{ item.image_url or '/static/img/placeholder.svg' }}" alt="{{ item.name }}"
+         loading="lazy" data-vibrant>
+    <h4>{{ item.name }}</h4>
+    <p>{{ item.artist | default(item.owner | default(''), true) }}{% if show_year and item.year %} &middot; {{ item.year }}{% endif %}{% if item.total_tracks %} &middot; {{ item.total_tracks }} tracks{% endif %}{% if item.count %} &middot; {{ item.count }} tracks{% endif %}</p>
+    {% if item.downloaded_count is defined and item.downloaded_count > 0 %}
+    <span class="badge badge-done">{{ item.downloaded_count }}/{{ item.total_tracks }}</span>
+    {% endif %}
+</div>
+{% endmacro %}
+
+{# Album detail header — used in album/playlist detail views #}
+{% macro album_header(item, source, download_all_url='', format_id_suffix='', track_count=0) %}
+<div class="album-hero" {% if item.image_url %}style="--hero-bg-url: url('{{ item.image_url }}')"{% endif %}>
+    <div class="album-hero-content">
+        {% if item.image_url %}
+        <img src="{{ item.image_url }}" alt="{{ item.name }}" class="album-art" data-vibrant>
+        {% endif %}
+        <div class="album-meta">
+            <h3>{{ item.name }}</h3>
+            <p>{{ item.artist | default('', true) }}</p>
+            {% if item.release_date %}<small>{{ item.release_date }}</small>{% endif %}
+            {% if item.year %}<small>{{ item.year }}</small>{% endif %}
+            {% if item.description %}<small>{{ item.description }}</small>{% endif %}
+            <small>{{ track_count }} tracks</small>
+            <div class="album-actions">
+                {{ format_selector(format_id_suffix) }}
+                {% if download_all_url %}
+                <button class="outline"
+                        hx-post="{{ download_all_url }}"
+                        hx-include="#dl-format-{{ format_id_suffix }}"
+                        hx-target="closest .modal-body"
+                        hx-swap="innerHTML"
+                        hx-indicator="this">
+                    Download All
+                </button>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endmacro %}
+
+{# Modal dialog wrapper #}
+{% macro modal(id) %}
+<dialog id="{{ id }}">
+    <header>
+        <span>details</span>
+        <button onclick="this.closest('dialog').close()">&times;</button>
+    </header>
+    <div id="{{ id }}-detail" class="modal-body">
+    </div>
+</dialog>
+{% endmacro %}
+
+{# Load more pagination button #}
+{% macro load_more(url, offset, limit, total) %}
+{% if total > offset + limit %}
+<button hx-get="{{ url }}?offset={{ offset + limit }}&limit={{ limit }}"
+        hx-target="this"
+        hx-swap="outerHTML"
+        class="outline load-more-btn">
+    Load more ({{ offset + limit }} of {{ total }})
+</button>
+{% endif %}
+{% endmacro %}

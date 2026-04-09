@@ -1,79 +1,9 @@
-<div style="display: flex; gap: 1.5rem; margin-bottom: 1rem;">
-    {% if album.image_url %}
-    <img src="{{ album.image_url }}" alt="{{ album.name }}" style="width: 150px; height: 150px; border-radius: 4px;">
-    {% endif %}
-    <div>
-        <h3 style="margin-bottom: 0.3rem;">{{ album.name }}</h3>
-        <p style="margin-bottom: 0.3rem;">{{ album.artist }}</p>
-        <small>{{ album.release_date }} &middot; {{ tracks|length }} tracks</small>
-        <div style="margin-top: 0.5rem;">
-            <select id="dl-format" class="format-select" style="display: inline-block; width: auto;">
-                <option value="mp3">MP3 320kbps</option>
-                <option value="flac">FLAC (YouTube)</option>
-                <option value="flac_lossless">FLAC Lossless</option>
-            </select>
-            <button class="outline" style="display: inline-block; width: auto;"
-                    onclick="downloadAlbum('{{ album.id }}')">
-                Download All
-            </button>
-        </div>
-    </div>
-</div>
+{% from "macros/components.html" import format_selector, track_row, album_header, badge %}
+
+{{ album_header(album, 'spotify', download_all_url='/api/spotify/download/album/' + album.id, format_id_suffix='album', track_count=tracks|length) }}
 
 <div>
 {% for track in tracks %}
-<div class="track-row" id="track-{{ track.id }}">
-    <span class="track-num">{{ track.track_number or loop.index }}</span>
-    <div class="track-info">
-        <div class="track-title">{{ track.name }}</div>
-        <div class="track-artist">{{ track.artist }}</div>
-    </div>
-    <span class="track-duration">{{ (track.duration_ms // 60000) }}:{{ "%02d" | format((track.duration_ms // 1000) % 60) }}</span>
-    {% if track.download_status == 'done' %}
-    <span class="badge badge-done">Downloaded</span>
-    {% elif track.download_status in ['pending', 'downloading'] %}
-    <span class="badge badge-downloading">{{ track.download_status }}</span>
-    {% elif track.download_status == 'error' %}
-    <span class="badge badge-error">Error</span>
-    {% else %}
-    <button class="outline" style="padding: 0.2rem 0.6rem; font-size: 0.8rem;"
-            onclick="downloadTrack('{{ track.uri }}', '{{ track.name | e }}', '{{ track.artist | e }}', '{{ album.name | e }}', {{ track.track_number or 0 }}, {{ track.duration_ms or 0 }}, '{{ album.image_url or '' }}')">
-        Download
-    </button>
-    {% endif %}
-</div>
+{{ track_row(track, 'spotify', format_id_suffix='album', index=loop.index) }}
 {% endfor %}
 </div>
-
-<script>
-function downloadTrack(uri, title, artist, album, trackNum, durationMs, artworkUrl) {
-    const format = document.getElementById('dl-format').value;
-    const params = new URLSearchParams({
-        uri, title, artist, album,
-        track_number: trackNum,
-        duration_ms: durationMs,
-        artwork_url: artworkUrl,
-        format
-    });
-    fetch('/api/spotify/download/track?' + params, { method: 'POST' })
-        .then(r => r.json())
-        .then(data => {
-            if (data.status === 'queued' || data.status === 'already_queued') {
-                event.target.outerHTML = '<span class="badge badge-downloading">Queued</span>';
-            } else if (data.status === 'already_downloaded') {
-                event.target.outerHTML = '<span class="badge badge-done">Downloaded</span>';
-            }
-        });
-}
-
-function downloadAlbum(albumId) {
-    const format = document.getElementById('dl-format').value;
-    fetch('/api/spotify/download/album/' + albumId + '?format=' + format, { method: 'POST' })
-        .then(r => r.json())
-        .then(data => {
-            alert('Queued ' + data.tracks_queued + ' tracks from ' + data.album);
-            // Refresh the track list to show status
-            htmx.ajax('GET', '/api/spotify/albums/' + albumId + '/html', '#album-detail');
-        });
-}
-</script>

@@ -1,61 +1,15 @@
-<div style="margin-bottom: 1rem;">
-    <select id="dl-format-yt" class="format-select" style="display: inline-block; width: auto;">
-        <option value="mp3">MP3 320kbps</option>
-        <option value="flac">FLAC (YouTube)</option>
-        <option value="flac_lossless">FLAC Lossless</option>
-    </select>
+{% from "macros/components.html" import format_selector, track_row %}
+
+<div class="album-actions" style="margin-bottom: var(--space-md);">
+    {{ format_selector('yt') }}
 </div>
 
 {% if tracks %}
 <div>
 {% for track in tracks %}
-<div class="track-row">
-    <span class="track-num">{{ loop.index }}</span>
-    {% if track.image_url %}
-    <img src="{{ track.image_url }}" style="width: 40px; height: 40px; border-radius: 2px;" loading="lazy">
-    {% endif %}
-    <div class="track-info">
-        <div class="track-title">{{ track.name }}</div>
-        <div class="track-artist">{{ track.artist }}{% if track.album %} &middot; {{ track.album }}{% endif %}</div>
-    </div>
-    <span class="track-duration">
-        {% if track.duration_ms %}{{ (track.duration_ms // 60000) }}:{{ "%02d" | format((track.duration_ms // 1000) % 60) }}{% else %}--:--{% endif %}
-    </span>
-    {% if track.download_status == 'done' %}
-    <span class="badge badge-done">Downloaded</span>
-    {% elif track.download_status in ['pending', 'downloading'] %}
-    <span class="badge badge-downloading">{{ track.download_status }}</span>
-    {% else %}
-    <button class="outline" style="padding: 0.2rem 0.6rem; font-size: 0.8rem;"
-            onclick="downloadYtTrack(this, '{{ track.id }}', '{{ track.name | e }}', '{{ track.artist | e }}', '{{ (track.album or '') | e }}', 0, {{ track.duration_ms or 0 }}, '{{ track.image_url or '' }}')">
-        Download
-    </button>
-    {% endif %}
-</div>
+{{ track_row(track, 'youtube', format_id_suffix='yt', show_art=true, show_album=true, index=loop.index) }}
 {% endfor %}
 </div>
 {% else %}
 <p>No tracks found</p>
 {% endif %}
-
-<script>
-function downloadYtTrack(btn, videoId, title, artist, album, trackNum, durationMs, imageUrl) {
-    const format = document.getElementById('dl-format-yt').value;
-    const params = new URLSearchParams({
-        video_id: videoId, title, artist, album,
-        track_number: trackNum,
-        duration_ms: durationMs,
-        image_url: imageUrl,
-        format
-    });
-    fetch('/api/youtube/download/track?' + params, { method: 'POST' })
-        .then(r => r.json())
-        .then(data => {
-            if (data.status === 'queued' || data.status === 'already_queued') {
-                btn.outerHTML = '<span class="badge badge-downloading">Queued</span>';
-            } else if (data.status === 'already_downloaded') {
-                btn.outerHTML = '<span class="badge badge-done">Downloaded</span>';
-            }
-        });
-}
-</script>

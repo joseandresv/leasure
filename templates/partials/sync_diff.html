@@ -1,7 +1,7 @@
 {% if error %}
 <p>{{ error }}</p>
 {% else %}
-<div style="margin-bottom: 1rem;">
+<div style="margin-bottom: var(--space-md);">
     <strong>{{ to_add | length }}</strong> to add &middot;
     <strong>{{ already_synced | length }}</strong> already on device &middot;
     <strong>{{ on_device_only | length }}</strong> on device only
@@ -9,15 +9,15 @@
 
 {% if to_add %}
 <details open>
-    <summary style="color: var(--pico-ins-color);">+ {{ to_add | length }} tracks to add</summary>
+    <summary class="diff-add">+ {{ to_add | length }} tracks to add</summary>
     {% for t in to_add %}
-    <div class="track-row" style="padding: 0.25rem 0; border-left: 3px solid var(--pico-ins-color); padding-left: 0.5rem;">
-        <span style="color: var(--pico-ins-color); font-weight: bold; width: 1.5rem;">+</span>
+    <div class="track-row diff-row-add">
+        <span class="diff-add" style="font-weight: bold; width: 1.5rem;">+</span>
         <div class="track-info">
-            <div class="track-title" style="font-size: 0.85rem;">{{ t.title }}</div>
-            <div class="track-artist" style="font-size: 0.8rem; opacity: 0.7;">{{ t.artist }} &middot; {{ t.album or 'Unknown' }}</div>
+            <div class="track-title">{{ t.title }}</div>
+            <div class="track-artist">{{ t.artist }} &middot; {{ t.album or 'Unknown' }}</div>
         </div>
-        <small>{{ t.format | upper }}</small>
+        <small style="font-family: var(--font-mono); color: var(--text-muted);">{{ t.format | upper }}</small>
     </div>
     {% endfor %}
 </details>
@@ -25,13 +25,13 @@
 
 {% if already_synced %}
 <details>
-    <summary style="opacity: 0.6;">= {{ already_synced | length }} already on device</summary>
+    <summary class="diff-synced">= {{ already_synced | length }} already on device</summary>
     {% for t in already_synced %}
-    <div class="track-row" style="padding: 0.25rem 0; opacity: 0.5;">
-        <span style="width: 1.5rem;">=</span>
+    <div class="track-row" style="opacity: 0.5;">
+        <span style="width: 1.5rem; color: var(--text-muted);">=</span>
         <div class="track-info">
-            <div class="track-title" style="font-size: 0.85rem;">{{ t.title }}</div>
-            <div class="track-artist" style="font-size: 0.8rem;">{{ t.artist }}</div>
+            <div class="track-title">{{ t.title }}</div>
+            <div class="track-artist">{{ t.artist }}</div>
         </div>
     </div>
     {% endfor %}
@@ -40,12 +40,12 @@
 
 {% if on_device_only %}
 <details>
-    <summary style="color: var(--pico-del-color);">? {{ on_device_only | length }} on device but not in library</summary>
+    <summary class="diff-unknown">? {{ on_device_only | length }} on device but not in library</summary>
     {% for f in on_device_only %}
-    <div class="track-row" style="padding: 0.25rem 0; border-left: 3px solid var(--pico-del-color); padding-left: 0.5rem;">
-        <span style="color: var(--pico-del-color); width: 1.5rem;">?</span>
+    <div class="track-row diff-row-unknown">
+        <span class="diff-unknown" style="width: 1.5rem;">?</span>
         <div class="track-info">
-            <div class="track-title" style="font-size: 0.85rem;">{{ f }}</div>
+            <div class="track-title">{{ f }}</div>
         </div>
     </div>
     {% endfor %}

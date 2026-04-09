@@ -10,6 +10,10 @@ from models import Playlist, PlaylistTrack, Track
 from services import spotify_client as sp
 from worker import download_worker
 
+
+def _is_htmx(request: Request) -> bool:
+    return request.headers.get("HX-Request") == "true"
+
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
 
@@ -239,6 +243,7 @@ async def liked_songs(
 
 @router.post("/download/track")
 async def download_track(
+    request: Request,
     uri: str,
     title: str,
     artist: str,
@@ -255,9 +260,17 @@ async def download_track(
     existing = result.scalar_one_or_none()
 
     if existing and existing.status == "done":
-        return {"status": "already_downloaded", "track_id": existing.id}
+        status = "already_downloaded"
+        if _is_htmx(request):
+            return templates.TemplateResponse(request=request, name="partials/download_badge.html",
+                                              context={"status": status})
+        return {"status": status, "track_id": existing.id}
     if existing and existing.status in ("pending", "downloading"):
-        return {"status": "already_queued", "track_id": existing.id}
+        status = "already_queued"
+        if _is_htmx(request):
+            return templates.TemplateResponse(request=request, name="partials/download_badge.html",
+                                              context={"status": status})
+        return {"status": status, "track_id": existing.id}
 
     # Fetch genre from artist if available
     genre = None
@@ -292,11 +305,15 @@ async def download_track(
     await session.refresh(track)
 
     await download_worker.enqueue(track.id)
+    if _is_htmx(request):
+        return templates.TemplateResponse(request=request, name="partials/download_badge.html",
+                                          context={"status": "queued"})
     return {"status": "queued", "track_id": track.id}
 
 
 @router.post("/download/album/{album_id}")
 async def download_album(
+    request: Request,
     album_id: str,
     format: str = "mp3",
     session: AsyncSession = Depends(get_session),
@@ -365,11 +382,22 @@ async def download_album(
         await download_worker.enqueue(track.id)
         queued.append({"track_id": track.id, "status": "queued"})
 
-    return {"album": album["name"], "tracks_queued": len(queued), "details": queued}
+    resp = {"album": album["name"], "tracks_queued": len(queued), "details": queued}
+    if _is_htmx(request):
+        # Re-render the album detail view with updated download statuses
+        for track in album_data["tracks"]:
+            stmt = select(Track).where(Track.spotify_uri == track["uri"])
+            result = await session.execute(stmt)
+            existing = result.scalar_one_or_none()
+            track["download_status"] = existing.status if existing else None
+        return templates.TemplateResponse(request=request, name="partials/album_tracks.html",
+                                          context={"album": album, "tracks": album_data["tracks"]})
+    return resp
 
 
 @router.post("/download/playlist/{playlist_id}")
 async def download_playlist(
+    request: Request,
     playlist_id: str,
     format: str = "mp3",
     session: AsyncSession = Depends(get_session),
@@ -460,4 +488,15 @@ async def download_playlist(
         queued.append({"track_id": track.id, "status": "queued"})
 
     await session.commit()
-    return {"playlist": pl_name, "tracks_queued": len(queued), "details": queued}
+    resp = {"playlist": pl_name, "tracks_queued": len(queued), "details": queued}
+    if _is_htmx(request):
+        # Re-render playlist tracks with updated statuses
+        for t in tracks_data:
+            stmt = select(Track).where(Track.spotify_uri == t["uri"])
+            result = await session.execute(stmt)
+            existing = result.scalar_one_or_none()
+            t["download_status"] = existing.status if existing else None
+        return templates.TemplateResponse(request=request, name="partials/playlist_tracks.html",
+                                          context={"playlist": {"name": pl_name, "id": playlist_id},
+                                                   "tracks": tracks_data})
+    return resp

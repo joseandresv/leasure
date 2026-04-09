@@ -1,10 +1,10 @@
 {% if error %}
-<article style="border-color: var(--pico-del-color);">
+<div class="sync-result sync-result-error">
     <p><strong>Sync failed:</strong> {{ error }}</p>
-</article>
+</div>
 {% else %}
-<article style="border-color: var(--pico-ins-color);">
-    <header>Sync Complete</header>
+<div class="sync-result sync-result-success">
+    <h4>Sync Complete</h4>
     <p>
         <strong>{{ synced }}</strong> tracks synced
         ({{ total_size_mb }} MB)
@@ -20,5 +20,5 @@
         </ul>
     </details>
     {% endif %}
-</article>
+</div>
 {% endif %}
