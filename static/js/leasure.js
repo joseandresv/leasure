@@ -152,7 +152,7 @@ function startSync(e) {
         } else if (data.type === 'done') {
             es.close();
             btn.disabled = false;
-            btn.textContent = 'Start Sync';
+            btn.textContent = 'SYNC TO DEVICE';
             btn.classList.remove('syncing');
 
             var html = '<div class="sync-result sync-result-success">' +
@@ -189,7 +189,7 @@ function startSync(e) {
     es.onerror = function() {
         es.close();
         btn.disabled = false;
-        btn.textContent = 'Start Sync';
+        btn.textContent = 'SYNC TO DEVICE';
         btn.classList.remove('syncing');
     };
 }

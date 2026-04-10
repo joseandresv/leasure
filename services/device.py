@@ -19,21 +19,39 @@ def sanitize_filename(name: str, max_length: int = 200) -> str:
     return name or "Unknown"
 
 
+def _get_mounted_drives() -> dict[str, str]:
+    """Read /proc/mounts to find actual Windows drive mounts (drvfs/9p)."""
+    mounted = {}
+    try:
+        with open("/proc/mounts") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 3 and parts[1].startswith("/mnt/") and len(parts[1]) == 6:
+                    # e.g. "C:\ /mnt/c 9p ..." or "E:\ /mnt/e drvfs ..."
+                    mount_point = parts[1]
+                    fs_type = parts[2]
+                    if fs_type in ("9p", "drvfs", "vfat", "exfat", "fuseblk"):
+                        letter = mount_point[-1]
+                        mounted[letter] = fs_type
+    except OSError:
+        pass
+    return mounted
+
+
 def detect_devices() -> list[dict]:
     """Scan /mnt/ drive letters for mounted volumes. Categorizes as system vs removable."""
+    mounted_drives = _get_mounted_drives()
     candidates = []
     for letter in "cdefghijklmnopqrstuvwxyz":
         path = f"/mnt/{letter}"
+        if letter not in mounted_drives:
+            continue
         if not os.path.isdir(path):
             continue
         try:
-            # Check if the mount point has any content (empty = not mounted)
             contents = os.listdir(path)
-            if not contents:
-                continue
 
             usage = shutil.disk_usage(path)
-            # Skip if we can't read usage
             if usage.total == 0:
                 continue
 

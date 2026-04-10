@@ -1,0 +1,22 @@
+<div class="album-grid">
+{% for playlist in playlists %}
+<div class="album-card"
+     hx-get="/api/music/playlist/{{ playlist.provider }}/{{ playlist.source_id }}"
+     hx-target="#music-detail"
+     hx-swap="innerHTML"
+     onclick="document.getElementById('music-detail-modal').showModal()">
+    <div class="vinyl-wrap">
+        <div class="vinyl-disc"></div>
+        <img src="{{ playlist.image_url or '/static/img/placeholder.svg' }}" alt="{{ playlist.name }}"
+             loading="lazy">
+    </div>
+    <h4>{{ playlist.name }}</h4>
+    <p>{{ playlist.owner }}{% if playlist.total_tracks %} &middot; {{ playlist.total_tracks }} tracks{% endif %}</p>
+    <span class="source-badge">{{ playlist.provider }}</span>
+</div>
+{% endfor %}
+</div>
+
+{% if not playlists %}
+<p style="color: var(--text-muted);">No playlists found.</p>
+{% endif %}

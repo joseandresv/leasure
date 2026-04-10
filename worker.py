@@ -18,11 +18,36 @@ class DownloadWorker:
         self._tasks: list[asyncio.Task] = []
 
     async def start(self):
+        # Recover orphaned tracks from previous crash/restart
+        await self._recover_orphaned()
+
         self._tasks = [
             asyncio.create_task(self._worker(i))
             for i in range(self.max_concurrent)
         ]
         logger.info("Download worker started with %d concurrent slots", self.max_concurrent)
+
+    async def _recover_orphaned(self):
+        """Re-queue tracks stuck in 'downloading' or 'pending' from a previous run."""
+        async with async_session() as session:
+            # Reset 'downloading' back to 'pending' (interrupted mid-download)
+            result = await session.execute(
+                select(Track).where(Track.status == "downloading")
+            )
+            for track in result.scalars().all():
+                track.status = "pending"
+                logger.info("Reset orphaned track %d (%s) from downloading to pending", track.id, track.title)
+            await session.commit()
+
+            # Re-enqueue all pending tracks
+            result = await session.execute(
+                select(Track).where(Track.status == "pending")
+            )
+            pending = result.scalars().all()
+            if pending:
+                logger.info("Re-queuing %d orphaned tracks", len(pending))
+                for track in pending:
+                    await self.queue.put(track.id)
 
     async def stop(self):
         for task in self._tasks:

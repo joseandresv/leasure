@@ -1,0 +1,48 @@
+{% from "macros/components.html" import format_selector, badge, duration %}
+
+{{ format_selector('music') }}
+
+{% for track in tracks %}
+<div class="track-row" id="track-{{ track.id }}">
+    <span class="track-num">{{ loop.index }}</span>
+    {% if show_art and track.image_url %}
+    <img src="{{ track.image_url }}" class="track-art" loading="lazy" alt="">
+    {% endif %}
+    <div class="track-info">
+        <div class="track-title">{{ track.name }}</div>
+        <div class="track-artist">{{ track.artist }}{% if show_album and track.album %} &middot; {{ track.album }}{% endif %}</div>
+    </div>
+    <span class="track-duration">{{ duration(track.duration_ms) }}</span>
+    {% if track.download_status == 'done' %}
+    {{ badge('done') }}
+    {% elif track.download_status in ['pending', 'downloading'] %}
+    {{ badge(track.download_status) }}
+    {% elif track.download_status == 'error' %}
+    {{ badge('error') }}
+    {% else %}
+    <button class="outline dl-btn"
+            hx-post="/api/music/download/track"
+            hx-vals='{{ {
+                "title": track.name,
+                "artist": track.artist,
+                "album": track.album | default("", true),
+                "track_number": track.track_number | default(0, true),
+                "duration_ms": track.duration_ms | default(0, true),
+                "image_url": track.image_url | default("", true),
+                "spotify_uri": track.sources[0].uri | default("", true) if track.sources[0].provider == "spotify" else "",
+                "spotify_artist_id": track.sources[0].artist_id | default("", true) if track.sources[0].provider == "spotify" else "",
+                "youtube_id": track.sources[0].id | default("", true) if track.sources[0].provider == "youtube" else ""
+            } | tojson }}'
+            hx-include="#dl-format-music"
+            hx-target="this"
+            hx-swap="outerHTML"
+            hx-indicator="this">
+        Download
+    </button>
+    {% endif %}
+</div>
+{% endfor %}
+
+{% if not tracks %}
+<p style="color: var(--text-muted);">No tracks found.</p>
+{% endif %}

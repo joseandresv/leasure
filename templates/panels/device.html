@@ -1,0 +1,91 @@
+<h2>device sync</h2>
+<p style="color: var(--text-secondary); margin-bottom: var(--space-md);">Sync music to your HIFI WALKER H2</p>
+
+<div class="grid">
+    <article>
+        <header>
+            Detected Drives
+            <button class="outline"
+                    hx-get="/api/device/detect/html" hx-target="#device-list" hx-swap="innerHTML">
+                Scan
+            </button>
+        </header>
+        <div hx-get="/api/device/detect/html" hx-trigger="load" hx-swap="innerHTML" id="device-list">
+            <p style="color: var(--text-muted);">Scanning for devices...</p>
+        </div>
+    </article>
+
+    <article>
+        <header>Mount Drive</header>
+        <p style="color: var(--text-secondary); margin-bottom: var(--space-sm);">WSL2 doesn't auto-mount removable drives. Select a drive letter to mount.</p>
+        <div style="display: flex; gap: var(--space-sm); align-items: flex-end;">
+            <div style="flex: 1;">
+                <label for="mount-letter">Drive Letter</label>
+                <select id="mount-letter" name="letter">
+                    <option value="d">D:</option>
+                    <option value="e" selected>E:</option>
+                    <option value="f">F:</option>
+                    <option value="g">G:</option>
+                    <option value="h">H:</option>
+                    <option value="i">I:</option>
+                </select>
+            </div>
+            <button hx-post="/api/device/mount"
+                    hx-include="#mount-letter"
+                    hx-target="#mount-result"
+                    hx-swap="innerHTML">
+                Mount
+            </button>
+        </div>
+        <div id="mount-result" style="margin-top: var(--space-sm);"></div>
+    </article>
+</div>
+
+<div class="grid">
+    <article>
+        <header>Library Stats</header>
+        <div hx-get="/api/library/stats/html" hx-trigger="load" hx-swap="innerHTML">
+            <p style="color: var(--text-muted);">Loading...</p>
+        </div>
+    </article>
+</div>
+
+<article>
+    <header>Sync to Device</header>
+    <form onsubmit="startSync(event)">
+        <div class="grid">
+            <div>
+                <label for="device-path">Target Drive</label>
+                <input type="text" name="device_path" id="device-path" placeholder="/mnt/e" required
+                       style="font-family: var(--font-mono);">
+            </div>
+            <fieldset>
+                <legend>What to sync</legend>
+                <label><input type="radio" name="scope" value="all" checked> All downloaded tracks</label>
+                <label><input type="radio" name="scope" value="new"> Only new (not yet synced)</label>
+            </fieldset>
+        </div>
+        <button type="submit" id="sync-btn" class="sync-btn-hero">SYNC TO DEVICE</button>
+    </form>
+    <div id="sync-status"></div>
+</article>
+
+<article>
+    <header>Sync Preview</header>
+    <div id="sync-diff">
+        <p><small style="color: var(--text-muted);">Select a drive to see what will be synced</small></p>
+    </div>
+</article>
+
+<article>
+    <header>
+        Music on Device
+        <button class="outline"
+                onclick="var p=document.getElementById('device-path').value; if(p) htmx.ajax('GET','/api/device/files/html?device_path='+encodeURIComponent(p),'#device-files')">
+            Refresh
+        </button>
+    </header>
+    <div id="device-files">
+        <p><small style="color: var(--text-muted);">Select a drive above to browse music on device</small></p>
+    </div>
+</article>

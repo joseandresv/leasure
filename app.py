@@ -35,14 +35,15 @@ async def lifespan(app: FastAPI):
     logger.info("Leasure shutdown complete")
 
 
-app = FastAPI(title="Leasure", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Leasure", version="0.2.0", lifespan=lifespan)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
 # Register routers
-from routers import device, downloads, library, spotify, youtube  # noqa: E402
+from routers import device, downloads, library, music, spotify, youtube  # noqa: E402
 
+app.include_router(music.router, prefix="/api/music", tags=["music"])
 app.include_router(spotify.router, prefix="/api/spotify", tags=["spotify"])
 app.include_router(youtube.router, prefix="/api/youtube", tags=["youtube"])
 app.include_router(downloads.router, prefix="/api/downloads", tags=["downloads"])
@@ -50,7 +51,7 @@ app.include_router(library.router, prefix="/api/library", tags=["library"])
 app.include_router(device.router, prefix="/api/device", tags=["device"])
 
 
-# Page routes
+# API endpoints used by the SPA
 from fastapi import Depends, Request  # noqa: E402
 from fastapi.responses import HTMLResponse  # noqa: E402
 from sqlalchemy import func, select  # noqa: E402
@@ -117,34 +118,23 @@ async def home_carousel(session: AsyncSession = Depends(get_session)):
     return HTMLResponse(html)
 
 
+# Single page route — the SPA shell
 @app.get("/")
 async def index(request: Request):
     return templates.TemplateResponse(request=request, name="index.html")
 
 
+# Redirect old page routes to root (SPA handles navigation)
+from fastapi.responses import RedirectResponse  # noqa: E402
+
+
 @app.get("/spotify")
-async def spotify_page(request: Request):
-    return templates.TemplateResponse(request=request, name="spotify.html")
-
-
 @app.get("/youtube")
-async def youtube_page(request: Request):
-    return templates.TemplateResponse(request=request, name="youtube.html")
-
-
 @app.get("/downloads")
-async def downloads_page(request: Request):
-    return templates.TemplateResponse(request=request, name="downloads.html")
-
-
 @app.get("/library")
-async def library_page(request: Request):
-    return templates.TemplateResponse(request=request, name="library.html")
-
-
 @app.get("/device")
-async def device_page(request: Request):
-    return templates.TemplateResponse(request=request, name="device.html")
+async def redirect_to_spa():
+    return RedirectResponse("/")
 
 
 def main():

@@ -1,0 +1,92 @@
+{% from "macros/components.html" import format_selector, badge, duration %}
+
+{% if results.albums %}
+<h2>albums</h2>
+<div class="album-grid">
+{% for album in results.albums %}
+<div class="album-card"
+     {% if album.sources[0].provider in ['spotify', 'youtube'] %}
+     hx-get="/api/music/album/{{ album.sources[0].provider }}/{{ album.sources[0].id }}"
+     hx-target="#music-detail"
+     hx-swap="innerHTML"
+     onclick="document.getElementById('music-detail-modal').showModal()"
+     {% endif %}>
+    <div class="vinyl-wrap">
+        <div class="vinyl-disc"></div>
+        <img src="{{ album.image_url or '/static/img/placeholder.svg' }}" alt="{{ album.name }}"
+             loading="lazy" data-vibrant>
+    </div>
+    <h4>{{ album.name }}</h4>
+    <p>{{ album.artist }}{% if album.year %} &middot; {{ album.year }}{% endif %}</p>
+    {% for src in album.sources %}
+    <span class="source-badge">{{ src.provider }}</span>
+    {% endfor %}
+</div>
+{% endfor %}
+</div>
+{% endif %}
+
+{% if results.tracks %}
+<h2>tracks</h2>
+{{ format_selector('search') }}
+{% for track in results.tracks %}
+<div class="track-row">
+    <span class="track-num">{{ loop.index }}</span>
+    {% if track.image_url %}
+    <img src="{{ track.image_url }}" class="track-art" loading="lazy" alt="">
+    {% endif %}
+    <div class="track-info">
+        <div class="track-title">{{ track.name }}</div>
+        <div class="track-artist">{{ track.artist }}{% if track.album %} &middot; {{ track.album }}{% endif %}</div>
+    </div>
+    <span class="track-duration">{{ duration(track.duration_ms) }}</span>
+    {% if track.download_status == 'done' %}
+    {{ badge('done') }}
+    {% elif track.download_status in ['pending', 'downloading'] %}
+    {{ badge(track.download_status) }}
+    {% else %}
+    {% set src = track.sources[0] if track.sources else {} %}
+    <button class="outline dl-btn"
+            hx-post="/api/music/download/track"
+            hx-vals='{{ {
+                "title": track.name,
+                "artist": track.artist,
+                "album": track.album | default("", true),
+                "track_number": track.track_number | default(0, true),
+                "duration_ms": track.duration_ms | default(0, true),
+                "image_url": track.image_url | default("", true),
+                "spotify_uri": src.uri | default("", true) if src.provider | default("") == "spotify" else "",
+                "spotify_artist_id": src.artist_id | default("", true) if src.provider | default("") == "spotify" else "",
+                "youtube_id": src.id | default("", true) if src.provider | default("") == "youtube" else ""
+            } | tojson }}'
+            hx-include="#dl-format-search"
+            hx-target="this"
+            hx-swap="outerHTML"
+            hx-indicator="this">
+        Download
+    </button>
+    {% endif %}
+</div>
+{% endfor %}
+{% endif %}
+
+{% if results.artists %}
+<h2>artists</h2>
+<div class="album-grid">
+{% for artist in results.artists %}
+<div class="album-card">
+    <div class="vinyl-wrap">
+        <div class="vinyl-disc"></div>
+        <img src="{{ artist.image_url or '/static/img/placeholder.svg' }}" alt="{{ artist.name }}"
+             loading="lazy">
+    </div>
+    <h4>{{ artist.name }}</h4>
+    {% if artist.genres %}<p>{{ artist.genres[:3] | join(', ') }}</p>{% endif %}
+</div>
+{% endfor %}
+</div>
+{% endif %}
+
+{% if not results.albums and not results.tracks and not results.artists %}
+<p style="color: var(--text-muted);">No results found for "{{ query }}"</p>
+{% endif %}

@@ -1,0 +1,28 @@
+{% from "macros/components.html" import format_selector %}
+
+{{ format_selector('music') }}
+
+<div class="album-grid">
+{% for album in albums %}
+<div class="album-card"
+     hx-get="/api/music/album/{{ album.sources[0].provider }}/{{ album.sources[0].id }}"
+     hx-target="#music-detail"
+     hx-swap="innerHTML"
+     onclick="document.getElementById('music-detail-modal').showModal()">
+    <div class="vinyl-wrap">
+        <div class="vinyl-disc"></div>
+        <img src="{{ album.image_url or '/static/img/placeholder.svg' }}" alt="{{ album.name }}"
+             loading="lazy" data-vibrant>
+    </div>
+    <h4>{{ album.name }}</h4>
+    <p>{{ album.artist }}{% if album.year %} &middot; {{ album.year }}{% endif %}{% if album.total_tracks %} &middot; {{ album.total_tracks }} tracks{% endif %}</p>
+    {% if album.downloaded_count is defined and album.downloaded_count > 0 %}
+    <span class="badge badge-done">{{ album.downloaded_count }}/{{ album.total_tracks }}</span>
+    {% endif %}
+</div>
+{% endfor %}
+</div>
+
+{% if not albums %}
+<p style="color: var(--text-muted);">No albums found. Connect Spotify or YouTube Music to browse your library.</p>
+{% endif %}

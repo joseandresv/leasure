@@ -1,0 +1,26 @@
+<h2>now playing</h2>
+<div hx-get="/api/downloads/queue/html" hx-trigger="load, every 3s" hx-swap="innerHTML">
+    <i style="color: var(--text-muted);">no active downloads</i>
+</div>
+
+<h2>collection</h2>
+<div hx-get="/api/home/carousel" hx-trigger="load" hx-swap="innerHTML">
+    <i style="color: var(--text-muted);">loading...</i>
+</div>
+
+<h2>connections</h2>
+<div class="grid-2">
+    <div class="metal-panel">
+        <b>spotify</b><br>
+        <span hx-get="/api/spotify/status/html" hx-trigger="load" hx-swap="innerHTML">checking...</span>
+    </div>
+    <div class="metal-panel">
+        <b>youtube music</b><br>
+        <span hx-get="/api/youtube/status/html" hx-trigger="load" hx-swap="innerHTML">checking...</span>
+    </div>
+</div>
+
+<h2>recent downloads</h2>
+<div hx-get="/api/downloads/history/html" hx-trigger="load" hx-swap="innerHTML">
+    <i style="color: var(--text-muted);">loading...</i>
+</div>

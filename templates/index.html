@@ -1,32 +1,79 @@
-{% extends "base.html" %}
-{% block title %}leasure{% endblock %}
-{% block content %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="dark">
+    <title>leasure — mp3 sync station</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/theme.css">
 
-<h2>now playing</h2>
-<div hx-get="/api/downloads/queue/html" hx-trigger="load, every 3s" hx-swap="innerHTML">
-    <i style="color: var(--text-muted);">no active downloads</i>
-</div>
+    <!-- Three.js (WebGL + CSS3D) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://unpkg.com/three@0.128.0/examples/js/renderers/CSS3DRenderer.js"></script>
 
-<h2>collection</h2>
-<div hx-get="/api/home/carousel" hx-trigger="load" hx-swap="innerHTML">
-    <i style="color: var(--text-muted);">loading...</i>
-</div>
+    <!-- HTMX -->
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
 
-<h2>connections</h2>
-<div class="grid-2">
-    <div class="glass-panel">
-        <b>spotify</b><br>
-        <span hx-get="/api/spotify/status/html" hx-trigger="load" hx-swap="innerHTML">checking...</span>
+    <!-- Alpine.js -->
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+
+    <!-- Vibrant.js (color extraction) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/vibrant.js/1.0.0/Vibrant.min.js" defer></script>
+
+    <!-- Sigma.js + graphology (genre graph) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/graphology/0.25.4/graphology.umd.min.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/graphology-layout-forceatlas2@0.10.1/dist/graphology-layout-forceatlas2.min.js" defer></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sigma.js/2.4.0/sigma.min.js" defer></script>
+</head>
+<body>
+    <!-- 3D Scene Container -->
+    <div id="scene-container">
+        <canvas id="device-canvas"></canvas>
     </div>
-    <div class="glass-panel">
-        <b>youtube music</b><br>
-        <span hx-get="/api/youtube/status/html" hx-trigger="load" hx-swap="innerHTML">checking...</span>
+
+    <!-- Floating Navigation -->
+    <nav id="nav-buttons">
+        <button data-panel="home" class="nav-sphere-btn active" title="Home">&#8962;</button>
+        <button data-panel="music" class="nav-sphere-btn" title="Music">&#9835;</button>
+        <button data-panel="library" class="nav-sphere-btn" title="Library">&#9776;</button>
+        <button data-panel="downloads" class="nav-sphere-btn" title="Downloads">&#8595;</button>
+        <button data-panel="device" class="nav-sphere-btn" title="Device">&#9167;</button>
+    </nav>
+
+    <!-- Panel Templates (cloned into 3D scene by scene.js) -->
+    <template id="tpl-home">{% include "panels/home.html" %}</template>
+    <template id="tpl-music">{% include "panels/music.html" %}</template>
+    <template id="tpl-library">{% include "panels/library.html" %}</template>
+    <template id="tpl-downloads">{% include "panels/downloads.html" %}</template>
+    <template id="tpl-device">{% include "panels/device.html" %}</template>
+
+    <!-- Status Bar (fixed bottom, LED display) -->
+    <div id="status-bar"
+         hx-get="/api/status/bar" hx-trigger="load, every 5s" hx-swap="innerHTML">
+        loading...
     </div>
-</div>
 
-<h2>recent downloads</h2>
-<div hx-get="/api/downloads/history/html" hx-trigger="load" hx-swap="innerHTML">
-    <i style="color: var(--text-muted);">loading...</i>
-</div>
+    <!-- Footer -->
+    <div class="site-footer">
+        leasure v0.2 &mdash; mp3 sync station &mdash;
+        <span hx-get="/api/library/stats" hx-trigger="load, every 10s" hx-swap="innerHTML" style="display:inline">...</span>
+    </div>
 
-{% endblock %}
+    <!-- Toast Notifications (Alpine.js) -->
+    <div class="toast-container"
+         x-data
+         x-show="$store.toast && $store.toast.items.length > 0">
+        <template x-for="t in ($store.toast ? $store.toast.items : [])" :key="t.id">
+            <div class="toast-item" :class="t.type" x-text="t.message"
+                 @click="$store.toast.remove(t.id)"></div>
+        </template>
+    </div>
+
+    <!-- Scripts -->
+    <script src="/static/js/leasure.js"></script>
+    <script src="/static/js/scene.js"></script>
+</body>
+</html>

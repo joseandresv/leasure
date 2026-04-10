@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +27,62 @@ def _is_accessible(path: Path) -> bool:
         return path.is_dir()
     except OSError:
         return False
+
+
+@router.post("/mount")
+async def mount_drive(letter: str = Form(...)):
+    """Mount a Windows drive letter in WSL2 via drvfs."""
+    import re
+    import subprocess
+
+    # Validate: single letter a-z
+    letter = letter.strip().lower()
+    if not re.match(r'^[a-z]$', letter):
+        return HTMLResponse(f'<p style="color:var(--color-error);">Invalid drive letter: {letter}</p>')
+
+    mount_path = f"/mnt/{letter}"
+
+    # Check if already mounted
+    try:
+        with open("/proc/mounts") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 2 and parts[1] == mount_path:
+                    return HTMLResponse(f'<p style="color:var(--color-success);">{letter.upper()}: already mounted at {mount_path}</p>')
+    except OSError:
+        pass
+
+    # Create mount point if needed
+    try:
+        os.makedirs(mount_path, exist_ok=True)
+    except OSError:
+        pass
+
+    # Try to mount via drvfs
+    drive_spec = f"{letter.upper()}:"
+    try:
+        result = subprocess.run(
+            ["sudo", "mount", "-t", "drvfs", drive_spec, mount_path],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            return HTMLResponse(
+                f'<p style="color:var(--color-success);">{letter.upper()}: mounted at {mount_path}</p>'
+                f'<script>setTimeout(function(){{ htmx.ajax("GET","/api/device/detect/html","#device-list") }}, 500)</script>'
+            )
+        else:
+            err = result.stderr.strip() or result.stdout.strip() or "Unknown error"
+            # Common: needs passwordless sudo for mount
+            if "password" in err.lower() or "sudo" in err.lower():
+                return HTMLResponse(
+                    f'<p style="color:var(--color-error);">Sudo password required. Run this in your terminal:</p>'
+                    f'<code style="display:block;margin-top:0.3rem;font-size:0.85em;">sudo mount -t drvfs {drive_spec} {mount_path}</code>'
+                )
+            return HTMLResponse(f'<p style="color:var(--color-error);">Mount failed: {err[:200]}</p>')
+    except subprocess.TimeoutExpired:
+        return HTMLResponse(f'<p style="color:var(--color-error);">Mount timed out — drive may not be connected</p>')
+    except Exception as e:
+        return HTMLResponse(f'<p style="color:var(--color-error);">Error: {str(e)[:200]}</p>')
 
 
 @router.get("/detect")

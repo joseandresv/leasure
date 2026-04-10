@@ -108,8 +108,11 @@
      hx-target="#{{ modal_id }}-detail"
      hx-swap="innerHTML"
      onclick="document.getElementById('{{ modal_id }}').showModal()">
-    <img src="{{ item.image_url or '/static/img/placeholder.svg' }}" alt="{{ item.name }}"
-         loading="lazy" data-vibrant>
+    <div class="vinyl-wrap">
+        <div class="vinyl-disc"></div>
+        <img src="{{ item.image_url or '/static/img/placeholder.svg' }}" alt="{{ item.name }}"
+             loading="lazy" data-vibrant>
+    </div>
     <h4>{{ item.name }}</h4>
     <p>{{ item.artist | default(item.owner | default(''), true) }}{% if show_year and item.year %} &middot; {{ item.year }}{% endif %}{% if item.total_tracks %} &middot; {{ item.total_tracks }} tracks{% endif %}{% if item.count %} &middot; {{ item.count }} tracks{% endif %}</p>
     {% if item.downloaded_count is defined and item.downloaded_count > 0 %}

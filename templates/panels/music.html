@@ -1,0 +1,46 @@
+<div x-data="{ tab: 'recent' }">
+    <h2>music</h2>
+
+    <!-- Search bar -->
+    <div class="search-bar">
+        <input type="search" name="q" placeholder="search all music..."
+               hx-get="/api/music/search"
+               hx-trigger="keyup changed delay:400ms"
+               hx-target="#music-results"
+               hx-swap="innerHTML">
+    </div>
+
+    <!-- Category tabs -->
+    <div class="tab-nav">
+        <button @click="tab='recent'" :class="tab==='recent' && 'tab-active'"
+                hx-get="/api/music/recent" hx-target="#music-results" hx-swap="innerHTML">
+            Recently Listened
+        </button>
+        <button @click="tab='albums'" :class="tab==='albums' && 'tab-active'"
+                hx-get="/api/music/albums" hx-target="#music-results" hx-swap="innerHTML">
+            Albums
+        </button>
+        <button @click="tab='playlists'" :class="tab==='playlists' && 'tab-active'"
+                hx-get="/api/music/playlists" hx-target="#music-results" hx-swap="innerHTML">
+            Playlists
+        </button>
+        <button @click="tab='artists'" :class="tab==='artists' && 'tab-active'"
+                hx-get="/api/music/artists" hx-target="#music-results" hx-swap="innerHTML">
+            Artists
+        </button>
+    </div>
+
+    <!-- Results area -->
+    <div id="music-results" hx-get="/api/music/recent" hx-trigger="load" hx-swap="innerHTML">
+        <i style="color: var(--text-muted);">loading...</i>
+    </div>
+
+    <!-- Detail modal -->
+    <dialog id="music-detail-modal">
+        <header>
+            <span>details</span>
+            <button onclick="this.closest('dialog').close()">&times;</button>
+        </header>
+        <div id="music-detail" class="modal-body"></div>
+    </dialog>
+</div>

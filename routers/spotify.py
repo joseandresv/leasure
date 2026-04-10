@@ -155,7 +155,7 @@ async def auth():
 @router.get("/callback")
 async def callback(code: str):
     sp.handle_callback(code)
-    return RedirectResponse("/spotify")
+    return RedirectResponse("/")
 
 
 @router.get("/albums")

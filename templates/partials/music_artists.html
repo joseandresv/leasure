@@ -1,0 +1,18 @@
+<div class="album-grid">
+{% for artist in artists %}
+<div class="album-card">
+    <div class="vinyl-wrap">
+        <div class="vinyl-disc"></div>
+        <img src="{{ artist.image_url or '/static/img/placeholder.svg' }}" alt="{{ artist.name }}"
+             loading="lazy">
+    </div>
+    <h4>{{ artist.name }}</h4>
+    <p>{{ artist.album_count }} album{{ 's' if artist.album_count != 1 else '' }}
+       &middot; {{ artist.sources | join(', ') }}</p>
+</div>
+{% endfor %}
+</div>
+
+{% if not artists %}
+<p style="color: var(--text-muted);">No artists found.</p>
+{% endif %}
