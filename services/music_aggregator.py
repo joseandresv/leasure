@@ -1,8 +1,8 @@
 """Unified music aggregator — merges Spotify + YouTube Music libraries."""
 
-import asyncio
 import logging
 from collections import defaultdict
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,13 +14,63 @@ from services import youtube_client as yt
 logger = logging.getLogger(__name__)
 
 
+def _parse_spotify_ts(played_at: str) -> float:
+    """Parse a Spotify ISO-8601 played_at string into a unix timestamp."""
+    if not played_at:
+        return 0.0
+    try:
+        # Spotify uses "2026-04-11T22:18:32.488Z"
+        dt = datetime.fromisoformat(played_at.replace("Z", "+00:00"))
+        return dt.timestamp()
+    except Exception:
+        return 0.0
+
+
+def _ytmusic_bucket_ts(played: str, position: int) -> float:
+    """Convert a YouTube Music 'played' bucket label + position to an approximate unix timestamp.
+
+    YT Music history groups items coarsely ("Today", "Yesterday", "This week", etc.).
+    Within a bucket we use the list position as a tiebreaker (earlier position = more recent).
+    """
+    now = datetime.now(timezone.utc).timestamp()
+    day = 86400
+    bucket = (played or "").strip().lower()
+
+    if bucket in ("today", ""):
+        base = now
+    elif bucket == "yesterday":
+        base = now - day
+    elif bucket in ("this week", "last week"):
+        base = now - 3 * day
+    elif bucket == "this month":
+        base = now - 14 * day
+    else:
+        # Try to parse an actual date like "Nov 24, 2023"
+        for fmt in ("%b %d, %Y", "%B %d, %Y", "%Y-%m-%d"):
+            try:
+                dt = datetime.strptime(bucket, fmt).replace(tzinfo=timezone.utc)
+                base = dt.timestamp()
+                break
+            except ValueError:
+                continue
+        else:
+            base = now - 30 * day  # unknown — treat as old
+
+    # Subtract a tiny offset for position so list order is preserved within bucket
+    return base - position * 0.001
+
+
 def _normalize_key(title: str, artist: str) -> str:
     """Create a dedup key from title + artist."""
     return f"{title.strip().lower()}|{artist.strip().lower().split(',')[0]}"
 
 
 def _merge_sources(items: list[dict], key_fn) -> list[dict]:
-    """Deduplicate items by key, merging their sources lists."""
+    """Deduplicate items by key, merging their sources lists.
+
+    If items carry a `_ts` field (recency timestamp), the merged entry keeps
+    the maximum timestamp across all duplicates so the most-recent play wins.
+    """
     seen = {}
     for item in items:
         key = key_fn(item)
@@ -32,6 +82,9 @@ def _merge_sources(items: list[dict], key_fn) -> list[dict]:
             # Prefer higher-quality image
             if item.get("image_url") and not existing.get("image_url"):
                 existing["image_url"] = item["image_url"]
+            # Keep the most recent timestamp across duplicates
+            if "_ts" in item and item["_ts"] > existing.get("_ts", 0):
+                existing["_ts"] = item["_ts"]
         else:
             seen[key] = item
     return list(seen.values())
@@ -49,7 +102,7 @@ async def enrich_with_download_status(tracks: list[dict], session: AsyncSession)
                 if existing:
                     status = existing.status
                     break
-            elif src["provider"] == "youtube" and src.get("id"):
+            elif src["provider"] in ("youtube", "youtube music") and src.get("id"):
                 stmt = select(Track).where(Track.youtube_id == src["id"])
                 result = await session.execute(stmt)
                 existing = result.scalar_one_or_none()
@@ -95,13 +148,38 @@ def get_unified_albums() -> list[dict]:
 
 
 def get_unified_recent(limit: int = 50) -> list[dict]:
-    """Merge Spotify liked songs + YouTube liked songs (most recent)."""
-    tracks = []
+    """Merge Spotify recently played + YouTube Music history + YouTube watch history,
+    sorted by actual recency (most recent first).
 
-    # Spotify liked
-    sp_data = sp.get_liked_songs(limit=limit, offset=0)
-    if sp_data:
-        for t in sp_data.get("tracks", []):
+    Each track gets a `_ts` recency timestamp:
+    - Spotify: real ISO `played_at` timestamp
+    - YT Music: approximate timestamp from the 'played' bucket ("Today"/"Yesterday"/date)
+    - Plain YT: position-based synthetic timestamp (list order is recency order)
+    """
+    tracks = []
+    now = datetime.now(timezone.utc).timestamp()
+
+    # Spotify currently playing — always appears at the very top
+    sp_now = sp.get_currently_playing()
+    if sp_now:
+        tracks.append({
+            "id": f"sp:{sp_now['id']}",
+            "name": sp_now["name"],
+            "artist": sp_now["artist"],
+            "album": sp_now.get("album", ""),
+            "image_url": sp_now.get("album_image_url"),
+            "duration_ms": sp_now.get("duration_ms", 0),
+            "track_number": sp_now.get("track_number", 0),
+            "sources": [{"provider": "spotify", "id": sp_now["id"], "uri": sp_now.get("uri", ""),
+                         "artist_id": sp_now.get("artist_id", "")}],
+            # Future-dated so it wins even if plain YT is hammering "now" timestamps
+            "_ts": now + 3600,
+        })
+
+    # Spotify recently played — real timestamps
+    sp_recent = sp.get_recently_played(limit=limit)
+    if sp_recent:
+        for t in sp_recent:
             tracks.append({
                 "id": f"sp:{t['id']}",
                 "name": t["name"],
@@ -112,12 +190,29 @@ def get_unified_recent(limit: int = 50) -> list[dict]:
                 "track_number": t.get("track_number", 0),
                 "sources": [{"provider": "spotify", "id": t["id"], "uri": t.get("uri", ""),
                              "artist_id": t.get("artist_id", "")}],
+                "_ts": _parse_spotify_ts(t.get("played_at", "")),
             })
 
-    # YouTube liked
-    yt_tracks = yt.get_liked_songs(limit=limit)
-    if yt_tracks:
-        for t in yt_tracks:
+    # YouTube Music history — approximate timestamps from the "played" bucket
+    yt_history = yt.get_history(limit=limit)
+    if yt_history:
+        for i, t in enumerate(yt_history):
+            tracks.append({
+                "id": f"ytm:{t['id']}",
+                "name": t["name"],
+                "artist": t["artist"],
+                "album": t.get("album", ""),
+                "image_url": t.get("image_url"),
+                "duration_ms": t.get("duration_ms", 0),
+                "track_number": 0,
+                "sources": [{"provider": "youtube music", "id": t["id"]}],
+                "_ts": _ytmusic_bucket_ts(t.get("played", ""), i),
+            })
+
+    # Plain YouTube watch history — position-based (no real timestamps available)
+    yt_plain = yt.get_youtube_history(limit=limit)
+    if yt_plain:
+        for i, t in enumerate(yt_plain):
             tracks.append({
                 "id": f"yt:{t['id']}",
                 "name": t["name"],
@@ -127,9 +222,13 @@ def get_unified_recent(limit: int = 50) -> list[dict]:
                 "duration_ms": t.get("duration_ms", 0),
                 "track_number": 0,
                 "sources": [{"provider": "youtube", "id": t["id"]}],
+                "_ts": now - i * 60,  # assume ~1 minute between items, list order = recency
             })
 
-    return _merge_sources(tracks, lambda t: _normalize_key(t["name"], t["artist"]))[:limit]
+    merged = _merge_sources(tracks, lambda t: _normalize_key(t["name"], t["artist"]))
+    # Sort by recency timestamp (most recent first)
+    merged.sort(key=lambda t: t.get("_ts", 0), reverse=True)
+    return merged[:limit]
 
 
 def get_unified_playlists() -> list[dict]:

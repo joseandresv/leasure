@@ -9,6 +9,11 @@ class Settings(BaseSettings):
     spotify_client_secret: str = ""
     spotify_redirect_uri: str = "http://127.0.0.1:8642/api/spotify/callback"
 
+    # Google OAuth (for YouTube history)
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    google_redirect_uri: str = "http://127.0.0.1:8642/api/youtube/oauth/callback"
+
     # Lossless services (optional)
     qobuz_email: str = ""
     qobuz_password: str = ""

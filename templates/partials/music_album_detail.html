@@ -21,7 +21,7 @@
             <div class="album-actions">
                 {{ format_selector('detail') }}
                 <button class="outline"
-                        hx-post="/api/music/download/album/{{ provider }}/{{ album_id }}"
+                        hx-post="/api/music/download/{{ 'playlist' if is_playlist else 'album' }}/{{ provider }}/{{ album_id }}"
                         hx-include="#dl-format-detail"
                         hx-target="closest .modal-body"
                         hx-swap="innerHTML"

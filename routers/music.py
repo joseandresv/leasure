@@ -42,7 +42,7 @@ async def recent(request: Request, session: AsyncSession = Depends(get_session))
     return templates.TemplateResponse(
         request=request,
         name="partials/music_tracks.html",
-        context={"tracks": tracks, "show_art": True, "show_album": True},
+        context={"tracks": tracks, "show_art": True, "show_album": True, "show_refresh": True},
     )
 
 
@@ -434,3 +434,109 @@ async def download_album(
         )
 
     return {"album": album_data.get("name", ""), "tracks_queued": len(queued), "details": queued}
+
+
+@router.post("/download/playlist/{provider}/{playlist_id}")
+async def download_playlist(
+    request: Request,
+    provider: str,
+    playlist_id: str,
+    format: str = Form("mp3"),
+    session: AsyncSession = Depends(get_session),
+):
+    """Download all tracks from a playlist using the specified provider."""
+    playlist_data = None
+    tracks_data = []
+
+    if provider == "spotify":
+        data = sp.get_playlist_tracks(playlist_id)
+        if data and not data.get("error"):
+            playlist_data = data.get("playlist", {})
+            tracks_data = data["tracks"]
+    elif provider == "youtube":
+        data = yt.get_playlist_tracks(playlist_id)
+        if data:
+            playlist_data = data.get("playlist", {})
+            tracks_data = data.get("tracks", [])
+
+    if not playlist_data:
+        return HTMLResponse("<p>Playlist not found.</p>") if _is_htmx(request) else {"error": "Playlist not found"}
+
+    quality = "mp3_320"
+    if format == "flac":
+        quality = "flac_lossy"
+    elif format == "flac_lossless":
+        quality = "flac_lossless"
+
+    queued = []
+    for t in tracks_data:
+        existing = None
+        if provider == "spotify" and t.get("uri"):
+            stmt = select(Track).where(Track.spotify_uri == t["uri"])
+            result = await session.execute(stmt)
+            existing = result.scalar_one_or_none()
+        elif provider == "youtube" and t.get("id"):
+            stmt = select(Track).where(Track.youtube_id == t["id"])
+            result = await session.execute(stmt)
+            existing = result.scalar_one_or_none()
+
+        if existing and existing.status in ("done", "pending", "downloading"):
+            queued.append({"track_id": existing.id, "status": existing.status})
+            continue
+
+        track = existing or Track()
+        if provider == "spotify":
+            track.spotify_uri = t.get("uri")
+            track.source = "spotify"
+        elif provider == "youtube":
+            track.youtube_id = t.get("id")
+            track.source = "youtube"
+
+        track.title = t["name"]
+        track.artist = t.get("artist", "")
+        track.album = t.get("album", playlist_data.get("name", ""))
+        track.album_artist = t.get("album_artist", t.get("artist", ""))
+        track.track_number = t.get("track_number") or t.get("index")
+        track.disc_number = t.get("disc_number")
+        track.duration_ms = t.get("duration_ms", 0)
+        track.artwork_url = t.get("image_url") or playlist_data.get("image_url", "")
+        track.format = "flac" if "flac" in format else "mp3"
+        track.quality = quality
+        track.status = "pending"
+        track.error_message = None
+
+        if not existing:
+            session.add(track)
+        await session.commit()
+        await session.refresh(track)
+
+        await download_worker.enqueue(track.id)
+        queued.append({"track_id": track.id, "status": "queued"})
+
+    if _is_htmx(request):
+        tracks_with_status = []
+        for t in tracks_data:
+            dl_status = None
+            if provider == "spotify" and t.get("uri"):
+                stmt = select(Track).where(Track.spotify_uri == t["uri"])
+                result = await session.execute(stmt)
+                ex = result.scalar_one_or_none()
+                dl_status = ex.status if ex else None
+            elif provider == "youtube" and t.get("id"):
+                stmt = select(Track).where(Track.youtube_id == t["id"])
+                result = await session.execute(stmt)
+                ex = result.scalar_one_or_none()
+                dl_status = ex.status if ex else None
+            tracks_with_status.append({
+                **t,
+                "sources": [{"provider": provider, "id": t.get("id", ""), "uri": t.get("uri", "")}],
+                "download_status": dl_status,
+            })
+        return templates.TemplateResponse(
+            request=request,
+            name="partials/music_album_detail.html",
+            context={"album": playlist_data, "tracks": tracks_with_status, "provider": provider,
+                     "album_id": playlist_id, "is_playlist": True},
+        )
+
+    return {"playlist": playlist_data.get("name", ""), "tracks_queued": len(queued), "details": queued}

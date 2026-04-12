@@ -1,12 +1,22 @@
+import hashlib
 import json
 import logging
+import time
 from pathlib import Path
+
+import httpx
 
 from config import settings
 
 logger = logging.getLogger(__name__)
 
 HEADERS_PATH = settings.data_dir / "youtube_headers.json"
+OAUTH_TOKEN_PATH = settings.data_dir / "youtube_oauth.json"
+
+# Google OAuth2 endpoints
+GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+YOUTUBE_OAUTH_SCOPE = "https://www.googleapis.com/auth/youtube"
 
 
 def get_client():
@@ -176,6 +186,236 @@ def get_playlist_tracks(playlist_id: str) -> dict | None:
         }
     except Exception as e:
         logger.error("Failed to get YT playlist tracks: %s", e)
+        return None
+
+
+def get_history(limit: int = 50) -> list[dict] | None:
+    """Fetch recently played tracks from YouTube Music history."""
+    yt = get_client()
+    if not yt:
+        return None
+    try:
+        result = yt.get_history()
+        tracks = []
+        seen = set()
+        for t in result:
+            if not t.get("videoId"):
+                continue
+            # Dedupe repeat plays
+            if t["videoId"] in seen:
+                continue
+            seen.add(t["videoId"])
+            tracks.append({
+                "id": t["videoId"],
+                "name": t["title"],
+                "artist": ", ".join(a["name"] for a in t.get("artists", []) if a.get("name")),
+                "album": t.get("album", {}).get("name") if t.get("album") else None,
+                "duration_ms": _parse_duration(t.get("duration", "")),
+                "image_url": t["thumbnails"][-1]["url"] if t.get("thumbnails") else None,
+                "played": t.get("played", ""),  # Coarse bucket: "Today", "Yesterday", or date
+            })
+            if len(tracks) >= limit:
+                break
+        return tracks
+    except Exception as e:
+        logger.error("Failed to get YT history: %s", e)
+        return None
+
+
+# --- Google OAuth2 for YouTube history ---
+
+def get_youtube_oauth_url() -> str | None:
+    """Generate Google OAuth2 authorization URL."""
+    if not settings.google_client_id:
+        return None
+    from urllib.parse import urlencode
+    params = {
+        "client_id": settings.google_client_id,
+        "redirect_uri": settings.google_redirect_uri,
+        "response_type": "code",
+        "scope": YOUTUBE_OAUTH_SCOPE,
+        "access_type": "offline",
+        "prompt": "consent",
+    }
+    return f"{GOOGLE_AUTH_URL}?{urlencode(params)}"
+
+
+def handle_youtube_oauth_callback(code: str) -> bool:
+    """Exchange auth code for tokens and store them."""
+    try:
+        resp = httpx.post(GOOGLE_TOKEN_URL, data={
+            "code": code,
+            "client_id": settings.google_client_id,
+            "client_secret": settings.google_client_secret,
+            "redirect_uri": settings.google_redirect_uri,
+            "grant_type": "authorization_code",
+        }, timeout=15)
+        resp.raise_for_status()
+        token_data = resp.json()
+        token_data["obtained_at"] = int(time.time())
+        OAUTH_TOKEN_PATH.write_text(json.dumps(token_data, indent=2))
+        logger.info("YouTube OAuth tokens saved")
+        return True
+    except Exception as e:
+        logger.error("YouTube OAuth token exchange failed: %s", e)
+        return False
+
+
+def _get_youtube_access_token() -> str | None:
+    """Get a valid YouTube OAuth access token, refreshing if expired."""
+    if not OAUTH_TOKEN_PATH.exists():
+        return None
+    try:
+        token_data = json.loads(OAUTH_TOKEN_PATH.read_text())
+    except Exception:
+        return None
+
+    # Check if token is expired (with 60s buffer)
+    obtained_at = token_data.get("obtained_at", 0)
+    expires_in = token_data.get("expires_in", 3600)
+    if time.time() > obtained_at + expires_in - 60:
+        # Refresh the token
+        refresh_token = token_data.get("refresh_token")
+        if not refresh_token:
+            logger.warning("YouTube OAuth token expired and no refresh token available")
+            return None
+        try:
+            resp = httpx.post(GOOGLE_TOKEN_URL, data={
+                "refresh_token": refresh_token,
+                "client_id": settings.google_client_id,
+                "client_secret": settings.google_client_secret,
+                "grant_type": "refresh_token",
+            }, timeout=15)
+            resp.raise_for_status()
+            new_data = resp.json()
+            # Preserve refresh_token (Google doesn't always return it on refresh)
+            new_data["refresh_token"] = refresh_token
+            new_data["obtained_at"] = int(time.time())
+            OAUTH_TOKEN_PATH.write_text(json.dumps(new_data, indent=2))
+            logger.info("YouTube OAuth token refreshed")
+            return new_data["access_token"]
+        except Exception as e:
+            logger.error("YouTube OAuth token refresh failed: %s", e)
+            return None
+
+    return token_data.get("access_token")
+
+
+def is_youtube_oauth_connected() -> bool:
+    """Check if YouTube OAuth is set up and has valid tokens."""
+    return _get_youtube_access_token() is not None
+
+
+def get_youtube_history(limit: int = 50) -> list[dict] | None:
+    """Fetch watch history from plain YouTube via InnerTube browse API with OAuth."""
+    access_token = _get_youtube_access_token()
+    if not access_token:
+        return None
+
+    # Use TVHTML5 InnerTube client — accepts OAuth Bearer tokens
+    headers = {
+        "authorization": f"Bearer {access_token}",
+        "content-type": "application/json",
+        "user-agent": "Mozilla/5.0 (PlayStation 4 5.55) AppleWebKit/601.2 (KHTML, like Gecko)",
+        "x-youtube-client-name": "7",
+        "x-youtube-client-version": "7.20260403.09.00",
+    }
+
+    payload = {
+        "context": {
+            "client": {
+                "clientName": "TVHTML5",
+                "clientVersion": "7.20260403.09.00",
+                "hl": "en",
+                "gl": "US",
+            }
+        },
+        "browseId": "FEhistory",
+    }
+
+    try:
+        resp = httpx.post(
+            "https://www.youtube.com/youtubei/v1/browse?prettyPrint=false",
+            headers=headers,
+            json=payload,
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        tracks = []
+        seen = set()
+
+        # Navigate the TVHTML5 InnerTube response structure
+        grid = (
+            data.get("contents", {})
+            .get("tvBrowseRenderer", {})
+            .get("content", {})
+            .get("tvSurfaceContentRenderer", {})
+            .get("content", {})
+            .get("gridRenderer", {})
+        )
+        items = grid.get("items", [])
+
+        for item in items:
+            tile = item.get("tileRenderer", {})
+            if not tile:
+                continue
+
+            # Extract videoId from onSelectCommand (may be nested under commandExecutorCommand)
+            cmd = tile.get("onSelectCommand", {})
+            video_id = cmd.get("watchEndpoint", {}).get("videoId", "")
+            if not video_id:
+                nested = cmd.get("commandExecutorCommand", {}).get("commands", [])
+                for nc in nested:
+                    video_id = nc.get("watchEndpoint", {}).get("videoId", "")
+                    if video_id:
+                        break
+            if not video_id or video_id in seen:
+                continue
+            seen.add(video_id)
+
+            metadata = tile.get("metadata", {}).get("tileMetadataRenderer", {})
+            title = metadata.get("title", {}).get("simpleText", "")
+
+            # Artist is the first line's first text run
+            artist = ""
+            for line in metadata.get("lines", []):
+                line_items = line.get("lineRenderer", {}).get("items", [])
+                for li in line_items:
+                    text_runs = li.get("lineItemRenderer", {}).get("text", {}).get("runs", [])
+                    if text_runs:
+                        artist = text_runs[0].get("text", "")
+                        break
+                if artist:
+                    break
+
+            # Duration lives in a thumbnailOverlayTimeStatusRenderer on the header
+            duration_text = ""
+            header = tile.get("header", {}).get("tileHeaderRenderer", {})
+            for overlay in header.get("thumbnailOverlays", []):
+                ts = overlay.get("thumbnailOverlayTimeStatusRenderer", {})
+                if ts:
+                    duration_text = ts.get("text", {}).get("simpleText", "")
+                    break
+
+            thumbnails = header.get("thumbnail", {}).get("thumbnails", [])
+
+            tracks.append({
+                "id": video_id,
+                "name": title,
+                "artist": artist,
+                "album": None,
+                "duration_ms": _parse_duration(duration_text),
+                "image_url": thumbnails[-1]["url"] if thumbnails else None,
+            })
+            if len(tracks) >= limit:
+                break
+
+        logger.info("Fetched %d tracks from YouTube watch history", len(tracks))
+        return tracks if tracks else None
+    except Exception as e:
+        logger.error("Failed to get YouTube history: %s", e)
         return None
 
 

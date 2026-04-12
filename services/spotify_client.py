@@ -8,7 +8,7 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
-SCOPES = "user-library-read playlist-read-private playlist-read-collaborative user-read-private"
+SCOPES = "user-library-read playlist-read-private playlist-read-collaborative user-read-private user-read-recently-played user-read-currently-playing user-read-playback-state"
 CACHE_PATH = str(settings.data_dir / ".spotify_cache")
 
 
@@ -224,6 +224,68 @@ def _parse_track(t: dict) -> dict:
         "duration_ms": t.get("duration_ms", 0),
         "uri": t.get("uri", ""),
     }
+
+
+def get_currently_playing() -> dict | None:
+    """Fetch the track currently playing on Spotify (if any)."""
+    sp = get_client()
+    if not sp:
+        return None
+    try:
+        result = sp.current_user_playing_track()
+        if not result or not result.get("is_playing"):
+            return None
+        t = result.get("item")
+        if not t or t.get("type") != "track":
+            return None
+        return {
+            "id": t["id"],
+            "name": t["name"],
+            "artist": ", ".join(a["name"] for a in t["artists"]),
+            "artist_id": t["artists"][0]["id"] if t.get("artists") else None,
+            "album": t["album"]["name"] if t.get("album") else None,
+            "album_image_url": t["album"]["images"][0]["url"] if t.get("album", {}).get("images") else None,
+            "track_number": t.get("track_number"),
+            "duration_ms": t["duration_ms"],
+            "progress_ms": result.get("progress_ms", 0),
+            "uri": t["uri"],
+        }
+    except Exception as e:
+        logger.debug("Failed to get currently playing: %s", e)
+        return None
+
+
+def get_recently_played(limit: int = 50) -> list[dict] | None:
+    """Fetch recently played tracks from Spotify (last 50 max)."""
+    sp = get_client()
+    if not sp:
+        return None
+    try:
+        result = sp.current_user_recently_played(limit=min(limit, 50))
+        tracks = []
+        seen = set()
+        for item in result.get("items", []):
+            t = item["track"]
+            # Dedupe — Spotify returns repeat plays
+            if t["id"] in seen:
+                continue
+            seen.add(t["id"])
+            tracks.append({
+                "id": t["id"],
+                "name": t["name"],
+                "artist": ", ".join(a["name"] for a in t["artists"]),
+                "artist_id": t["artists"][0]["id"] if t.get("artists") else None,
+                "album": t["album"]["name"] if t.get("album") else None,
+                "album_image_url": t["album"]["images"][0]["url"] if t.get("album", {}).get("images") else None,
+                "track_number": t.get("track_number"),
+                "duration_ms": t["duration_ms"],
+                "uri": t["uri"],
+                "played_at": item.get("played_at", ""),
+            })
+        return tracks
+    except Exception as e:
+        logger.error("Failed to get recently played: %s", e)
+        return None
 
 
 def get_liked_songs(limit: int = 50, offset: int = 0) -> dict | None:

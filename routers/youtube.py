@@ -1,9 +1,10 @@
 from fastapi import APIRouter, Depends, Form, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from config import settings
 from db import get_session
 from models import Playlist, PlaylistTrack, Track
 from services import youtube_client as yt
@@ -56,6 +57,46 @@ async def setup(headers_raw: str = Form(...)):
     if success:
         return HTMLResponse('<p><mark>Connected!</mark> Reload the page to browse your library.</p>')
     return HTMLResponse('<p style="color: var(--pico-del-color);">Failed to connect. Make sure you copied the full request headers.</p>')
+
+
+@router.get("/oauth/connect")
+async def oauth_connect():
+    """Redirect to Google OAuth2 for YouTube history access."""
+    url = yt.get_youtube_oauth_url()
+    if not url:
+        return HTMLResponse('<p style="color: var(--pico-del-color);">Google OAuth not configured. '
+                            'Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to .env</p>')
+    return RedirectResponse(url)
+
+
+@router.get("/oauth/callback")
+async def oauth_callback(code: str = Query(...)):
+    """Handle Google OAuth2 callback."""
+    success = yt.handle_youtube_oauth_callback(code)
+    if success:
+        return RedirectResponse("/?yt_oauth=ok")
+    return HTMLResponse('<p style="color: var(--pico-del-color);">YouTube OAuth failed. Please try again.</p>')
+
+
+@router.get("/oauth/status")
+async def oauth_status():
+    """Check YouTube OAuth connection status."""
+    connected = yt.is_youtube_oauth_connected()
+    configured = bool(settings.google_client_id)
+    return {"connected": connected, "configured": configured}
+
+
+@router.get("/oauth/status/html")
+async def oauth_status_html():
+    """HTML status for YouTube OAuth (history access)."""
+    if yt.is_youtube_oauth_connected():
+        return HTMLResponse('<p><mark>Connected</mark> to YouTube (history)</p>')
+    if settings.google_client_id:
+        return HTMLResponse(
+            '<p>YouTube history not connected. '
+            '<a href="/api/youtube/oauth/connect">Connect YouTube</a></p>')
+    return HTMLResponse(
+        '<p style="color: var(--text-muted);">YouTube history: add GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET to .env</p>')
 
 
 @router.get("/playlists")

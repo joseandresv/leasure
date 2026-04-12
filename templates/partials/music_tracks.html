@@ -1,6 +1,19 @@
 {% from "macros/components.html" import format_selector, badge, duration %}
 
-{{ format_selector('music') }}
+<div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;">
+    {{ format_selector('music') }}
+    {% if show_refresh %}
+    <button class="outline"
+            hx-get="/api/music/recent"
+            hx-target="#music-results"
+            hx-swap="innerHTML"
+            hx-indicator="this"
+            title="Refresh listening history"
+            style="white-space: nowrap;">
+        &#x21bb; Refresh
+    </button>
+    {% endif %}
+</div>
 
 {% for track in tracks %}
 <div class="track-row" id="track-{{ track.id }}">
@@ -10,7 +23,7 @@
     {% endif %}
     <div class="track-info">
         <div class="track-title">{{ track.name }}</div>
-        <div class="track-artist">{{ track.artist }}{% if show_album and track.album %} &middot; {{ track.album }}{% endif %}</div>
+        <div class="track-artist">{{ track.artist }}{% if show_album and track.album %} &middot; {{ track.album }}{% endif %}{% if show_refresh and track.sources %} <span style="color: var(--text-muted); font-size: 0.75em;">via {{ track.sources[0].provider }}</span>{% endif %}</div>
     </div>
     <span class="track-duration">{{ duration(track.duration_ms) }}</span>
     {% if track.download_status == 'done' %}
@@ -31,7 +44,7 @@
                 "image_url": track.image_url | default("", true),
                 "spotify_uri": track.sources[0].uri | default("", true) if track.sources[0].provider == "spotify" else "",
                 "spotify_artist_id": track.sources[0].artist_id | default("", true) if track.sources[0].provider == "spotify" else "",
-                "youtube_id": track.sources[0].id | default("", true) if track.sources[0].provider == "youtube" else ""
+                "youtube_id": track.sources[0].id | default("", true) if track.sources[0].provider in ["youtube", "youtube music"] else ""
             } | tojson }}'
             hx-include="#dl-format-music"
             hx-target="this"
