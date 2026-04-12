@@ -7,6 +7,11 @@ A local music downloader and library manager built for the **HIFI WALKER H2** po
 - **Spotify library browsing** -- saved albums, playlists, liked songs via Spotify Web API (spotipy)
 - **YouTube Music library browsing** -- playlists, albums, liked songs via ytmusicapi
 - **YouTube Music Premium quality** -- automatic Chrome cookie extraction for higher bitrate downloads via yt-dlp
+- **Unified "Recently Listened"** -- merges true listening history from three sources, sorted by real recency:
+  - Spotify `current_user_recently_played` (precise ISO timestamps) plus the currently-playing track pinned at the top
+  - YouTube Music history via ytmusicapi (`Today`/`Yesterday`/date bucket timestamps)
+  - Plain YouTube watch history via Google OAuth2 + InnerTube `FEhistory` browse on the `TVHTML5` client (the only combo that accepts OAuth Bearer tokens)
+  - Cross-source dedup with max-timestamp merging, per-track `via {provider}` label, and a refresh button
 - **MusicBrainz genre lookup** -- fetches artist genres from MusicBrainz when Spotify's album genre endpoint returns empty (which it usually does)
 - **Synced lyrics** -- fetches time-synced `.lrc` lyrics from lrclib.net and saves them as sidecar files
 - **H2-compatible metadata** -- writes proper ID3v2.4 tags (MP3) and Vorbis comments (FLAC), embeds album art, and creates sidecar `.jpg` and `.lrc` files that the H2 reads natively
@@ -23,6 +28,7 @@ A local music downloader and library manager built for the **HIFI WALKER H2** po
 | Database | SQLite via SQLAlchemy async + aiosqlite |
 | Spotify API | spotipy (OAuth2 PKCE) |
 | YouTube Music API | ytmusicapi (browser cookie auth) |
+| YouTube history API | Google OAuth2 + InnerTube `TVHTML5` client |
 | Audio download | yt-dlp (with optional deno for Premium PO token) |
 | Audio tagging | mutagen (ID3v2.4 for MP3, Vorbis for FLAC) |
 | Artwork processing | Pillow (resize to 500x500 JPEG) |
@@ -77,20 +83,44 @@ cp .env.example .env
 
 ### Configure Spotify
 
-1. Go to https://developer.spotify.com/dashboard
+1. Go to <https://developer.spotify.com/dashboard>
 2. Create a new application
 3. Set the redirect URI to `http://localhost:8642/api/spotify/callback`
 4. Copy the Client ID and Client Secret into your `.env` file:
-   ```
+
+   ```env
    SPOTIFY_CLIENT_ID=your_client_id_here
    SPOTIFY_CLIENT_SECRET=your_client_secret_here
    ```
+
+The Spotify OAuth flow requests the following scopes: `user-library-read`, `playlist-read-private`, `playlist-read-collaborative`, `user-read-private`, `user-read-recently-played`, `user-read-currently-playing`, and `user-read-playback-state`. The last three are required for the Recently Listened feed and the currently-playing pinned track.
 
 ### Configure YouTube Music
 
 YouTube Music authentication is handled automatically via Chrome cookies. As long as you are logged into YouTube Music in Chrome, the app will auto-refresh credentials on each connection check.
 
 Alternatively, you can set up manually through the web UI by pasting browser request headers (instructions are shown on the YouTube Music page).
+
+### Configure YouTube (plain) — optional, for watch-history feed
+
+Plain YouTube watch history requires a Google OAuth2 flow (separate from YouTube Music). This is **optional** — skip this section if you only care about Spotify and YouTube Music history.
+
+1. Go to <https://console.cloud.google.com/apis/credentials>
+2. Create a project (or select an existing one)
+3. Enable the **YouTube Data API v3** under APIs & Services → Library
+4. Create an **OAuth 2.0 Client ID** of type **Web application**
+5. Add `http://127.0.0.1:8642/api/youtube/oauth/callback` as an authorized redirect URI
+6. On the OAuth consent screen, add the `https://www.googleapis.com/auth/youtube` scope (full `youtube`, not just `youtube.readonly` — the broader scope is required for the `FEhistory` InnerTube endpoint)
+7. Copy the credentials into your `.env` file:
+
+   ```env
+   GOOGLE_CLIENT_ID=your_client_id_here.apps.googleusercontent.com
+   GOOGLE_CLIENT_SECRET=your_client_secret_here
+   ```
+
+8. Restart the server and click **Connect YouTube** on the home page to authorize
+
+Tokens are stored in `data/youtube_oauth.json` and auto-refresh using the refresh token on each call.
 
 ## Usage
 
@@ -103,11 +133,14 @@ python app.py
 # or: uvicorn app:app --host 127.0.0.1 --port 8642 --reload
 ```
 
-Open http://127.0.0.1:8642 in your browser.
+Open <http://127.0.0.1:8642> in your browser.
 
 ### Pages
 
-- **Home** (`/`) -- library stats and album art carousel
+- **Home** (`/`) -- library stats, album art carousel, and connection cards for Spotify / YouTube Music / YouTube
+- **Music** (`/music`) -- unified browser across all sources with tabs:
+  - **Recently Listened** -- true listening history merged from Spotify, YouTube Music, and plain YouTube, sorted by recency with a refresh button and per-track `via {provider}` label
+  - **Albums**, **Playlists**, **Artists** -- unified views with cross-source dedup
 - **Spotify** (`/spotify`) -- browse and download from your Spotify library
 - **YouTube Music** (`/youtube`) -- browse and download from your YouTube Music library
 - **Downloads** (`/downloads`) -- monitor download queue and status
@@ -116,10 +149,10 @@ Open http://127.0.0.1:8642 in your browser.
 
 ### Downloading music
 
-1. Navigate to the Spotify or YouTube Music page
-2. Connect your account (Spotify via OAuth, YouTube Music via Chrome cookies)
-3. Browse your albums, playlists, or liked songs
-4. Click download on individual tracks, full albums, or entire playlists
+1. Navigate to the Music, Spotify, or YouTube Music page
+2. Connect your account (Spotify via OAuth, YouTube Music via Chrome cookies, plain YouTube via Google OAuth2 if you want watch-history)
+3. Browse your albums, playlists, or liked songs (or use the Recently Listened tab to grab what you've actually been playing)
+4. Click download on individual tracks, full albums, or entire playlists — both the provider-specific endpoints and the unified `/api/music/download/{album,playlist}/{provider}/{id}` endpoints are wired up
 5. Monitor progress on the Downloads page
 
 ### Syncing to H2
@@ -166,14 +199,15 @@ All filenames are sanitized for FAT32 compatibility (no `\/:*?"<>|` characters, 
 - No credentials are stored in source code; all secrets go in `.env` (excluded from git)
 - Spotify OAuth tokens are cached locally in `data/.spotify_cache`
 - YouTube Music headers are stored locally in `data/youtube_headers.json`
+- YouTube (plain) OAuth tokens are stored locally in `data/youtube_oauth.json` and auto-refresh
 - The server binds to `127.0.0.1` by default (localhost only)
 
 ## Project Structure
 
-```
+```text
 leasure/
   app.py                  # FastAPI app, lifespan, page routes
-  config.py               # Pydantic settings from .env
+  config.py               # Pydantic settings from .env (Spotify + Google OAuth creds)
   db.py                   # SQLAlchemy async engine + session
   models.py               # Track, Playlist, PlaylistTrack, SyncHistory
   worker.py               # Async download queue worker
@@ -181,13 +215,15 @@ leasure/
   .env.example            # Environment template (no secrets)
   routers/
     spotify.py            # Spotify browsing + download endpoints
-    youtube.py            # YouTube Music browsing + download endpoints
+    youtube.py            # YouTube Music browsing + download + Google OAuth2 endpoints
+    music.py              # Unified cross-source browser + Recently Listened feed
     device.py             # Device detection, sync, diff
     downloads.py          # Download queue monitoring
     library.py            # Library browsing
   services/
-    spotify_client.py     # Spotipy wrapper (OAuth, library access)
-    youtube_client.py     # ytmusicapi wrapper (cookie auth, library access)
+    spotify_client.py     # Spotipy wrapper (OAuth, library, recently_played, currently_playing)
+    youtube_client.py     # ytmusicapi + Google OAuth2 + InnerTube TVHTML5 history fetcher
+    music_aggregator.py   # Unified Recently Listened: merges + dedupes + sorts by recency
     downloader.py         # Download dispatcher (routes to engines)
     spotdl_engine.py      # yt-dlp download with YTMusic search + Chrome cookies
     ytdlp_engine.py       # Direct yt-dlp download for YouTube sources
