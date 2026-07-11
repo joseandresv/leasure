@@ -12,14 +12,12 @@ dependencies = [
     "aiosqlite>=0.20",
     "pydantic>=2.4.0",
     "pydantic-settings>=2.7",
-    "spotdl>=4.2",
-    "streamrip>=2.0",
     "spotipy>=2.24",
     "ytmusicapi>=1.9",
-    "bandcamp-downloader",
     "Pillow>=12.1.1",
     "mutagen>=1.47",
     "httpx>=0.28",
+    "yt-dlp>=2025.3",
 ]
 
 [project.scripts]

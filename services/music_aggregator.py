@@ -129,7 +129,7 @@ def _compute_entity_recency(limit: int = 50) -> dict:
     now_ts = time.time()
     cached = _recency_cache.get("data")
     if cached is not None and now_ts - _recency_cache["ts"] < _RECENCY_TTL:
-        logger.info("Recency cache HIT (age %.1fs)", now_ts - _recency_cache["ts"])
+        logger.debug("Recency cache HIT (age %.1fs)", now_ts - _recency_cache["ts"])
         return cached
 
     t0 = time.perf_counter()
@@ -154,19 +154,19 @@ def _compute_entity_recency(limit: int = 50) -> dict:
 
         t_sp_now = time.perf_counter()
         sp_now = f_now.result()
-        logger.info("Spotify currently-playing: %.2fs", time.perf_counter() - t_sp_now)
+        logger.debug("Spotify currently-playing: %.2fs", time.perf_counter() - t_sp_now)
 
         t_sp_recent = time.perf_counter()
         sp_recent = f_sp_recent.result() or []
-        logger.info("Spotify recently-played (%d items): %.2fs", len(sp_recent), time.perf_counter() - t_sp_recent)
+        logger.debug("Spotify recently-played (%d items): %.2fs", len(sp_recent), time.perf_counter() - t_sp_recent)
 
         t_yt_hist = time.perf_counter()
         yt_history = f_yt_history.result() or []
-        logger.info("YT Music history (%d items): %.2fs", len(yt_history), time.perf_counter() - t_yt_hist)
+        logger.debug("YT Music history (%d items): %.2fs", len(yt_history), time.perf_counter() - t_yt_hist)
 
         t_yt_plain = time.perf_counter()
         yt_plain = f_yt_plain.result() or []
-        logger.info("Plain YT history (%d items): %.2fs", len(yt_plain), time.perf_counter() - t_yt_plain)
+        logger.debug("Plain YT history (%d items): %.2fs", len(yt_plain), time.perf_counter() - t_yt_plain)
 
     if sp_now:
         top_ts = now + 3600
@@ -203,7 +203,7 @@ def _compute_entity_recency(limit: int = 50) -> dict:
     }
     _recency_cache["ts"] = now_ts
     _recency_cache["data"] = data
-    logger.info(
+    logger.debug(
         "Recency compute: %d artists, %d albums, %d sp playlists in %.2fs",
         len(artists), len(albums), len(playlists), time.perf_counter() - t0,
     )
@@ -251,7 +251,7 @@ def _compute_yt_playlist_recency(recent_yt_tracks: list[dict], yt_playlists: lis
                 pid, ts = res
                 result[f"yt:{pid}"] = ts
 
-    logger.info(
+    logger.debug(
         "YT playlist overlap: %d playlists scanned, %d matched in %.2fs",
         len(yt_playlists), len(result), time.perf_counter() - t0,
     )
@@ -316,7 +316,7 @@ def get_unified_albums() -> list[dict]:
     for a in merged:
         a["_ts"] = recency.get(_album_key(a.get("artist", ""), a.get("name", "")), 0)
     merged.sort(key=lambda a: (-a.get("_ts", 0), a["name"].lower()))
-    logger.info("get_unified_albums: %d albums in %.2fs", len(merged), time.perf_counter() - t0)
+    logger.debug("get_unified_albums: %d albums in %.2fs", len(merged), time.perf_counter() - t0)
     return merged
 
 
@@ -336,7 +336,7 @@ def get_unified_recent(limit: int = 50, force: bool = False) -> list[dict]:
     if (not force and _recent_cache["data"] is not None
             and _recent_cache["limit"] >= limit
             and now_t - _recent_cache["ts"] < _RECENT_TTL):
-        logger.info("get_unified_recent: cache HIT (age %.1fs)", now_t - _recent_cache["ts"])
+        logger.debug("get_unified_recent: cache HIT (age %.1fs)", now_t - _recent_cache["ts"])
         return _recent_cache["data"][:limit]
 
     t0 = time.perf_counter()
@@ -421,8 +421,8 @@ def get_unified_recent(limit: int = 50, force: bool = False) -> list[dict]:
     merged.sort(key=lambda t: t.get("_ts", 0), reverse=True)
     result = merged[:limit]
     _recent_cache.update({"ts": time.time(), "limit": limit, "data": result})
-    logger.info("get_unified_recent: %d tracks merged, returning %d in %.2fs (cache MISS)",
-                len(merged), len(result), time.perf_counter() - t0)
+    logger.debug("get_unified_recent: %d tracks merged, returning %d in %.2fs (cache MISS)",
+                 len(merged), len(result), time.perf_counter() - t0)
     return result
 
 
@@ -465,7 +465,7 @@ def get_unified_playlists() -> list[dict]:
     for p in playlists:
         p["_ts"] = recency.get(p["id"], 0)
     playlists.sort(key=lambda p: (-p.get("_ts", 0), p["name"].lower()))
-    logger.info("get_unified_playlists: %d playlists in %.2fs", len(playlists), time.perf_counter() - t0)
+    logger.debug("get_unified_playlists: %d playlists in %.2fs", len(playlists), time.perf_counter() - t0)
     return playlists
 
 
@@ -509,5 +509,5 @@ def get_unique_artists() -> list[dict]:
         for k, v in artist_map.items()
     ]
     artists.sort(key=lambda a: (-a.get("_ts", 0), a["name"].lower()))
-    logger.info("get_unique_artists: %d artists in %.2fs", len(artists), time.perf_counter() - t0)
+    logger.debug("get_unique_artists: %d artists in %.2fs", len(artists), time.perf_counter() - t0)
     return artists

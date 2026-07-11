@@ -1,7 +1,10 @@
 import asyncio
 import json
 import logging
+import os
+import re
 import shutil
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -32,9 +35,6 @@ def _is_accessible(path: Path) -> bool:
 @router.post("/mount")
 async def mount_drive(letter: str = Form(...)):
     """Mount a Windows drive letter in WSL2 via drvfs."""
-    import re
-    import subprocess
-
     # Validate: single letter a-z
     letter = letter.strip().lower()
     if not re.match(r'^[a-z]$', letter):

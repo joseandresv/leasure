@@ -85,7 +85,7 @@ cp .env.example .env
 
 1. Go to <https://developer.spotify.com/dashboard>
 2. Create a new application
-3. Set the redirect URI to `http://localhost:8642/api/spotify/callback`
+3. Set the redirect URI to `http://127.0.0.1:8642/api/spotify/callback`
 4. Copy the Client ID and Client Secret into your `.env` file:
 
    ```env
