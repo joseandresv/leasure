@@ -1,7 +1,7 @@
 {% if devices %}
 {% for d in devices %}
 <div class="drive-card" {% if d.device_type == 'player' %}style="border-color: var(--accent-blue);"{% endif %}>
-    <div class="drive-letter">{{ d.drive_letter }}:</div>
+    <div class="drive-letter">{{ d.label }}</div>
     <div class="drive-info">
         <div>
             <strong>{{ d.free_gb }} GB free</strong> / {{ d.total_gb }} GB total
@@ -40,8 +40,14 @@
 {% else %}
 <p style="color: var(--text-muted);">No external drives detected.</p>
 <small style="color: var(--text-secondary);">
+    {% if platform == "wsl2" %}
     On WSL2, USB drives need to be mounted manually:<br>
     <code>sudo mkdir -p /mnt/e && sudo mount -t drvfs E: /mnt/e</code><br>
     Replace <code>E:</code> with your drive letter, then click Scan.
+    {% elif platform == "windows" %}
+    Plug in the H2 or insert its SD card — Windows assigns it a drive letter automatically. Then click Scan.
+    {% else %}
+    Plug in the H2 or insert its SD card — most desktops mount it under <code>/media/&lt;user&gt;/</code>. Then click Scan.
+    {% endif %}
 </small>
 {% endif %}

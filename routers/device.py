@@ -18,11 +18,14 @@ from config import settings
 from db import get_session
 from models import Playlist, PlaylistTrack, SyncHistory, Track
 from services.device import build_device_path, detect_devices, sanitize_filename
+from services.platform import device_path_placeholder, get_platform
 from services.playlist import generate_m3u, sanitize_playlist_stem, sweep_orphan_playlists
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
+templates.env.globals["platform"] = get_platform()
+templates.env.globals["device_path_placeholder"] = device_path_placeholder()
 
 
 def _is_accessible(path: Path) -> bool:
@@ -34,7 +37,13 @@ def _is_accessible(path: Path) -> bool:
 
 @router.post("/mount")
 async def mount_drive(letter: str = Form(...)):
-    """Mount a Windows drive letter in WSL2 via drvfs."""
+    """Mount a Windows drive letter in WSL2 via drvfs. No-op elsewhere: the OS auto-mounts."""
+    if get_platform() != "wsl2":
+        return HTMLResponse(
+            '<p style="color:var(--text-secondary);">Removable drives mount automatically on this OS. '
+            'Plug in the device and click Scan.</p>'
+        )
+
     # Validate: single letter a-z
     letter = letter.strip().lower()
     if not re.match(r'^[a-z]$', letter):

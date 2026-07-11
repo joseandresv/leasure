@@ -21,6 +21,7 @@
         </div>
     </article>
 
+    {% if platform == "wsl2" %}
     <article>
         <header>Mount Drive</header>
         <p style="color: var(--text-secondary); margin-bottom: var(--space-sm);">WSL2 doesn't auto-mount removable drives. Select a drive letter to mount.</p>
@@ -45,6 +46,14 @@
         </div>
         <div id="mount-result" style="margin-top: var(--space-sm);"></div>
     </article>
+    {% else %}
+    <article>
+        <header>Connect Device</header>
+        <p style="color: var(--text-secondary); margin-bottom: var(--space-sm);">
+            Plug in the H2 (or its SD card) — it mounts automatically. Then click Scan.
+        </p>
+    </article>
+    {% endif %}
 </div>
 
 <div class="grid">
@@ -62,7 +71,7 @@
         <div class="grid">
             <div>
                 <label for="device-path">Target Drive</label>
-                <input type="text" name="device_path" id="device-path" placeholder="/mnt/e" required
+                <input type="text" name="device_path" id="device-path" placeholder="{{ device_path_placeholder }}" required
                        style="font-family: var(--font-mono);">
             </div>
             <fieldset>

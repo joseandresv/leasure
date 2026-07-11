@@ -4,9 +4,10 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 # Ensure deno is on PATH for yt-dlp Premium quality downloads
+# (deno installs to ~/.deno/bin on all platforms; os.pathsep keeps this Windows-safe)
 _deno_bin = Path.home() / ".deno" / "bin"
 if _deno_bin.exists() and str(_deno_bin) not in os.environ.get("PATH", ""):
-    os.environ["PATH"] = f"{_deno_bin}:{os.environ.get('PATH', '')}"
+    os.environ["PATH"] = f"{_deno_bin}{os.pathsep}{os.environ.get('PATH', '')}"
 
 import uvicorn
 from fastapi import FastAPI
@@ -39,6 +40,11 @@ app = FastAPI(title="Leasure", version="0.2.0", lifespan=lifespan)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
+
+from services.platform import device_path_placeholder, get_platform  # noqa: E402
+
+templates.env.globals["platform"] = get_platform()
+templates.env.globals["device_path_placeholder"] = device_path_placeholder()
 
 # Register routers
 from routers import device, downloads, library, music, spotify, youtube  # noqa: E402

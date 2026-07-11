@@ -2,13 +2,18 @@ import logging
 import os
 import re
 import shutil
-from pathlib import Path
+import string
 
-from config import settings
+from services.platform import get_platform
 
 logger = logging.getLogger(__name__)
 
 FAT32_FORBIDDEN = re.compile(r'[\\/:*?"<>|]')
+
+AUDIO_EXTS = (".mp3", ".flac", ".wav", ".ape", ".dsf")
+
+# Folders that mark a drive as a Windows system volume, not a music player
+SYSTEM_DIR_NAMES = ("$RECYCLE.BIN", "System Volume Information", "Windows", "Program Files", "Users")
 
 
 def sanitize_filename(name: str, max_length: int = 200) -> str:
@@ -19,96 +24,151 @@ def sanitize_filename(name: str, max_length: int = 200) -> str:
     return name or "Unknown"
 
 
-def _get_mounted_drives() -> dict[str, str]:
-    """Read /proc/mounts to find actual Windows drive mounts (drvfs/9p)."""
-    mounted = {}
+def _classify(path: str, label: str, drive_letter: str, removable_hint: bool) -> dict | None:
+    """Shared heuristics: disk usage, music detection, device-type guess."""
+    try:
+        contents = os.listdir(path)
+        usage = shutil.disk_usage(path)
+    except OSError:
+        return None
+    if usage.total == 0:
+        return None
+
+    total_gb = usage.total / (1024**3)
+    free_gb = usage.free / (1024**3)
+    used_gb = usage.used / (1024**3)
+
+    has_music_files = any(
+        f.endswith(AUDIO_EXTS) for f in contents
+    ) or any(
+        os.path.isdir(os.path.join(path, d)) and d not in SYSTEM_DIR_NAMES
+        for d in contents
+    )
+
+    # Guess device type: FAT32/exFAT and removable media are player candidates
+    if total_gb > 500:
+        device_type = "system"
+    elif total_gb <= 512 and (has_music_files or removable_hint):
+        device_type = "player"
+    elif total_gb <= 512:
+        device_type = "removable"
+    else:
+        device_type = "drive"
+
+    return {
+        "path": path,
+        "drive_letter": drive_letter,
+        "label": label,
+        "total_gb": round(total_gb, 1),
+        "free_gb": round(free_gb, 1),
+        "used_gb": round(used_gb, 1),
+        "has_music_files": has_music_files,
+        "device_type": device_type,
+        "file_count": len(contents),
+    }
+
+
+def _read_proc_mounts() -> list[tuple[str, str]]:
+    """Return (mount_point, fs_type) pairs from /proc/mounts, unescaping octal codes."""
+    mounts = []
     try:
         with open("/proc/mounts") as f:
             for line in f:
                 parts = line.split()
-                if len(parts) >= 3 and parts[1].startswith("/mnt/") and len(parts[1]) == 6:
-                    # e.g. "C:\ /mnt/c 9p ..." or "E:\ /mnt/e drvfs ..."
-                    mount_point = parts[1]
-                    fs_type = parts[2]
-                    if fs_type in ("9p", "drvfs", "vfat", "exfat", "fuseblk"):
-                        letter = mount_point[-1]
-                        mounted[letter] = fs_type
+                if len(parts) >= 3:
+                    # /proc/mounts escapes spaces as \040, tabs as \011, backslashes as \134
+                    mount_point = (
+                        parts[1].replace("\\040", " ").replace("\\011", "\t").replace("\\134", "\\")
+                    )
+                    mounts.append((mount_point, parts[2]))
     except OSError:
         pass
-    return mounted
+    return mounts
 
 
-def detect_devices() -> list[dict]:
-    """Scan /mnt/ drive letters for mounted volumes. Categorizes as system vs removable."""
-    mounted_drives = _get_mounted_drives()
+REMOVABLE_FS_TYPES = ("vfat", "exfat", "fuseblk", "drvfs", "9p", "ntfs", "ntfs3")
+
+
+def _detect_wsl2() -> list[dict]:
+    """Scan /mnt/<letter> drvfs/9p mounts (Windows drives bridged into WSL2)."""
+    mounted = {}
+    for mount_point, fs_type in _read_proc_mounts():
+        if mount_point.startswith("/mnt/") and len(mount_point) == 6 and fs_type in REMOVABLE_FS_TYPES:
+            mounted[mount_point[-1]] = fs_type
+
     candidates = []
-    for letter in "cdefghijklmnopqrstuvwxyz":
+    for letter, fs_type in mounted.items():
         path = f"/mnt/{letter}"
-        if letter not in mounted_drives:
-            continue
         if not os.path.isdir(path):
             continue
-        try:
-            contents = os.listdir(path)
-
-            usage = shutil.disk_usage(path)
-            if usage.total == 0:
-                continue
-
-            total_gb = usage.total / (1024**3)
-            free_gb = usage.free / (1024**3)
-            used_gb = usage.used / (1024**3)
-
-            # Detect if it looks like a music player / SD card
-            has_music_files = any(
-                f.endswith((".mp3", ".flac", ".wav", ".ape", ".dsf"))
-                for f in contents
-            ) or any(
-                os.path.isdir(os.path.join(path, d)) and d not in ("$RECYCLE.BIN", "System Volume Information", "Windows", "Program Files", "Users")
-                for d in contents
-            )
-            is_fat32 = _check_fat32(path)
-
-            # Guess device type
-            if total_gb > 500:
-                device_type = "system"
-            elif total_gb <= 512 and (has_music_files or is_fat32):
-                device_type = "player"
-            elif total_gb <= 512:
-                device_type = "removable"
-            else:
-                device_type = "drive"
-
-            candidates.append({
-                "path": path,
-                "drive_letter": letter.upper(),
-                "total_gb": round(total_gb, 1),
-                "free_gb": round(free_gb, 1),
-                "used_gb": round(used_gb, 1),
-                "has_music_files": has_music_files,
-                "device_type": device_type,
-                "file_count": len(contents),
-            })
-        except OSError:
-            continue
-
-    # Sort: player/removable drives first, then by letter
-    type_order = {"player": 0, "removable": 1, "drive": 2, "system": 3}
-    candidates.sort(key=lambda d: (type_order.get(d["device_type"], 9), d["drive_letter"]))
+        device = _classify(path, f"{letter.upper()}:", letter.upper(), removable_hint=True)
+        if device:
+            candidates.append(device)
     return candidates
 
 
-def _check_fat32(path: str) -> bool:
-    """Heuristic: FAT32/exFAT drives on WSL2 are mounted via drvfs."""
-    try:
-        with open("/proc/mounts") as f:
-            for line in f:
-                parts = line.split()
-                if len(parts) >= 3 and parts[1] == path:
-                    return parts[2] in ("vfat", "exfat", "fuseblk", "drvfs", "9p")
-    except OSError:
-        pass
-    return False
+def _detect_linux() -> list[dict]:
+    """Scan desktop auto-mount locations (/media/<user>/, /run/media/<user>/)."""
+    candidates = []
+    for mount_point, fs_type in _read_proc_mounts():
+        if not (mount_point.startswith("/media/") or mount_point.startswith("/run/media/")):
+            continue
+        if not os.path.isdir(mount_point):
+            continue
+        label = os.path.basename(mount_point) or mount_point
+        device = _classify(mount_point, label, "", removable_hint=fs_type in REMOVABLE_FS_TYPES)
+        if device:
+            candidates.append(device)
+    return candidates
+
+
+def _detect_windows() -> list[dict]:
+    """Enumerate drive letters via the Win32 API."""
+    import ctypes
+
+    kernel32 = ctypes.windll.kernel32
+    # Don't pop "insert a disk" dialogs for empty card-reader slots
+    kernel32.SetErrorMode(1)  # SEM_FAILCRITICALERRORS
+
+    DRIVE_REMOVABLE, DRIVE_FIXED = 2, 3
+    bitmask = kernel32.GetLogicalDrives()
+    candidates = []
+    for i, letter in enumerate(string.ascii_uppercase):
+        if not bitmask & (1 << i):
+            continue
+        root = f"{letter}:\\"
+        drive_type = kernel32.GetDriveTypeW(ctypes.c_wchar_p(root))
+        if drive_type not in (DRIVE_REMOVABLE, DRIVE_FIXED):
+            continue
+
+        fs_buf = ctypes.create_unicode_buffer(64)
+        vol_buf = ctypes.create_unicode_buffer(261)
+        ok = kernel32.GetVolumeInformationW(
+            ctypes.c_wchar_p(root), vol_buf, 261, None, None, None, fs_buf, 64
+        )
+        is_fat = bool(ok) and fs_buf.value.upper() in ("FAT", "FAT32", "EXFAT")
+        label = vol_buf.value if (ok and vol_buf.value) else f"{letter}:"
+        device = _classify(
+            root, label, letter, removable_hint=(drive_type == DRIVE_REMOVABLE or is_fat)
+        )
+        if device:
+            candidates.append(device)
+    return candidates
+
+
+def detect_devices() -> list[dict]:
+    """Scan for mounted volumes on the current platform, players first."""
+    plat = get_platform()
+    if plat == "windows":
+        candidates = _detect_windows()
+    elif plat == "wsl2":
+        candidates = _detect_wsl2()
+    else:
+        candidates = _detect_linux()
+
+    type_order = {"player": 0, "removable": 1, "drive": 2, "system": 3}
+    candidates.sort(key=lambda d: (type_order.get(d["device_type"], 9), d["label"]))
+    return candidates
 
 
 def build_device_path(artist: str, album: str, track_number: int | None, title: str, ext: str) -> str:
