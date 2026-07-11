@@ -21,3 +21,4 @@ cookies.txt
 *.cookies.txt
 *_cookies.txt
 .claude/
+ds-bundle/
