@@ -158,12 +158,12 @@ def get_playlists() -> list[dict] | None:
         return None
 
 
-def get_playlist_tracks(playlist_id: str) -> dict | None:
+def get_playlist_tracks(playlist_id: str, limit: int = 500) -> dict | None:
     yt = get_client()
     if not yt:
         return None
     try:
-        playlist = yt.get_playlist(playlist_id, limit=500)
+        playlist = yt.get_playlist(playlist_id, limit=limit)
         tracks = []
         for t in playlist.get("tracks", []):
             if not t.get("videoId"):

@@ -22,6 +22,10 @@
             <td>
                 {% if t.quality == 'flac_lossless' %}
                 {{ badge('', quality='flac_lossless') }}
+                {% elif 'flac' in t.quality %}
+                {{ badge('', quality='flac') }}
+                {% elif t.quality == 'native' %}
+                {{ badge('', quality='native') }}
                 {% else %}
                 {{ badge('', quality='mp3') }}
                 {% endif %}

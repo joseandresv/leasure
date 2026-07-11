@@ -8,6 +8,7 @@ from config import settings
 from db import get_session
 from models import Playlist, PlaylistTrack, Track
 from services import youtube_client as yt
+from services.formats import resolve_format
 from worker import download_worker
 
 
@@ -275,11 +276,7 @@ async def download_track(
                                               context={"status": status})
         return {"status": status, "track_id": existing.id}
 
-    quality = "mp3_320"
-    if format == "flac":
-        quality = "flac_lossy"
-    elif format == "flac_lossless":
-        quality = "flac_lossless"
+    quality, container = resolve_format(format)
 
     track = existing or Track(youtube_id=video_id)
     track.title = title
@@ -288,7 +285,7 @@ async def download_track(
     track.track_number = track_number
     track.duration_ms = duration_ms
     track.artwork_url = image_url
-    track.format = "flac" if "flac" in format else "mp3"
+    track.format = container
     track.quality = quality
     track.source = "youtube"
     track.status = "pending"
@@ -356,11 +353,7 @@ async def download_playlist(
             queued.append({"track_id": existing.id, "status": existing.status})
             continue
 
-        quality = "mp3_320"
-        if format == "flac":
-            quality = "flac_lossy"
-        elif format == "flac_lossless":
-            quality = "flac_lossless"
+        quality, container = resolve_format(format)
 
         track = existing or Track(youtube_id=video_id)
         track.title = t["name"]
@@ -368,7 +361,7 @@ async def download_playlist(
         track.album = t.get("album", "")
         track.duration_ms = t.get("duration_ms", 0)
         track.artwork_url = t.get("image_url", "")
-        track.format = "flac" if "flac" in format else "mp3"
+        track.format = container
         track.quality = quality
         track.source = "youtube"
         track.status = "pending"

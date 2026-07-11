@@ -1,0 +1,16 @@
+{% from "macros/components.html" import track_banner %}
+{#
+  THE DECK — vertical song roulette (right column of the music cabinet).
+  The persistent left rail (H2 stage + NOW SELECTED readout) lives in
+  panels/music.html; this partial only renders the scrollable banner list.
+  rhythm-deck.js binds it and drives the readout + Three.js device screen.
+#}
+<div class="deck-wheel deck-wheel-v" role="listbox" aria-label="Song selection wheel">
+    {% for track in tracks %}
+    {{ track_banner(track) }}
+    {% endfor %}
+</div>
+
+{% if not tracks %}
+<p class="deck-empty">No recent listening to spin. Play something on Spotify or YT Music.</p>
+{% endif %}

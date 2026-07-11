@@ -74,6 +74,13 @@ document.addEventListener('htmx:beforeRequest', function(event) {
 
 /* ── Album Art Color Extraction (Vibrant.js) ── */
 
+// Vibrant.js 1.0.0 appends a scratch <canvas> to <body> for sampling and never
+// removes it. Sweep those leaks after each use (the device canvas is nested in
+// #scene-container, so direct-child body canvases are all Vibrant's).
+function sweepVibrantCanvases() {
+    document.querySelectorAll('body > canvas').forEach(c => c.remove());
+}
+
 function extractAlbumColor(imgElement) {
     if (!window.Vibrant) return;
     try {
@@ -89,6 +96,7 @@ function extractAlbumColor(imgElement) {
             }
         }
     } catch (e) { /* CORS or decode error — use default accent */ }
+    finally { sweepVibrantCanvases(); }
 }
 
 function initColorExtraction(root) {
@@ -223,7 +231,7 @@ function initGraph(event) {
 
     data.nodes.forEach(function(node) {
         var genreKey = (node.genres[0] || '').toLowerCase();
-        var color = (data.genres[genreKey] || {}).color || '#0066ff';
+        var color = (data.genres[genreKey] || {}).color || '#38d6ff';
         graph.addNode(node.id, {
             label: node.label,
             x: Math.random() * 100,
@@ -239,7 +247,7 @@ function initGraph(event) {
         if (graph.hasNode(edge.source) && graph.hasNode(edge.target)) {
             try {
                 graph.addEdge(edge.source, edge.target, {
-                    color: 'rgba(255,255,255,0.06)',
+                    color: 'rgba(56,214,255,0.12)',
                     size: 1
                 });
             } catch (e) { /* duplicate edge */ }
@@ -256,11 +264,12 @@ function initGraph(event) {
     // Render
     var renderer = new Sigma(graph, container, {
         renderLabels: true,
-        labelColor: { color: '#e8e8ec' },
-        labelFont: 'Inter, system-ui, sans-serif',
+        labelColor: { color: '#cfe6ff' },
+        labelFont: 'Orbitron, JetBrains Mono, system-ui, sans-serif',
+        labelWeight: '600',
         labelSize: 11,
-        defaultEdgeColor: 'rgba(255,255,255,0.06)',
-        defaultNodeColor: '#0066ff',
+        defaultEdgeColor: 'rgba(56,214,255,0.12)',
+        defaultNodeColor: '#38d6ff',
         stagePadding: 40,
         minCameraRatio: 0.3,
         maxCameraRatio: 3,

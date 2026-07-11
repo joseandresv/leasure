@@ -1,4 +1,10 @@
-<h2>device sync</h2>
+{% from "macros/components.html" import menu_head, ctl, stage %}
+{{ menu_head('DEVICE', 'SYNC STATION') }}
+
+<div class="menu-deck">
+{{ stage('device') }}
+<div class="menu-content">
+
 <p style="color: var(--text-secondary); margin-bottom: var(--space-md);">Sync music to your HIFI WALKER H2</p>
 
 <div class="grid">
@@ -89,3 +95,12 @@
         <p><small style="color: var(--text-muted);">Select a drive above to browse music on device</small></p>
     </div>
 </article>
+
+<div class="menu-foot" aria-hidden="true">
+    {{ ctl('&#8629;', 'MOUNT') }}
+    {{ ctl('&#9660;', 'SYNC') }}
+    {{ ctl('&#8635;', 'SCAN') }}
+</div>
+
+</div>
+</div>

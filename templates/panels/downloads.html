@@ -1,3 +1,10 @@
+{% from "macros/components.html" import menu_head, ctl, stage %}
+{{ menu_head('DOWNLOADS', 'TRANSFER') }}
+
+<div class="menu-deck">
+{{ stage('downloads') }}
+<div class="menu-content">
+
 <h2>download queue</h2>
 <div hx-get="/api/downloads/queue/html" hx-trigger="load, every 3s" hx-swap="innerHTML" id="download-queue">
     <i style="color: var(--text-muted);">loading...</i>
@@ -6,4 +13,12 @@
 <h2>history</h2>
 <div hx-get="/api/downloads/history/html" hx-trigger="load, every 15s" hx-swap="innerHTML" id="download-history">
     <i style="color: var(--text-muted);">loading...</i>
+</div>
+
+<div class="menu-foot" aria-hidden="true">
+    {{ ctl('&#8635;', 'LIVE QUEUE') }}
+    <span class="deck-ctl deck-ctl-count">AUTO-REFRESH&nbsp;<b>3s</b></span>
+</div>
+
+</div>
 </div>

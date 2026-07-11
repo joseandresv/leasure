@@ -20,14 +20,32 @@
 
             <div class="album-actions">
                 {{ format_selector('detail') }}
+                {% if is_playlist %}
+                    {% if playlist_created and missing_count == 0 %}
+                    <span class="source-badge" title="All tracks downloaded and playlist registered — next device sync will write it as .m3u8">Playlist Ready</span>
+                    {% else %}
+                    {% set pl_label = ('Download Missing & Create Playlist' if missing_count > 0 and not playlist_created
+                                       else 'Download Missing' if missing_count > 0
+                                       else 'Create Playlist') %}
+                    <button class="outline"
+                            hx-post="/api/music/download/playlist/{{ provider }}/{{ album_id }}"
+                            hx-include="#dl-format-detail"
+                            hx-target="closest .modal-body"
+                            hx-swap="innerHTML"
+                            hx-indicator="this">
+                        {{ pl_label }}
+                    </button>
+                    {% endif %}
+                {% else %}
                 <button class="outline"
-                        hx-post="/api/music/download/{{ 'playlist' if is_playlist else 'album' }}/{{ provider }}/{{ album_id }}"
+                        hx-post="/api/music/download/album/{{ provider }}/{{ album_id }}"
                         hx-include="#dl-format-detail"
                         hx-target="closest .modal-body"
                         hx-swap="innerHTML"
                         hx-indicator="this">
                     Download All
                 </button>
+                {% endif %}
             </div>
         </div>
     </div>

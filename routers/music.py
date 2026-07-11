@@ -5,13 +5,14 @@ import logging
 from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db import get_session
-from models import Track
+from models import Playlist, PlaylistTrack, Track
 from services import spotify_client as sp
 from services import youtube_client as yt
+from services.formats import resolve_format
 from services.music_aggregator import (
     enrich_with_download_status,
     get_unified_albums,
@@ -34,15 +35,54 @@ def _is_htmx(request: Request) -> bool:
 # --- Browse endpoints (return HTML partials) ---
 
 
+async def _enrich_deck_tracks(tracks, session):
+    """Single DB pass per track: set download_status + the richer `db` readout state.
+    Shared by the Deck and Recently-Listened tabs (both render the track wheel)."""
+    for track in tracks:
+        existing = None
+        for src in track.get("sources", []):
+            if src["provider"] == "spotify" and src.get("uri"):
+                existing = (await session.execute(
+                    select(Track).where(Track.spotify_uri == src["uri"]))).scalar_one_or_none()
+            elif src["provider"] in ("youtube", "youtube music") and src.get("id"):
+                existing = (await session.execute(
+                    select(Track).where(Track.youtube_id == src["id"]))).scalar_one_or_none()
+            if existing:
+                break
+        track["download_status"] = existing.status if existing else None
+        track["db"] = {
+            "status": existing.status,
+            "format": existing.format,
+            "quality": existing.quality,
+            "file_size": existing.file_size,
+            "synced": bool(existing.synced_at),
+            "engine": existing.engine_used,
+            "genre": existing.genre,
+            "year": existing.year,
+        } if existing else None
+
+
 @router.get("/recent")
-async def recent(request: Request, session: AsyncSession = Depends(get_session)):
-    """Recently listened tracks from all sources."""
-    tracks = get_unified_recent(limit=50)
-    await enrich_with_download_status(tracks, session)
+async def recent(request: Request, refresh: bool = False, session: AsyncSession = Depends(get_session)):
+    """Recently listened tracks — rendered as the vertical deck roulette."""
+    tracks = get_unified_recent(limit=50, force=refresh)
+    await _enrich_deck_tracks(tracks, session)
     return templates.TemplateResponse(
         request=request,
-        name="partials/music_tracks.html",
-        context={"tracks": tracks, "show_art": True, "show_album": True, "show_refresh": True},
+        name="partials/rhythm_deck.html",
+        context={"tracks": tracks},
+    )
+
+
+@router.get("/deck")
+async def deck(request: Request, refresh: bool = False, session: AsyncSession = Depends(get_session)):
+    """THE DECK — recent tracks as a DDR-style banner wheel with a HiFi 'now selected' display."""
+    tracks = get_unified_recent(limit=50, force=refresh)  # match /recent so they share the cache
+    await _enrich_deck_tracks(tracks, session)
+    return templates.TemplateResponse(
+        request=request,
+        name="partials/rhythm_deck.html",
+        context={"tracks": tracks},
     )
 
 
@@ -185,11 +225,19 @@ async def playlist_detail(
     if not playlist_info:
         return HTMLResponse("<p>Playlist not found or source unavailable.</p>")
 
+    # Playlist row exists? (sync can only write an .m3u8 when this is True)
+    pl_row_stmt = select(Playlist).where(Playlist.source == provider, Playlist.source_id == playlist_id)
+    pl_row_result = await session.execute(pl_row_stmt)
+    playlist_created = pl_row_result.scalar_one_or_none() is not None
+
+    missing_count = sum(1 for t in tracks if t.get("download_status") != "done")
+
     return templates.TemplateResponse(
         request=request,
         name="partials/music_album_detail.html",
         context={"album": playlist_info, "tracks": tracks, "provider": provider,
-                 "album_id": playlist_id, "is_playlist": True},
+                 "album_id": playlist_id, "is_playlist": True,
+                 "playlist_created": playlist_created, "missing_count": missing_count},
     )
 
 
@@ -261,11 +309,7 @@ async def download_track(
         return {"status": "already_queued", "track_id": existing.id}
 
     # Determine quality
-    quality = "mp3_320"
-    if format == "flac":
-        quality = "flac_lossy"
-    elif format == "flac_lossless":
-        quality = "flac_lossless"
+    quality, container = resolve_format(format)
 
     # Auto-pick source: prefer spotify (searches YouTube Music anyway), fallback to youtube
     source = "spotify" if spotify_uri else "youtube"
@@ -289,7 +333,7 @@ async def download_track(
     track.track_number = track_number
     track.duration_ms = duration_ms
     track.artwork_url = image_url
-    track.format = "flac" if "flac" in format else "mp3"
+    track.format = container
     track.quality = quality
     track.source = source
     track.status = "pending"
@@ -334,11 +378,7 @@ async def download_album(
     if not album_data:
         return HTMLResponse("<p>Album not found.</p>") if _is_htmx(request) else {"error": "Album not found"}
 
-    quality = "mp3_320"
-    if format == "flac":
-        quality = "flac_lossy"
-    elif format == "flac_lossless":
-        quality = "flac_lossless"
+    quality, container = resolve_format(format)
 
     # Fetch genre
     album_genre = None
@@ -394,7 +434,7 @@ async def download_album(
         track.artwork_url = album_data.get("image_url", "")
         track.year = year
         track.genre = album_genre
-        track.format = "flac" if "flac" in format else "mp3"
+        track.format = container
         track.quality = quality
         track.status = "pending"
         track.error_message = None
@@ -462,14 +502,29 @@ async def download_playlist(
     if not playlist_data:
         return HTMLResponse("<p>Playlist not found.</p>") if _is_htmx(request) else {"error": "Playlist not found"}
 
-    quality = "mp3_320"
-    if format == "flac":
-        quality = "flac_lossy"
-    elif format == "flac_lossless":
-        quality = "flac_lossless"
+    quality, container = resolve_format(format)
+
+    # Persist the playlist so device sync can generate an .m3u8 for it later.
+    pl_name = playlist_data.get("name") or "Untitled Playlist"
+    stmt = select(Playlist).where(Playlist.source == provider, Playlist.source_id == playlist_id)
+    result = await session.execute(stmt)
+    db_playlist = result.scalar_one_or_none()
+    if not db_playlist:
+        db_playlist = Playlist(name=pl_name, source=provider, source_id=playlist_id,
+                               image_url=playlist_data.get("image_url"))
+        session.add(db_playlist)
+        await session.commit()
+        await session.refresh(db_playlist)
+    else:
+        db_playlist.name = pl_name
+        if playlist_data.get("image_url"):
+            db_playlist.image_url = playlist_data["image_url"]
+        # Clear old entries so positions/order stay fresh
+        await session.execute(delete(PlaylistTrack).where(PlaylistTrack.playlist_id == db_playlist.id))
+        await session.commit()
 
     queued = []
-    for t in tracks_data:
+    for position, t in enumerate(tracks_data):
         existing = None
         if provider == "spotify" and t.get("uri"):
             stmt = select(Track).where(Track.spotify_uri == t["uri"])
@@ -481,6 +536,7 @@ async def download_playlist(
             existing = result.scalar_one_or_none()
 
         if existing and existing.status in ("done", "pending", "downloading"):
+            session.add(PlaylistTrack(playlist_id=db_playlist.id, track_id=existing.id, position=position))
             queued.append({"track_id": existing.id, "status": existing.status})
             continue
 
@@ -500,7 +556,7 @@ async def download_playlist(
         track.disc_number = t.get("disc_number")
         track.duration_ms = t.get("duration_ms", 0)
         track.artwork_url = t.get("image_url") or playlist_data.get("image_url", "")
-        track.format = "flac" if "flac" in format else "mp3"
+        track.format = container
         track.quality = quality
         track.status = "pending"
         track.error_message = None
@@ -510,8 +566,11 @@ async def download_playlist(
         await session.commit()
         await session.refresh(track)
 
+        session.add(PlaylistTrack(playlist_id=db_playlist.id, track_id=track.id, position=position))
         await download_worker.enqueue(track.id)
         queued.append({"track_id": track.id, "status": "queued"})
+
+    await session.commit()
 
     if _is_htmx(request):
         tracks_with_status = []
@@ -532,11 +591,13 @@ async def download_playlist(
                 "sources": [{"provider": provider, "id": t.get("id", ""), "uri": t.get("uri", "")}],
                 "download_status": dl_status,
             })
+        missing_count = sum(1 for t in tracks_with_status if t.get("download_status") != "done")
         return templates.TemplateResponse(
             request=request,
             name="partials/music_album_detail.html",
             context={"album": playlist_data, "tracks": tracks_with_status, "provider": provider,
-                     "album_id": playlist_id, "is_playlist": True},
+                     "album_id": playlist_id, "is_playlist": True,
+                     "playlist_created": True, "missing_count": missing_count},
         )
 
     return {"playlist": playlist_data.get("name", ""), "tracks_queued": len(queued), "details": queued}

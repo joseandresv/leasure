@@ -1,3 +1,10 @@
+{% from "macros/components.html" import menu_head, ctl, stage %}
+{{ menu_head('HOME', 'STATION') }}
+
+<div class="menu-deck">
+{{ stage('home') }}
+<div class="menu-content">
+
 <h2>now playing</h2>
 <div hx-get="/api/downloads/queue/html" hx-trigger="load, every 3s" hx-swap="innerHTML">
     <i style="color: var(--text-muted);">no active downloads</i>
@@ -27,4 +34,13 @@
 <h2>recent downloads</h2>
 <div hx-get="/api/downloads/history/html" hx-trigger="load" hx-swap="innerHTML">
     <i style="color: var(--text-muted);">loading...</i>
+</div>
+
+<div class="menu-foot" aria-hidden="true">
+    {{ ctl('&#8629;', 'OPEN') }}
+    {{ ctl('&#8635;', 'LIVE STATUS') }}
+    <span class="deck-ctl deck-ctl-count">STATION&nbsp;<b>ONLINE</b></span>
+</div>
+
+</div>
 </div>

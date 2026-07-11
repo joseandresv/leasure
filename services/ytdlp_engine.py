@@ -18,7 +18,9 @@ async def ytdlp_download(track_id: int) -> Path | None:
             return None
 
         youtube_id = track.youtube_id
-        fmt = "flac" if "flac" in (track.quality or "") else "mp3"
+        quality = track.quality or "mp3_320"
+        native = quality == "native"  # keep original container, no re-encode
+        fmt = "flac" if "flac" in quality else "mp3"
         artist = track.artist or "Unknown"
         album = track.album or "Unknown"
         title = track.title or "Unknown"
@@ -44,25 +46,35 @@ async def ytdlp_download(track_id: int) -> Path | None:
     def _do_download() -> Path | None:
         import yt_dlp
 
-        ydl_opts = {
-            "format": "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best",
-            "outtmpl": output_template,
-            "postprocessors": [
-                {
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": fmt,
-                    "preferredquality": str(settings.mp3_bitrate) if fmt == "mp3" else "0",
-                }
-            ],
-            "quiet": True,
-            "no_warnings": True,
-        }
+        if native:
+            # Keep the best AAC/M4A stream verbatim — no ffmpeg re-encode.
+            ydl_opts = {
+                "format": "bestaudio[ext=m4a]/bestaudio/best",
+                "outtmpl": output_template,
+                "quiet": True,
+                "no_warnings": True,
+            }
+        else:
+            ydl_opts = {
+                "format": "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best",
+                "outtmpl": output_template,
+                "postprocessors": [
+                    {
+                        "key": "FFmpegExtractAudio",
+                        "preferredcodec": fmt,
+                        "preferredquality": str(settings.mp3_bitrate) if fmt == "mp3" else "0",
+                    }
+                ],
+                "quiet": True,
+                "no_warnings": True,
+            }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
 
         # Find the output file
-        for ext in [fmt, "mp3", "flac", "opus", "m4a", "webm"]:
+        search_exts = ["m4a", "webm", "opus", "mp3", "flac"] if native else [fmt, "mp3", "flac", "opus", "m4a", "webm"]
+        for ext in search_exts:
             candidate = output_dir / f"{filename}.{ext}"
             if candidate.exists():
                 return candidate
@@ -86,6 +98,9 @@ async def ytdlp_download(track_id: int) -> Path | None:
             db_track = await session.get(Track, track_id)
             db_track.file_size = result.stat().st_size
             db_track.engine_used = "yt-dlp"
+            if native:
+                # Record the actual container we kept (m4a / webm / opus)
+                db_track.format = result.suffix.lstrip(".")
             await session.commit()
 
     return result

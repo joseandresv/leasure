@@ -1,4 +1,10 @@
-<h2>library</h2>
+{% from "macros/components.html" import menu_head, ctl, stage %}
+{{ menu_head('LIBRARY', 'ALL MUSIC') }}
+
+<div class="menu-deck">
+{{ stage('library') }}
+<div class="menu-content">
+
 <div hx-get="/api/library/stats/html" hx-trigger="load" hx-swap="innerHTML" id="library-stats">
     <i style="color: var(--text-muted);">loading...</i>
 </div>
@@ -29,4 +35,13 @@
              hx-on::after-request="initGraph(event)">
         </div>
     </div>
+</div>
+
+<div class="menu-foot" aria-hidden="true">
+    {{ ctl('&#9000;', 'SEARCH') }}
+    {{ ctl('&#8629;', 'DETAIL') }}
+    {{ ctl('&#9776;', 'LIST / GENRE MAP') }}
+</div>
+
+</div>
 </div>

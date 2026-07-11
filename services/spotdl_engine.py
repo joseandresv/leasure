@@ -69,7 +69,9 @@ async def spotdl_download(track_id: int) -> Path | None:
             return None
 
         spotify_uri = track.spotify_uri
-        fmt = "flac" if "flac" in (track.quality or "") else "mp3"
+        quality = track.quality or "mp3_320"
+        native = quality == "native"  # keep original container, no re-encode
+        fmt = "flac" if "flac" in quality else "mp3"
         title = track.title or "Unknown"
         artist = track.artist or "Unknown"
         album = track.album or "Unknown"
@@ -105,19 +107,29 @@ async def spotdl_download(track_id: int) -> Path | None:
     def _do_download() -> Path | None:
         import yt_dlp
 
-        base_opts = {
-            "format": "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best",
-            "outtmpl": output_template,
-            "postprocessors": [
-                {
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": fmt,
-                    "preferredquality": str(settings.mp3_bitrate) if fmt == "mp3" else "0",
-                }
-            ],
-            "quiet": True,
-            "no_warnings": True,
-        }
+        if native:
+            # Prefer the best AAC/M4A stream and keep it verbatim — no ffmpeg re-encode.
+            # The H2 plays M4A/AAC natively; this is the highest fidelity our sources can give.
+            base_opts = {
+                "format": "bestaudio[ext=m4a]/bestaudio/best",
+                "outtmpl": output_template,
+                "quiet": True,
+                "no_warnings": True,
+            }
+        else:
+            base_opts = {
+                "format": "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best",
+                "outtmpl": output_template,
+                "postprocessors": [
+                    {
+                        "key": "FFmpegExtractAudio",
+                        "preferredcodec": fmt,
+                        "preferredquality": str(settings.mp3_bitrate) if fmt == "mp3" else "0",
+                    }
+                ],
+                "quiet": True,
+                "no_warnings": True,
+            }
 
         if url.startswith("ytsearch"):
             base_opts["default_search"] = "ytsearch1"
@@ -141,7 +153,8 @@ async def spotdl_download(track_id: int) -> Path | None:
                 raise  # Last attempt, let it propagate
 
         # Find the downloaded file
-        for ext in [fmt, "mp3", "flac", "opus", "m4a", "webm"]:
+        search_exts = ["m4a", "webm", "opus", "mp3", "flac"] if native else [fmt, "mp3", "flac", "opus", "m4a", "webm"]
+        for ext in search_exts:
             candidate = output_dir / f"{filename}.{ext}"
             if candidate.exists():
                 return candidate
@@ -165,6 +178,9 @@ async def spotdl_download(track_id: int) -> Path | None:
             db_track = await session.get(Track, track_id)
             db_track.file_size = result.stat().st_size
             db_track.engine_used = "ytmusic" if video_id else "youtube"
+            if native:
+                # Record the actual container we kept (m4a / webm / opus)
+                db_track.format = result.suffix.lstrip(".")
             await session.commit()
         logger.info("Downloaded track %d to %s (engine: %s)", track_id, result,
                      "ytmusic" if video_id else "youtube")

@@ -15,7 +15,7 @@ from config import settings
 from db import get_session
 from models import Playlist, PlaylistTrack, SyncHistory, Track
 from services.device import build_device_path, detect_devices, sanitize_filename
-from services.playlist import generate_m3u
+from services.playlist import generate_m3u, sanitize_playlist_stem, sweep_orphan_playlists
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -154,35 +154,38 @@ async def sync_to_device(
 
     await session.commit()
 
-    # Generate playlists (.m3u8 at SD card root)
+    # Generate playlists at SD card root (user-created playlists only — albums
+    # are organized by ID3 tags). Also sweeps orphan .m3u/.m3u8 files left by
+    # previous runs that no longer correspond to a DB playlist.
     playlists_generated = 0
     try:
-        all_synced = await session.execute(
-            select(Track).where(Track.status == "done", Track.file_path.isnot(None))
-        )
-        all_tracks = all_synced.scalars().all()
+        playlist_result = await session.execute(select(Playlist))
+        db_playlists = playlist_result.scalars().all()
 
-        if all_tracks:
-            # Only generate playlists from user-created playlists (Spotify/YouTube)
-            # Albums are already organized by ID3 tags on the H2
-            playlist_result = await session.execute(select(Playlist))
-            db_playlists = playlist_result.scalars().all()
-            for pl in db_playlists:
-                entries = await session.execute(
-                    select(PlaylistTrack).where(PlaylistTrack.playlist_id == pl.id).order_by(PlaylistTrack.position)
-                )
-                track_ids = [e.track_id for e in entries.scalars().all()]
-                pl_tracks = []
-                for tid in track_ids:
-                    t = await session.get(Track, tid)
-                    if t and t.status == "done" and t.file_path:
-                        pl_tracks.append(
-                            {"artist": t.artist, "album": t.album, "track_number": t.track_number,
-                             "title": t.title, "format": t.format, "duration_ms": t.duration_ms}
-                        )
-                if pl_tracks:
-                    generate_m3u(pl.name, pl_tracks, target)
-                    playlists_generated += 1
+        keep_stems = {sanitize_playlist_stem(pl.name) for pl in db_playlists}
+        removed = sweep_orphan_playlists(target, keep_stems)
+        if removed:
+            logger.info("Removed %d orphan playlist file(s): %s", len(removed), removed)
+
+        for pl in db_playlists:
+            entries = await session.execute(
+                select(PlaylistTrack).where(PlaylistTrack.playlist_id == pl.id).order_by(PlaylistTrack.position)
+            )
+            seen_track_ids = set()
+            pl_tracks = []
+            for entry in entries.scalars().all():
+                if entry.track_id in seen_track_ids:
+                    continue
+                seen_track_ids.add(entry.track_id)
+                t = await session.get(Track, entry.track_id)
+                if t and t.status == "done" and t.file_path:
+                    pl_tracks.append(
+                        {"artist": t.artist, "album": t.album, "track_number": t.track_number,
+                         "title": t.title, "format": t.format, "duration_ms": t.duration_ms}
+                    )
+            if pl_tracks:
+                generate_m3u(pl.name, pl_tracks, target)
+                playlists_generated += 1
 
     except Exception as e:
         errors.append(f"Playlist generation error: {e}")
@@ -270,36 +273,40 @@ async def sync_stream(device_path: str, scope: str = "all"):
 
             await session.commit()
 
-            # Generate playlists
+            # Generate playlists + sweep orphan .m3u/.m3u8 files from prior runs
             playlists_generated = 0
             try:
                 yield f"data: {json.dumps({'type': 'playlists', 'message': 'Generating playlists...'})}\n\n"
 
-                all_result = await session.execute(select(Track).where(Track.status == "done", Track.file_path.isnot(None)))
-                all_tracks = all_result.scalars().all()
+                playlist_result = await session.execute(select(Playlist))
+                db_playlists = playlist_result.scalars().all()
 
-                if all_tracks:
-                    # Only generate playlists from user-created playlists (Spotify/YouTube)
-                    # Albums are already organized by ID3 tags on the H2
-                    playlist_result = await session.execute(select(Playlist))
-                    db_playlists = playlist_result.scalars().all()
-                    for pl in db_playlists:
-                        entries = await session.execute(
-                            select(PlaylistTrack).where(PlaylistTrack.playlist_id == pl.id).order_by(PlaylistTrack.position)
-                        )
-                        track_ids = [e.track_id for e in entries.scalars().all()]
-                        pl_tracks = []
-                        for tid in track_ids:
-                            t = await session.get(Track, tid)
-                            if t and t.status == "done" and t.file_path:
-                                pl_tracks.append(
-                                    {"artist": t.artist, "album": t.album, "track_number": t.track_number,
-                                     "title": t.title, "format": t.format, "duration_ms": t.duration_ms})
-                        if pl_tracks:
-                            generate_m3u(pl.name, pl_tracks, target)
-                            playlists_generated += 1
+                keep_stems = {sanitize_playlist_stem(pl.name) for pl in db_playlists}
+                removed = sweep_orphan_playlists(target, keep_stems)
+                if removed:
+                    logger.info("Removed %d orphan playlist file(s): %s", len(removed), removed)
+
+                for pl in db_playlists:
+                    entries = await session.execute(
+                        select(PlaylistTrack).where(PlaylistTrack.playlist_id == pl.id).order_by(PlaylistTrack.position)
+                    )
+                    seen_track_ids = set()
+                    pl_tracks = []
+                    for entry in entries.scalars().all():
+                        if entry.track_id in seen_track_ids:
+                            continue
+                        seen_track_ids.add(entry.track_id)
+                        t = await session.get(Track, entry.track_id)
+                        if t and t.status == "done" and t.file_path:
+                            pl_tracks.append(
+                                {"artist": t.artist, "album": t.album, "track_number": t.track_number,
+                                 "title": t.title, "format": t.format, "duration_ms": t.duration_ms})
+                    if pl_tracks:
+                        generate_m3u(pl.name, pl_tracks, target)
+                        playlists_generated += 1
             except Exception as e:
                 errors.append(f"Playlist error: {e}")
+                logger.exception("Failed to generate playlists")
 
             # Save history
             session.add(SyncHistory(device_path=device_path, tracks_added=synced, total_size=total_size))

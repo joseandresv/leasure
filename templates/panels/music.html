@@ -1,39 +1,84 @@
-<div x-data="{ tab: 'recent' }">
-    <h2>music</h2>
+{% from "macros/components.html" import menu_head, format_selector %}
+{{ menu_head('MUSIC', 'SELECT MUSIC') }}
 
-    <!-- Search bar -->
-    <div class="search-bar">
-        <input type="search" name="q" placeholder="search all music..."
-               hx-get="/api/music/search"
-               hx-trigger="keyup changed delay:400ms"
-               hx-target="#music-results"
-               hx-swap="innerHTML">
+{# THE DECK shell — the H2 player + "NOW SELECTED" readout live in a persistent
+   left rail; only the vertical roulette on the right swaps per tab. The stage
+   bezel sits at the same screen position as every other menu's stage, so the
+   docked Walker never moves when you change menus. #}
+<div class="rhythm-deck music-cabinet" x-data="{ tab: 'deck' }" tabindex="0">
+<div class="menu-deck">
+
+    <!-- LEFT RAIL: H2 stage + NOW SELECTED readout -->
+    <aside class="menu-stage deck-rail">
+        <div class="deck-display-bezel device-dock" id="stage-music">
+            <span class="deck-stage-tag"><b class="deck-stage-num">H2</b>&nbsp;WALKER</span>
+            <img class="deck-screen-img" alt="" crossorigin="anonymous" data-vibrant>
+            <div class="menu-stage-fallback">HIFI<br>WALKER<br>H2</div>
+            <div class="deck-scanlines"></div>
+            <div class="deck-screen-glare"></div>
+        </div>
+        <div class="deck-display-led"></div>
+
+        <div class="deck-readout">
+            <div class="deck-readout-head">
+                <span class="deck-eyebrow">NOW SELECTED</span>
+                <div class="deck-head-right">
+                    <button class="deck-refresh" title="Refresh"
+                            hx-get="/api/music/deck?refresh=1"
+                            hx-target="#music-results" hx-swap="innerHTML" hx-indicator="this">&#x21bb;</button>
+                    <span class="deck-source-chip deck-source">—</span>
+                </div>
+            </div>
+            <div class="deck-title">—</div>
+            <div class="deck-artist">—</div>
+            <div class="deck-album-line"><span class="deck-album">—</span></div>
+
+            <div class="deck-divider"></div>
+
+            <div class="deck-stats">
+                <div class="deck-stat"><span class="deck-stat-key">GENRE</span><span class="deck-stat-val deck-genre">—</span></div>
+                <div class="deck-stat"><span class="deck-stat-key">YEAR</span><span class="deck-stat-val deck-year">—</span></div>
+                <div class="deck-stat"><span class="deck-stat-key">TIME</span><span class="deck-stat-val deck-duration">--:--</span></div>
+                <div class="deck-stat"><span class="deck-stat-key">TRK</span><span class="deck-stat-val deck-trk">—</span></div>
+            </div>
+
+            <div class="deck-dbstate"><!-- per-selection action injected here --></div>
+
+            <div class="deck-format-row">
+                {{ format_selector('deck') }}
+            </div>
+        </div>
+    </aside>
+
+    <!-- RIGHT: search + tabs + vertical roulette -->
+    <div class="menu-content">
+        <div class="search-bar">
+            <input type="search" name="q" placeholder="search all music..."
+                   hx-get="/api/music/search"
+                   hx-trigger="keyup changed delay:400ms"
+                   hx-target="#music-results"
+                   hx-swap="innerHTML">
+        </div>
+
+        <div class="tab-nav">
+            <button @click="tab='deck'" :class="tab==='deck' && 'tab-active'"
+                    hx-get="/api/music/deck" hx-target="#music-results" hx-swap="innerHTML">◉ The Deck</button>
+            <button @click="tab='recent'" :class="tab==='recent' && 'tab-active'"
+                    hx-get="/api/music/recent" hx-target="#music-results" hx-swap="innerHTML">Recently Listened</button>
+            <button @click="tab='albums'" :class="tab==='albums' && 'tab-active'"
+                    hx-get="/api/music/albums" hx-target="#music-results" hx-swap="innerHTML">Albums</button>
+            <button @click="tab='playlists'" :class="tab==='playlists' && 'tab-active'"
+                    hx-get="/api/music/playlists" hx-target="#music-results" hx-swap="innerHTML">Playlists</button>
+            <button @click="tab='artists'" :class="tab==='artists' && 'tab-active'"
+                    hx-get="/api/music/artists" hx-target="#music-results" hx-swap="innerHTML">Artists</button>
+        </div>
+
+        <div id="music-results" hx-get="/api/music/deck" hx-trigger="load" hx-swap="innerHTML">
+            <i style="color: var(--text-muted);">loading...</i>
+        </div>
     </div>
 
-    <!-- Category tabs -->
-    <div class="tab-nav">
-        <button @click="tab='recent'" :class="tab==='recent' && 'tab-active'"
-                hx-get="/api/music/recent" hx-target="#music-results" hx-swap="innerHTML">
-            Recently Listened
-        </button>
-        <button @click="tab='albums'" :class="tab==='albums' && 'tab-active'"
-                hx-get="/api/music/albums" hx-target="#music-results" hx-swap="innerHTML">
-            Albums
-        </button>
-        <button @click="tab='playlists'" :class="tab==='playlists' && 'tab-active'"
-                hx-get="/api/music/playlists" hx-target="#music-results" hx-swap="innerHTML">
-            Playlists
-        </button>
-        <button @click="tab='artists'" :class="tab==='artists' && 'tab-active'"
-                hx-get="/api/music/artists" hx-target="#music-results" hx-swap="innerHTML">
-            Artists
-        </button>
-    </div>
-
-    <!-- Results area -->
-    <div id="music-results" hx-get="/api/music/recent" hx-trigger="load" hx-swap="innerHTML">
-        <i style="color: var(--text-muted);">loading...</i>
-    </div>
+</div>
 
     <!-- Detail modal -->
     <dialog id="music-detail-modal">

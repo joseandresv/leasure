@@ -61,12 +61,19 @@ async def _download_lossless(track_id: int) -> Path | None:
         except Exception as e:
             logger.warning("Engine %s failed for track %d: %s", engine_name, track_id, e)
 
-    # Fallback: use spotDL or yt-dlp for lossy FLAC
-    logger.info("All lossless engines failed for track %d, falling back", track_id)
+    # Fallback: no real lossless source available, so degrade to lossy FLAC from YouTube.
+    # Be explicit about it — quality is downgraded to flac_lossy (badge shows "FLAC", not
+    # "FLAC Lossless") and a notice is recorded so the result isn't a silent lie.
+    logger.warning(
+        "No lossless source for track %d — downloading lossy FLAC from YouTube instead. "
+        "Configure Qobuz/Tidal/Deezer (streamrip) for true lossless.",
+        track_id,
+    )
     async with async_session() as session:
         track = await session.get(Track, track_id)
         track.quality = "flac_lossy"
         track.engine_used = "fallback"
+        track.error_message = "Lossless source unavailable — transcoded lossy FLAC from YouTube."
         await session.commit()
         has_spotify = bool(track.spotify_uri)
 

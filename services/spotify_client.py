@@ -270,17 +270,21 @@ def get_recently_played(limit: int = 50) -> list[dict] | None:
             if t["id"] in seen:
                 continue
             seen.add(t["id"])
+            ctx = item.get("context") or {}
             tracks.append({
                 "id": t["id"],
                 "name": t["name"],
                 "artist": ", ".join(a["name"] for a in t["artists"]),
                 "artist_id": t["artists"][0]["id"] if t.get("artists") else None,
                 "album": t["album"]["name"] if t.get("album") else None,
+                "album_id": t["album"]["id"] if t.get("album") else None,
                 "album_image_url": t["album"]["images"][0]["url"] if t.get("album", {}).get("images") else None,
                 "track_number": t.get("track_number"),
                 "duration_ms": t["duration_ms"],
                 "uri": t["uri"],
                 "played_at": item.get("played_at", ""),
+                "context_type": ctx.get("type"),
+                "context_uri": ctx.get("uri"),
             })
         return tracks
     except Exception as e:

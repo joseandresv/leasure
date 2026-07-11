@@ -1,11 +1,133 @@
 {# Leasure — reusable Jinja2 macros #}
 
+{# Menu cabinet masthead — DDR "ALL MUSIC / Select Music" style header.
+   Used at the top of every panel so all menus share the deck's chassis. #}
+{% macro menu_head(title, eyebrow='SELECT') %}
+<div class="menu-masthead">
+    <span class="menu-eyebrow">&#9679; {{ eyebrow }}</span>
+    <h1 class="menu-title">{{ title }}</h1>
+    <div class="menu-rule"></div>
+</div>
+{% endmacro %}
+
+{# A single control hint (keycap + label) for footers #}
+{% macro ctl(key, label) %}<span class="deck-ctl"><b class="deck-ctl-key">{{ key }}</b> {{ label }}</span>{% endmacro %}
+
+{# ---- Roulette banners (DDR song-list rows) — used by every music sub-tab ----
+   Each banner carries data-* for the NOW SELECTED readout and a hidden
+   <template class="deck-banner-db"> whose contents are cloned into the readout's
+   action slot when the banner is selected (download for tracks, OPEN for
+   albums/playlists). rhythm-deck.js handles selection. #}
+{% macro track_banner(track) %}
+{% set src = track.sources[0] if track.sources else {} %}
+{% set mins = (track.duration_ms or 0) // 60000 %}
+{% set secs = ((track.duration_ms or 0) // 1000) % 60 %}
+<button type="button" class="deck-banner deck-banner-row" role="option"
+        data-title="{{ track.name }}"
+        data-artist="{{ track.artist }}"
+        data-album="{{ track.album or '' }}"
+        data-year="{{ track.db.year if track.db and track.db.year else (track.year or '') }}"
+        data-genre="{{ track.db.genre if track.db and track.db.genre else '' }}"
+        data-duration="{{ '%d:%02d' % (mins, secs) if track.duration_ms else '' }}"
+        data-trk="{{ track.track_number or '' }}"
+        data-image="{{ track.image_url or '' }}"
+        data-source="{{ src.provider | default('—', true) }}">
+    <span class="deck-banner-art">
+        {% if track.image_url %}<img src="{{ track.image_url }}" loading="lazy" alt="">
+        {% else %}<span class="deck-banner-noart">&#9835;</span>{% endif %}
+        {% if track.download_status == 'done' %}<span class="deck-banner-tick">&check;</span>{% endif %}
+    </span>
+    <span class="deck-banner-label">
+        <span class="deck-banner-title">{{ track.name }}</span>
+        <span class="deck-banner-artist">{{ track.artist }}</span>
+    </span>
+    <template class="deck-banner-db">
+        {% if track.db and track.db.status == 'done' %}
+            {% if track.db.quality == 'flac_lossless' %}{{ badge('', quality='flac_lossless') }}
+            {% elif track.db.quality and 'flac' in track.db.quality %}{{ badge('', quality='flac') }}
+            {% elif track.db.quality == 'native' %}{{ badge('', quality='native') }}
+            {% else %}{{ badge('', quality='mp3') }}{% endif %}
+            {% if track.db.synced %}<span class="badge badge-done">ON DEVICE</span>
+            {% else %}<span class="badge badge-mp3">IN LIBRARY</span>{% endif %}
+            {% if track.db.file_size %}<span class="deck-db-meta">{{ '%.1f' % (track.db.file_size / 1048576) }} MB</span>{% endif %}
+            {% if track.db.engine %}<span class="deck-db-meta">via {{ track.db.engine }}</span>{% endif %}
+        {% elif track.download_status in ['pending', 'downloading'] %}
+            {{ badge(track.download_status) }}
+        {% elif track.download_status == 'error' %}
+            {{ badge('error') }}
+        {% else %}
+            <button class="outline dl-btn deck-dl-btn"
+                    hx-post="/api/music/download/track"
+                    hx-vals='{{ {
+                        "title": track.name,
+                        "artist": track.artist,
+                        "album": track.album | default("", true),
+                        "track_number": track.track_number | default(0, true),
+                        "duration_ms": track.duration_ms | default(0, true),
+                        "image_url": track.image_url | default("", true),
+                        "spotify_uri": src.uri | default("", true) if src.provider == "spotify" else "",
+                        "spotify_artist_id": src.artist_id | default("", true) if src.provider == "spotify" else "",
+                        "youtube_id": src.id | default("", true) if src.provider in ["youtube", "youtube music"] else ""
+                    } | tojson }}'
+                    hx-include="#dl-format-deck"
+                    hx-target="this" hx-swap="outerHTML" hx-indicator="this">
+                &#9660; DOWNLOAD
+            </button>
+        {% endif %}
+    </template>
+</button>
+{% endmacro %}
+
+{# Album / playlist / artist banner. detail_url (optional) wires the OPEN action. #}
+{% macro item_banner(image, title, subtitle, kind, detail_url='', source='', year='', trk='', dl_count=0, total=0) %}
+<button type="button" class="deck-banner deck-banner-row" role="option"
+        data-title="{{ title }}" data-artist="{{ subtitle }}" data-album=""
+        data-year="{{ year }}" data-genre="" data-duration="" data-trk="{{ trk }}"
+        data-image="{{ image }}" data-source="{{ source }}">
+    <span class="deck-banner-art">
+        {% if image %}<img src="{{ image }}" loading="lazy" alt=""{% if kind != 'playlist' %} data-vibrant{% endif %}>
+        {% else %}<span class="deck-banner-noart">{% if kind == 'playlist' %}&#9776;{% elif kind == 'artist' %}&#9883;{% else %}&#9835;{% endif %}</span>{% endif %}
+        {% if dl_count and total and dl_count >= total %}<span class="deck-banner-tick">&check;</span>{% endif %}
+    </span>
+    <span class="deck-banner-label">
+        <span class="deck-banner-title">{{ title }}</span>
+        <span class="deck-banner-artist">{{ subtitle }}</span>
+    </span>
+    <template class="deck-banner-db">
+        {% if detail_url %}
+        <button class="outline deck-open-btn"
+                hx-get="{{ detail_url }}" hx-target="#music-detail" hx-swap="innerHTML"
+                onclick="document.getElementById('music-detail-modal').showModal()">&#9656; OPEN</button>
+        {% endif %}
+        {% if dl_count and total %}<span class="badge badge-done">{{ dl_count }}/{{ total }}</span>{% endif %}
+        {% if source %}<span class="deck-db-meta">{{ source }}</span>{% endif %}
+    </template>
+</button>
+{% endmacro %}
+
+{# Menu stage — the docked HiFi Walker H2 player, the centerpiece of every menu.
+   scene.js docks the 3D Walker over the .device-dock bezel. Wrap a panel's body
+   in: <div class="menu-deck">{{ stage('id') }}<div class="menu-content">…</div></div> #}
+{% macro stage(id) %}
+<aside class="menu-stage">
+    <div class="deck-display-bezel device-dock" id="stage-{{ id }}">
+        <span class="deck-stage-tag"><b class="deck-stage-num">H2</b>&nbsp;WALKER</span>
+        <div class="menu-stage-fallback">HIFI<br>WALKER<br>H2</div>
+        <div class="deck-scanlines"></div>
+        <div class="deck-screen-glare"></div>
+    </div>
+    <div class="deck-display-led"></div>
+    <div class="menu-stage-cap">HIFI WALKER &middot; H2</div>
+</aside>
+{% endmacro %}
+
 {# Format selector dropdown — shared across all download contexts #}
 {% macro format_selector(id_suffix='') %}
 <select name="format" id="dl-format{{ '-' + id_suffix if id_suffix else '' }}" class="format-select">
+    <option value="native">Original M4A — no re-encode (best)</option>
     <option value="mp3">MP3 320kbps</option>
-    <option value="flac">FLAC (YouTube)</option>
-    <option value="flac_lossless">FLAC Lossless</option>
+    <option value="flac">FLAC (transcoded, not true lossless)</option>
+    <option value="flac_lossless">FLAC Lossless (needs Qobuz/Tidal/Archive)</option>
 </select>
 {% endmacro %}
 
@@ -21,6 +143,8 @@
 <span class="badge badge-lossless">FLAC Lossless</span>
 {% elif quality and 'flac' in quality %}
 <span class="badge">FLAC</span>
+{% elif quality == 'native' %}
+<span class="badge badge-native">Original</span>
 {% elif quality %}
 <span class="badge badge-mp3">MP3 320</span>
 {% endif %}

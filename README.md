@@ -1,6 +1,6 @@
 # Leasure
 
-A local music downloader and library manager built for the **HIFI WALKER H2** portable music player. Browse your Spotify and YouTube Music libraries through a web UI, download tracks via YouTube Music (with optional Premium quality), and sync everything to your H2's SD card with proper metadata, album art, synced lyrics, and playlists.
+A local music downloader and library manager built for the **HIFI WALKER H2** portable music player. Browse your Spotify and YouTube Music libraries through a web UI, download tracks via YouTube Music (with optional Premium quality), and sync everything to your H2's SD card with proper metadata, album art, synced lyrics, and playlists. [Music Menu from DanceDanceRevolution inspired UI]
 
 ## Features
 

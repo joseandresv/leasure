@@ -8,6 +8,7 @@ from config import settings
 from db import get_session
 from models import Playlist, PlaylistTrack, Track
 from services import spotify_client as sp
+from services.formats import resolve_format
 from worker import download_worker
 
 
@@ -279,11 +280,7 @@ async def download_track(
         if genres:
             genre = ", ".join(genres[:3])  # Take top 3 genres
 
-    quality = "mp3_320"
-    if format == "flac":
-        quality = "flac_lossy"
-    elif format == "flac_lossless":
-        quality = "flac_lossless"
+    quality, container = resolve_format(format)
 
     track = existing or Track(spotify_uri=uri)
     track.title = title
@@ -293,7 +290,7 @@ async def download_track(
     track.track_number = track_number
     track.duration_ms = duration_ms
     track.artwork_url = artwork_url
-    track.format = "flac" if "flac" in format else "mp3"
+    track.format = container
     track.quality = quality
     track.source = "spotify"
     track.status = "pending"
@@ -347,11 +344,7 @@ async def download_album(
             queued.append({"track_id": existing.id, "status": existing.status})
             continue
 
-        quality = "mp3_320"
-        if format == "flac":
-            quality = "flac_lossy"
-        elif format == "flac_lossless":
-            quality = "flac_lossless"
+        quality, container = resolve_format(format)
 
         # Extract year from release_date (format: YYYY or YYYY-MM-DD)
         release_date = album.get("release_date", "")
@@ -368,7 +361,7 @@ async def download_album(
         track.artwork_url = album["image_url"]
         track.year = year
         track.genre = album_genre
-        track.format = "flac" if "flac" in format else "mp3"
+        track.format = container
         track.quality = quality
         track.source = "spotify"
         track.status = "pending"
@@ -449,11 +442,7 @@ async def download_playlist(
             queued.append({"track_id": existing.id, "status": existing.status})
             continue
 
-        quality = "mp3_320"
-        if format == "flac":
-            quality = "flac_lossy"
-        elif format == "flac_lossless":
-            quality = "flac_lossless"
+        quality, container = resolve_format(format)
 
         # Fetch genre from artist
         genre = None
@@ -471,7 +460,7 @@ async def download_playlist(
         track.duration_ms = t.get("duration_ms", 0)
         track.artwork_url = t.get("album_image_url", "")
         track.genre = genre
-        track.format = "flac" if "flac" in format else "mp3"
+        track.format = container
         track.quality = quality
         track.source = "spotify"
         track.status = "pending"
