@@ -60,7 +60,7 @@ def _refresh_from_chrome() -> bool:
     try:
         import yt_dlp
         # Use yt-dlp's cookie extraction to get fresh cookies from Chrome
-        ydl_opts = {"quiet": True, "cookiesfrombrowser": ("chrome",)}
+        ydl_opts = {"quiet": True, "cookiesfrombrowser": (settings.cookie_browser,)}
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             cookie_jar = ydl.cookiejar
             # Build cookie string

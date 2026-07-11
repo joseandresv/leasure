@@ -2,11 +2,14 @@
 
 ## Project Overview
 
-Leasure is a local music downloader and library manager designed specifically for the HIFI WALKER H2 portable music player. It runs as a FastAPI web server on WSL2, provides a browser-based UI for browsing Spotify and YouTube Music libraries, downloads audio via yt-dlp, applies H2-compatible metadata, and syncs to the H2's SD card.
+Leasure is a local music downloader and library manager designed specifically for the HIFI WALKER H2 portable music player. It runs as a FastAPI web server on native Windows, plain Linux, or WSL2 (see the platform layer below), provides a browser-based UI for browsing Spotify and YouTube Music libraries, downloads audio via yt-dlp, applies H2-compatible metadata, and syncs to the H2's SD card.
 
 The target user has Spotify Premium and YouTube Music Premium subscriptions. The app uses these accounts for library browsing and leverages YouTube Music Premium for higher quality audio via Chrome cookie extraction.
 
 ## Key Architecture Decisions
+
+### Platform layer (Windows / Linux / WSL2)
+`services/platform.py` detects the runtime platform (`get_platform()` returns `windows` | `wsl2` | `linux`). Device detection in `services/device.py` dispatches to one of three backends: Win32 drive enumeration via ctypes (Windows), `/media` + `/run/media` mount scanning (Linux), or `/mnt/<letter>` drvfs scanning (WSL2). The manual `/api/device/mount` endpoint and its UI only apply on WSL2 — Windows and desktop Linux auto-mount removable drives. Templates receive `platform` and `device_path_placeholder` as Jinja globals. The cookie-extraction browser is configurable via `COOKIE_BROWSER` (default chrome) because Chrome 127+ app-bound encryption can block yt-dlp cookie extraction on native Windows (Firefox works there). Install scripts live in `scripts/` (install.sh/run.sh for Linux/WSL2, install.ps1/run.ps1 for Windows).
 
 ### yt-dlp instead of spotDL
 SpotDL was the original download engine but caused compatibility issues (dependency conflicts with the main app's Python environment, unreliable matching). The project now uses yt-dlp directly with ytmusicapi for search. The `spotdl_engine.py` file name is historical -- it actually implements yt-dlp + ytmusicapi downloads, not spotDL.
@@ -60,7 +63,9 @@ services/
   tagger.py         -- Full metadata pipeline: ID3/Vorbis tags, embedded art, sidecar jpg/lrc
   lyrics.py         -- lrclib.net synced lyrics fetcher
   artwork.py        -- Album art download + Pillow resize
-  device.py         -- WSL2 device detection, FAT32 filename sanitization, device path builder
+  platform.py       -- Runtime platform detection (windows | wsl2 | linux)
+  formats.py        -- Shared download format/quality mapping
+  device.py         -- Device detection (per-platform backends), FAT32 filename sanitization, device path builder
   playlist.py       -- M3U playlist generation (H2 format)
 
 templates/          -- Jinja2 templates (base.html + page templates + htmx partials)
@@ -129,8 +134,9 @@ async def test_home():
 
 ## Environment
 
-- Runs on WSL2 (Ubuntu) with Windows drives mounted at /mnt/
-- Python 3.11+ with venv at `.venv/`
-- ffmpeg must be installed (`sudo apt install ffmpeg`)
+- Runs on native Windows, plain Linux, or WSL2 (primary dev environment: WSL2 Ubuntu with Windows drives at /mnt/)
+- Python 3.11+ with venv at `.venv/` (created by `scripts/install.sh` / `scripts/install.ps1`)
+- ffmpeg must be installed (`sudo apt install ffmpeg` / `winget install Gyan.FFmpeg`)
 - deno must be installed for yt-dlp PO tokens
-- Chrome must be installed and logged into YouTube Music for Premium quality
+- A browser logged into YouTube Music for Premium quality (Chrome by default; set `COOKIE_BROWSER=firefox` on native Windows if Chrome cookie extraction is blocked)
+- WARNING: keeping the repo inside a OneDrive-synced folder causes intermittent EIO through the WSL drvfs bridge when OneDrive dehydrates files; pin the folder ("Always keep on this device") or move it out of OneDrive

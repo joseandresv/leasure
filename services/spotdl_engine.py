@@ -136,7 +136,7 @@ async def spotdl_download(track_id: int) -> Path | None:
 
         # Try with Chrome cookies first (Premium quality), fall back without
         attempts = []
-        premium_opts = {**base_opts, "cookiesfrombrowser": ("chrome",), "remote_components": ["ejs:github"]}
+        premium_opts = {**base_opts, "cookiesfrombrowser": (settings.cookie_browser,), "remote_components": ["ejs:github"]}
         attempts.append(("premium", premium_opts))
         attempts.append(("standard", {**base_opts, "remote_components": ["ejs:github"]}))
 

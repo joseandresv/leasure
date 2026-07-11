@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     data_dir: Path = Path("./data")
 
     # Download defaults
+    # Browser to extract YouTube Music cookies from (chrome | firefox | edge | brave ...).
+    # On native Windows, Chrome 127+ app-bound encryption can block extraction — use firefox there.
+    cookie_browser: str = "chrome"
     default_format: str = "mp3"  # mp3 | flac | flac_lossless
     mp3_bitrate: int = 320
     max_concurrent_downloads: int = 1

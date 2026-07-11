@@ -15,7 +15,7 @@ A local music downloader and library manager built for the **HIFI WALKER H2** po
 - **MusicBrainz genre lookup** -- fetches artist genres from MusicBrainz when Spotify's album genre endpoint returns empty (which it usually does)
 - **Synced lyrics** -- fetches time-synced `.lrc` lyrics from lrclib.net and saves them as sidecar files
 - **H2-compatible metadata** -- writes proper ID3v2.4 tags (MP3) and Vorbis comments (FLAC), embeds album art, and creates sidecar `.jpg` and `.lrc` files that the H2 reads natively
-- **Device sync with progress** -- detects mounted drives via WSL2 `/mnt/` paths, copies music with SSE progress streaming, generates `.m3u` playlists at the SD card root
+- **Device sync with progress** -- detects mounted drives on Windows (drive letters), Linux (`/media`, `/run/media`), and WSL2 (`/mnt/`), copies music with SSE progress streaming, generates `.m3u` playlists at the SD card root
 - **Playlist generation** -- `.m3u` files placed at the SD card root for H2 compatibility
 - **Background download queue** -- async worker processes downloads without blocking the UI
 - **Album art carousel** -- homepage shows spinning LP artwork from your downloaded collection
@@ -57,29 +57,87 @@ library/{Artist}/{Album}/{NN} - {Title}.lrc   (synced lyrics)
 
 On the H2 SD card, the same structure is used at the root (no `MUSIC/` prefix needed -- the H2 scans the entire card and uses ID3 tags for its Category browser).
 
-## Prerequisites
+## Installation
+
+Leasure runs on three platforms via a runtime platform layer (`services/platform.py`): **native Windows**, **plain Linux**, and **WSL2**. Device detection adapts automatically to each; the manual drive-mount UI only appears on WSL2.
+
+### Prerequisites (all platforms)
 
 - **Python 3.11+**
 - **ffmpeg** -- required by yt-dlp for audio conversion
-- **deno** -- required by yt-dlp for YouTube Premium PO token generation (`curl -fsSL https://deno.land/install.sh | sh`)
-- **Chrome browser** -- must be logged into YouTube Music for Premium quality downloads and automatic cookie refresh
+- **deno** -- required by yt-dlp for YouTube Premium PO token generation
+- **A browser logged into <https://music.youtube.com>** (Chrome by default) -- used for Premium quality downloads and automatic cookie refresh
 
-## Setup
+### Linux / WSL2 quick start
+
+Install ffmpeg and deno first:
 
 ```bash
-# Clone and enter the project
-cd leasure
-
-# Create virtual environment
-python -m venv .venv
-source .venv/bin/activate  # Linux/WSL
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Copy environment template
-cp .env.example .env
+sudo apt install ffmpeg        # Debian/Ubuntu
+sudo dnf install ffmpeg        # Fedora
+curl -fsSL https://deno.land/install.sh | sh
 ```
+
+Then clone and install:
+
+```bash
+git clone <repo-url> leasure
+cd leasure
+scripts/install.sh     # creates .venv, installs requirements, checks ffmpeg/deno, copies .env.example to .env
+# edit .env (see Configuration below)
+scripts/run.sh
+```
+
+### Windows (native) quick start
+
+Install Python 3.11+ from <https://python.org> (or `winget install Python.Python.3.12`), then:
+
+```powershell
+winget install Gyan.FFmpeg DenoLand.Deno
+git clone <repo-url> leasure
+cd leasure
+scripts\install.ps1    # creates .venv, installs requirements, checks ffmpeg/deno, copies .env.example to .env
+# edit .env (see Configuration below)
+scripts\run.ps1
+```
+
+If PowerShell refuses to run the scripts, allow them for the current session first:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+```
+
+### Manual setup (any platform)
+
+If you'd rather not use the install scripts:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate      # Linux/WSL2
+# .venv\Scripts\activate       # Windows
+
+pip install -r requirements.txt
+cp .env.example .env           # copy .env.example .env on Windows
+```
+
+## Platform notes
+
+### Windows
+
+- Chrome 127+ uses app-bound cookie encryption, which can block yt-dlp's cookie extraction. If YouTube Music Premium quality fails, set `COOKIE_BROWSER=firefox` in `.env` (and log Firefox into music.youtube.com), or use the manual header-paste flow on the app's YouTube Music page.
+- Removable devices show up automatically as drive letters -- no mounting needed.
+
+### Plain Linux
+
+- Removable drives auto-mount under `/media/<user>/` or `/run/media/<user>/` on desktop distros; the app picks them up automatically.
+- On headless boxes with no browser, use the manual header-paste flow for YouTube Music authentication.
+
+### WSL2
+
+- Removable drives must be mounted manually (`sudo mount -t drvfs E: /mnt/e`). The app's Device page has a **Mount** button that does this for you.
+- Do **not** keep the repo (or its `.venv`/`library`) inside a OneDrive-synced folder -- OneDrive Files-On-Demand causes intermittent I/O errors through the WSL drvfs bridge. If you must, right-click the folder in Explorer and choose **"Always keep on this device"**.
+
+## Configuration
 
 ### Configure Spotify
 
@@ -97,7 +155,13 @@ The Spotify OAuth flow requests the following scopes: `user-library-read`, `play
 
 ### Configure YouTube Music
 
-YouTube Music authentication is handled automatically via Chrome cookies. As long as you are logged into YouTube Music in Chrome, the app will auto-refresh credentials on each connection check.
+YouTube Music authentication is handled automatically via browser cookies (Chrome by default). As long as you are logged into YouTube Music in that browser, the app will auto-refresh credentials on each connection check.
+
+To extract cookies from a different browser, set `COOKIE_BROWSER` in `.env` (default `chrome`; any browser yt-dlp supports works: `firefox`, `edge`, `brave`, ...):
+
+```env
+COOKIE_BROWSER=firefox
+```
 
 Alternatively, you can set up manually through the web UI by pasting browser request headers (instructions are shown on the YouTube Music page).
 
@@ -124,9 +188,22 @@ Tokens are stored in `data/youtube_oauth.json` and auto-refresh using the refres
 
 ## Usage
 
+Use the run script for your platform:
+
+```bash
+scripts/run.sh     # Linux / WSL2
+```
+
+```powershell
+scripts\run.ps1    # Windows
+```
+
+Or start it manually:
+
 ```bash
 # Activate the virtual environment
-source .venv/bin/activate
+source .venv/bin/activate      # Linux/WSL2
+# .venv\Scripts\activate       # Windows
 
 # Start the server
 python app.py
@@ -157,7 +234,7 @@ Open <http://127.0.0.1:8642> in your browser.
 
 ### Syncing to H2
 
-1. Connect your H2 via USB and ensure it is mounted (WSL2 mounts drives under `/mnt/`)
+1. Connect your H2 via USB. On Windows it appears as a drive letter and on desktop Linux it auto-mounts under `/media`/`/run/media`; on WSL2 it must be mounted under `/mnt/` (use the Device page's Mount button or `sudo mount -t drvfs E: /mnt/e`)
 2. Go to the Device page
 3. Select your H2 from the detected devices list
 4. Preview the sync diff to see what will be added
