@@ -11,11 +11,14 @@ The target user has Spotify Premium and YouTube Music Premium subscriptions. The
 ### Platform layer (Windows / Linux / WSL2)
 `services/platform.py` detects the runtime platform (`get_platform()` returns `windows` | `wsl2` | `linux`). Device detection in `services/device.py` dispatches to one of three backends: Win32 drive enumeration via ctypes (Windows), `/media` + `/run/media` mount scanning (Linux), or `/mnt/<letter>` drvfs scanning (WSL2). The manual `/api/device/mount` endpoint and its UI only apply on WSL2 — Windows and desktop Linux auto-mount removable drives. Templates receive `platform` and `device_path_placeholder` as Jinja globals. The cookie-extraction browser is configurable via `COOKIE_BROWSER` (default chrome) because Chrome 127+ app-bound encryption can block yt-dlp cookie extraction on native Windows (Firefox works there). Install scripts live in `scripts/` (install.sh/run.sh for Linux/WSL2, install.ps1/run.ps1 for Windows).
 
-### yt-dlp instead of spotDL
-SpotDL was the original download engine but caused compatibility issues (dependency conflicts with the main app's Python environment, unreliable matching). The project now uses yt-dlp directly with ytmusicapi for search. The `spotdl_engine.py` file name is historical -- it actually implements yt-dlp + ytmusicapi downloads, not spotDL.
+### yt-dlp instead of spotDL, in one engine
+SpotDL was the original download engine but caused compatibility issues (dependency conflicts with the main app's Python environment, unreliable matching). The project now uses yt-dlp directly with ytmusicapi for search. `services/yt_engine.py` is the single pipeline for both Spotify-sourced and YouTube-sourced tracks (the old `spotdl_engine.py` / `ytdlp_engine.py` pair, which duplicated it, is gone). It resolves the source (an exact `youtube_id` wins over any search; otherwise scored ytmusicapi results, then scored `ytsearch5` results, with variant penalties and a minimum score -- no blind `ytsearch1`), downloads into `downloads/<track_id>/` via `extract_info(download=True)`, reads the provenance from `info["requested_downloads"][0]` (never by re-probing the output), verifies the duration within 10 s, then moves the file atomically into the library and removes the staging dir. There is no "most recent file in the folder" fallback. `Track.quality` stores the result tier (`aac_256`, `mp3_320`, ...) next to `source_format_id`, `source_codec`, `source_bitrate_kbps`, `source_sample_rate`, `premium_used`, `transcoded`, `is_lossless`, `verification`, `matched_title` and `match_score`. Lossy FLAC is no longer offered anywhere: `flac_lossless` fails with a message when no lossless engine is configured. Authenticated attempts are throttled and capped by `YT_MAX_DOWNLOADS_PER_DAY` (counter in `data/yt_daily.json`); a "Sign in to confirm" / 403 refusal stops the download and asks for fresh cookies instead of retrying cookie-less.
 
 ### Chrome cookie auto-refresh for YouTube Music
 YouTube Music blocks unauthenticated and stale-cookie requests aggressively. The `youtube_client.py` has `_refresh_from_chrome()` which uses yt-dlp's cookie extraction to pull fresh cookies from Chrome, generates SAPISIDHASH auth, and writes ytmusicapi headers. This runs automatically on connection checks.
+
+### Premium cookie gate
+`data/cookies.txt` (Netscape format) is the credential yt-dlp authenticates with, not a browser profile: WSL2 has no readable profile and Chrome 127+ app-bound encryption blocks extraction on native Windows. `services/cookies.py` writes it from the `cookie` header of the manual header-paste flow (allow-listed Google/YouTube session cookies only, 0600, atomic), tracks its age (stale after 12 h) and source in `cookies.txt.meta.json`, and `premium_check()` proves the session really gets Premium audio by asking yt-dlp for the formats of `PREMIUM_CHECK_VIDEO_ID` on a `music.youtube.com` URL and looking for itag 141/774 or a "Premium" format note. The verdict is cached in `data/premium_check.json`, shown as PASS/FAIL on the YouTube Music card (`GET/POST /api/youtube/premium-check…`) and available as `python -m scripts.premium_check` (exit 1 on FAIL). Nothing downstream should claim Premium quality unless this passes.
 
 ### Deno for yt-dlp PO tokens
 YouTube requires Proof of Origin tokens for some downloads. yt-dlp uses `remote_components: ["ejs:github"]` which requires deno to be installed. The `app.py` startup adds `~/.deno/bin` to PATH.
@@ -69,9 +72,9 @@ routers/
 services/
   spotify_client.py -- Spotipy OAuth wrapper
   youtube_client.py -- ytmusicapi wrapper with Chrome cookie auto-refresh
-  downloader.py     -- Download dispatcher (spotdl_engine, ytdlp_engine, lossless fallbacks)
-  spotdl_engine.py  -- Main download engine: ytmusicapi search + yt-dlp + Chrome cookies
-  ytdlp_engine.py   -- Direct yt-dlp for YouTube-sourced tracks
+  downloader.py     -- Download dispatcher (yt_engine, lossless engines)
+  yt_engine.py      -- The YouTube pipeline: scored match, staging dir, provenance, atomic move
+  ytdlp_opts.py     -- Shared yt-dlp option sets (cookie file, throttle, PO-token solver)
   streamrip_engine.py -- Qobuz/Tidal/Deezer lossless (optional, requires credentials)
   bandcamp_engine.py  -- Bandcamp lossless fallback (optional)
   archive_engine.py   -- Internet Archive lossless fallback (optional)

@@ -67,9 +67,21 @@ document.addEventListener('htmx:responseError', function(event) {
 document.addEventListener('htmx:beforeRequest', function(event) {
     const el = event.detail.elt;
     if (el.classList && el.classList.contains('dl-btn')) {
+        if (!el.dataset.dlLabel) el.dataset.dlLabel = el.textContent.trim();
         el.disabled = true;
         el.textContent = '...';
     }
+});
+
+// A failed download POST is not swapped, so the button would stay dead at '...'
+['htmx:afterRequest', 'htmx:responseError', 'htmx:sendError'].forEach(function(name) {
+    document.addEventListener(name, function(event) {
+        if (event.detail.successful) return;
+        const el = event.detail.elt;
+        if (!el || !el.classList || !el.classList.contains('dl-btn')) return;
+        el.disabled = false;
+        if (el.dataset.dlLabel) el.textContent = el.dataset.dlLabel;
+    });
 });
 
 /* ── Album Art Color Extraction (Vibrant.js) ── */

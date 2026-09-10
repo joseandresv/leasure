@@ -1,0 +1,22 @@
+<div class="queue-item{% if t.status == 'error' %} queue-item-error{% endif %}">
+    {% if t.status != 'error' %}
+    <div class="audio-bars"><span></span><span></span><span></span><span></span></div>
+    {% endif %}
+    <div class="track-info">
+        <div class="track-title">{{ t.title }}</div>
+        <div class="track-artist">{{ t.artist }}</div>
+        {% if t.error_message %}
+        <small class="queue-item-note">{{ t.error_message }}</small>
+        {% endif %}
+    </div>
+    <span class="badge badge-{{ 'error' if t.status == 'error' else ('downloading' if t.status == 'downloading' else 'mp3') }}">{{ t.status }}</span>
+    <small style="font-family: var(--font-mono); color: var(--text-muted);">{{ t.format | upper }}</small>
+    {% if t.status == 'error' %}
+    <div class="queue-item-actions">
+        <button class="outline" type="button" hx-post="/api/downloads/retry/{{ t.id }}"
+                hx-target="closest .queue-item" hx-swap="outerHTML">Retry</button>
+        <button class="outline" type="button" hx-post="/api/downloads/dismiss/{{ t.id }}"
+                hx-target="closest .queue-item" hx-swap="outerHTML">Dismiss</button>
+    </div>
+    {% endif %}
+</div>

@@ -133,15 +133,19 @@ async def home_carousel(session: AsyncSession = Depends(get_session)):
     """LP carousel of album artwork from downloaded tracks."""
     result = await session.execute(
         select(Track.artwork_url, Track.album, Track.artist)
-        .where(Track.status == "done", Track.artwork_url.isnot(None))
+        .where(Track.status == "done")
         .group_by(Track.artist, Track.album)
         .limit(30)
     )
     covers = []
     for url, album, artist in result.all():
-        if not url or not str(url).startswith(("https://", "http://")):
-            continue
-        covers.append(f'<img src="{escape(url)}" alt="{escape(album)}" title="{escape(artist)} - {escape(album)}" data-vibrant>')
+        title = f"{escape(artist)} - {escape(album or 'Unknown album')}"
+        # An album with no usable artwork still belongs in the collection: a placeholder
+        # tile keeps the count honest instead of claiming there is no music.
+        if url and str(url).startswith(("https://", "http://")):
+            covers.append(f'<img src="{escape(url)}" alt="{escape(album)}" title="{title}" data-vibrant>')
+        else:
+            covers.append(f'<span class="lp-cover-placeholder" title="{title}">{escape(album or "Unknown album")}</span>')
     if not covers:
         return HTMLResponse('<i style="color:var(--text-muted)">no music yet &mdash; download some tracks to see your collection</i>')
 

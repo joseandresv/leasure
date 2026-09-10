@@ -1,5 +1,46 @@
-{% if connected %}
+{% macro premium_block(premium) %}
+{% set cookie = premium.cookie %}
+{% set state = premium.state or ('pass' if premium.premium else ('unchecked' if premium.premium is none else 'fail')) %}
+<p>
+    {% if state == 'pass' %}
+    <b>Premium: PASS</b> — high quality audio (AAC 256) is available for downloads.
+    {% elif state == 'not_configured' %}
+    <b>Premium: not checked</b> — set up YouTube Music first, then run the check.
+    {% elif state == 'unchecked' %}
+    <b>Premium: not checked</b> — run the check to see what quality downloads really get.
+    {% elif state == 'error' %}
+    <b>Premium: check failed</b> — YouTube did not answer the question.
+    {% else %}
+    <b>Premium: FAIL</b> — downloads get about 128 kbps only.
+    {% endif %}
+</p>
+{% if premium.error and state != 'not_configured' %}
+<p style="color: {{ 'var(--color-error)' if state == 'error' else 'var(--text-muted)' }};">{{ premium.error }}</p>
+{% endif %}
+{% if premium.checked_label and state != 'not_configured' %}
+<p style="color: var(--text-muted);">Checked {{ premium.checked_label }}.</p>
+{% endif %}
+{% if cookie.exists %}
+<p style="color: var(--text-muted);">
+    Cookies {{ cookie.age_hours }} h old{% if cookie.source == 'headers' %} (from pasted headers){% elif cookie.source == 'browser' %} (from your browser){% else %} (from a cookies.txt you supplied){% endif %}{% if cookie.stale %} — old enough that YouTube may have expired them{% endif %}.
+</p>
+{% endif %}
+{% if state != 'not_configured' %}
+<button type="button" hx-post="/api/youtube/premium-check/run" hx-target="#yt-premium-check"
+        hx-swap="innerHTML" hx-disabled-elt="this">Check now</button>
+{% endif %}
+{% if premium.formats %}
+<small style="color: var(--text-muted);">
+    Top audio offered:
+    {% for f in premium.formats[:3] %}{{ f.format_id }} {{ f.acodec }} {{ f.abr | round | int }}k{% if f.format_note %} ({{ f.format_note }}){% endif %}{% if not loop.last %}, {% endif %}{% endfor %}
+</small>
+{% endif %}
+{% endmacro %}
+{% if premium_only %}
+{{ premium_block(premium) }}
+{% elif connected %}
 <p><mark>Connected</mark> to YouTube Music</p>
+<div id="yt-premium-check">{{ premium_block(premium) }}</div>
 {% else %}
 <p style="color: var(--text-muted);">YouTube Music isn't set up yet.</p>
 <details>

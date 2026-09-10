@@ -332,3 +332,27 @@ async def test_youtube_browse_calls_the_provider_off_the_event_loop(client, monk
     resp = await client.get("/api/youtube/albums/html")
     assert resp.status_code == 200
     assert called_on["thread"] != loop_thread
+
+
+@pytest.mark.asyncio
+async def test_download_track_stores_the_isrc(client, db):
+    from sqlalchemy import select
+
+    resp = await client.post("/api/music/download/track", data={
+        "title": "Blue Monday", "artist": "New Order", "album": "Substance",
+        "spotify_uri": "spotify:track:isrctest", "isrc": "GBAAA8700001", "format": "mp3"})
+    assert resp.status_code == 200
+
+    async with db() as session:
+        track = (await session.execute(
+            select(Track).where(Track.spotify_uri == "spotify:track:isrctest"))).scalar_one()
+    assert track.isrc == "GBAAA8700001"
+
+
+@pytest.mark.asyncio
+async def test_library_tracks_html_marks_a_premium_download(client, db):
+    await _add_track(db, title="Blue Monday", artist="New Order", status="done",
+                     format="m4a", quality="aac_256", premium_used=True, source_bitrate_kbps=256)
+
+    resp = await client.get("/api/library/tracks/html")
+    assert "Premium" in resp.text

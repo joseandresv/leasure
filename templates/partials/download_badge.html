@@ -3,7 +3,8 @@
 {% elif status == 'already_downloaded' %}
 <span class="badge badge-done">Downloaded</span>
 {% elif status == 'error' %}
-<span class="badge badge-error">Error</span>
+<span class="badge badge-error" title="{{ message | default('', true) }}">Error</span>
+{% if message %}<small style="color: var(--color-error);">{{ message }}</small>{% endif %}
 {% else %}
 <span class="badge badge-downloading">{{ status }}</span>
 {% endif %}

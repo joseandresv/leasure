@@ -6,8 +6,13 @@ from sqlalchemy import select
 from config import settings
 from db import async_session
 from models import Track, utc_now
+from services import yt_engine
+from services.ytdlp_opts import CookieSessionRefused
 
 logger = logging.getLogger(__name__)
+
+# How long a worker waits before looking at a capped track again.
+CAP_RETRY_SECONDS = 300
 
 
 class DownloadWorker:
@@ -92,6 +97,18 @@ class DownloadWorker:
                 logger.info("Track %d already downloaded, skipping", track_id)
                 return
 
+        if await asyncio.to_thread(yt_engine.daily_cap_reached):
+            # Stay pending and go back in the queue: the cap protects the owner's
+            # Google session, it is not a failure of this track.
+            await self._set_status(
+                track_id, "pending",
+                f"Daily YouTube download cap reached ({yt_engine.MAX_DOWNLOADS_PER_DAY} today) — "
+                "this track stays queued and resumes tomorrow.")
+            await self.queue.put(track_id)
+            logger.info("Track %d deferred: daily download cap reached", track_id)
+            await asyncio.sleep(CAP_RETRY_SECONDS)
+            return
+
         await self._set_status(track_id, "downloading")
 
         # Import here to avoid circular imports and allow lazy loading
@@ -99,19 +116,23 @@ class DownloadWorker:
 
         try:
             result_path = await download_track(track_id)
-            if result_path:
-                async with async_session() as session:
-                    track = await session.get(Track, track_id)
-                    track.file_path = str(result_path)
-                    track.status = "done"
-                    track.downloaded_at = utc_now()
-                    await session.commit()
-                logger.info("Track %d downloaded to %s", track_id, result_path)
-            else:
-                await self._set_status(track_id, "error", "Download returned no result")
-        except Exception as e:
+        except (yt_engine.DownloadFailed, CookieSessionRefused) as e:
+            # An engine that explains itself has already said everything the user needs;
+            # a stack trace would only bury the message.
+            logger.warning("Track %d failed: %s", track_id, e)
             await self._set_status(track_id, "error", str(e))
+            return
+        except Exception as e:
+            await self._set_status(track_id, "error", str(e) or e.__class__.__name__)
             raise
+
+        async with async_session() as session:
+            track = await session.get(Track, track_id)
+            track.file_path = str(result_path)
+            track.status = "done"
+            track.downloaded_at = utc_now()
+            await session.commit()
+        logger.info("Track %d downloaded to %s", track_id, result_path)
 
     async def _set_status(self, track_id: int, status: str, error: str | None = None):
         async with async_session() as session:

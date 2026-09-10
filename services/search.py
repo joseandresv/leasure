@@ -20,12 +20,12 @@ def _normalize_key(title: str, artist: str) -> str:
 
 async def search_spotify(query: str, limit: int = 20) -> dict:
     """Search Spotify catalog for albums, tracks, and artists."""
-    client = sp.get_client()
+    client = await asyncio.to_thread(sp.get_client)
     if not client:
         return {"albums": [], "tracks": [], "artists": []}
 
     try:
-        results = client.search(q=query, type="album,track,artist", limit=limit)
+        results = await asyncio.to_thread(client.search, q=query, type="album,track,artist", limit=limit)
     except Exception as e:
         logger.warning("Spotify search failed: %s", e)
         return {"albums": [], "tracks": [], "artists": []}
@@ -52,6 +52,7 @@ async def search_spotify(query: str, limit: int = 20) -> dict:
             "image_url": t["album"]["images"][0]["url"] if t.get("album", {}).get("images") else None,
             "duration_ms": t.get("duration_ms", 0),
             "track_number": t.get("track_number", 0),
+            "isrc": (t.get("external_ids") or {}).get("isrc"),
             "sources": [{"provider": "spotify", "id": t["id"], "uri": t.get("uri", ""),
                          "artist_id": t["artists"][0]["id"] if t.get("artists") else ""}],
         })
@@ -70,7 +71,7 @@ async def search_spotify(query: str, limit: int = 20) -> dict:
 
 async def search_youtube(query: str, limit: int = 20) -> dict:
     """Search YouTube Music catalog."""
-    client = yt.get_client()
+    client = await asyncio.to_thread(yt.get_client)
     if not client:
         return {"albums": [], "tracks": [], "artists": []}
 
@@ -80,7 +81,7 @@ async def search_youtube(query: str, limit: int = 20) -> dict:
 
     try:
         # Search albums
-        album_results = client.search(query, filter="albums", limit=limit)
+        album_results = await asyncio.to_thread(client.search, query, filter="albums", limit=limit)
         for a in album_results:
             albums.append({
                 "id": f"yt:{a.get('browseId', '')}",
@@ -96,7 +97,7 @@ async def search_youtube(query: str, limit: int = 20) -> dict:
 
     try:
         # Search songs
-        song_results = client.search(query, filter="songs", limit=limit)
+        song_results = await asyncio.to_thread(client.search, query, filter="songs", limit=limit)
         for t in song_results:
             if not t.get("videoId"):
                 continue
@@ -115,7 +116,7 @@ async def search_youtube(query: str, limit: int = 20) -> dict:
 
     try:
         # Search artists
-        artist_results = client.search(query, filter="artists", limit=limit)
+        artist_results = await asyncio.to_thread(client.search, query, filter="artists", limit=limit)
         for ar in artist_results:
             artists.append({
                 "name": ar.get("artist", ar.get("title", "")),

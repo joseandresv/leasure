@@ -364,6 +364,7 @@ def get_unified_recent(limit: int = 50, force: bool = False) -> list[dict]:
             "image_url": sp_now.get("album_image_url"),
             "duration_ms": sp_now.get("duration_ms", 0),
             "track_number": sp_now.get("track_number", 0),
+            "isrc": sp_now.get("isrc"),
             "sources": [{"provider": "spotify", "id": sp_now["id"], "uri": sp_now.get("uri", ""),
                          "artist_id": sp_now.get("artist_id", "")}],
             # Future-dated so it wins even if plain YT is hammering "now" timestamps
@@ -381,6 +382,7 @@ def get_unified_recent(limit: int = 50, force: bool = False) -> list[dict]:
                 "image_url": t.get("album_image_url"),
                 "duration_ms": t.get("duration_ms", 0),
                 "track_number": t.get("track_number", 0),
+                "isrc": t.get("isrc"),
                 "sources": [{"provider": "spotify", "id": t["id"], "uri": t.get("uri", ""),
                              "artist_id": t.get("artist_id", "")}],
                 "_ts": _parse_spotify_ts(t.get("played_at", "")),

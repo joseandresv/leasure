@@ -84,8 +84,7 @@ async def list_tracks_html(
                                       context={"tracks": [
                                           {"id": t.id, "title": t.title, "artist": t.artist,
                                            "album": t.album, "track_number": t.track_number,
-                                           "format": t.format, "quality": t.quality,
-                                           "synced_at": t.synced_at}
+                                           "synced_at": t.synced_at, **t.quality_readout()}
                                           for t in tracks
                                       ]})
 

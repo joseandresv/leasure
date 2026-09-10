@@ -57,7 +57,8 @@
                 "image_url": track.image_url | default("", true),
                 "spotify_uri": src.uri | default("", true) if src.provider | default("") == "spotify" else "",
                 "spotify_artist_id": src.artist_id | default("", true) if src.provider | default("") == "spotify" else "",
-                "youtube_id": src.id | default("", true) if src.provider | default("") == "youtube" else ""
+                "youtube_id": src.id | default("", true) if src.provider | default("") == "youtube" else "",
+                "isrc": track.isrc | default("", true)
             } | tojson }}'
             hx-include="#dl-format-search"
             hx-target="this"

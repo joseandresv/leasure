@@ -3,7 +3,7 @@
 import asyncio
 import logging
 
-from fastapi import APIRouter, Depends, Form, Query, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import delete, select
@@ -33,6 +33,14 @@ def _is_htmx(request: Request) -> bool:
     return request.headers.get("HX-Request") == "true"
 
 
+def _format_error(request: Request, error: ValueError):
+    """A format the app no longer offers: 400 for API callers, a badge htmx can swap."""
+    if _is_htmx(request):
+        return templates.TemplateResponse(request=request, name="partials/download_badge.html",
+                                          context={"status": "error", "message": str(error)})
+    raise HTTPException(status_code=400, detail=str(error))
+
+
 # --- Browse endpoints (return HTML partials) ---
 
 
@@ -53,13 +61,13 @@ async def _enrich_deck_tracks(tracks, session):
         track["download_status"] = existing.status if existing else None
         track["db"] = {
             "status": existing.status,
-            "format": existing.format,
-            "quality": existing.quality,
             "file_size": existing.file_size,
             "synced": bool(existing.synced_at),
             "engine": existing.engine_used,
             "genre": existing.genre,
             "year": existing.year,
+            "isrc": existing.isrc,
+            **existing.quality_readout(),
         } if existing else None
 
 
@@ -152,6 +160,7 @@ async def album_detail(
                     "sources": [{"provider": "spotify", "id": t["id"], "uri": t["uri"],
                                  "artist_id": t.get("artist_id", "")}],
                     "download_status": existing.status if existing else None,
+                    "db": existing.quality_readout() if existing else None,
                 })
 
     elif provider == "youtube":
@@ -159,16 +168,15 @@ async def album_detail(
         if data:
             album = data["album"]
             for t in data["tracks"]:
-                dl_status = None
+                existing = None
                 if t.get("id"):
-                    stmt = select(Track).where(Track.youtube_id == t["id"])
-                    result = await session.execute(stmt)
-                    existing = result.scalar_one_or_none()
-                    dl_status = existing.status if existing else None
+                    existing = (await session.execute(
+                        select(Track).where(Track.youtube_id == t["id"]))).scalar_one_or_none()
                 tracks.append({
                     **t,
                     "sources": [{"provider": "youtube", "id": t.get("id", "")}],
-                    "download_status": dl_status,
+                    "download_status": existing.status if existing else None,
+                    "db": existing.quality_readout() if existing else None,
                 })
 
     if not album:
@@ -204,6 +212,7 @@ async def playlist_detail(
                     **t,
                     "sources": [{"provider": "spotify", "id": t["id"], "uri": t["uri"]}],
                     "download_status": existing.status if existing else None,
+                    "db": existing.quality_readout() if existing else None,
                 })
 
     elif provider == "youtube":
@@ -211,16 +220,15 @@ async def playlist_detail(
         if data:
             playlist_info = data.get("playlist", {})
             for t in data["tracks"]:
-                dl_status = None
+                existing = None
                 if t.get("id"):
-                    stmt = select(Track).where(Track.youtube_id == t["id"])
-                    result = await session.execute(stmt)
-                    existing = result.scalar_one_or_none()
-                    dl_status = existing.status if existing else None
+                    existing = (await session.execute(
+                        select(Track).where(Track.youtube_id == t["id"]))).scalar_one_or_none()
                 tracks.append({
                     **t,
                     "sources": [{"provider": "youtube", "id": t.get("id", "")}],
-                    "download_status": dl_status,
+                    "download_status": existing.status if existing else None,
+                    "db": existing.quality_readout() if existing else None,
                 })
 
     if not playlist_info:
@@ -283,6 +291,7 @@ async def download_track(
     spotify_uri: str = Form(""),
     spotify_artist_id: str = Form(""),
     youtube_id: str = Form(""),
+    isrc: str = Form(""),
     format: str = Form("mp3"),
     session: AsyncSession = Depends(get_session),
 ):
@@ -309,8 +318,10 @@ async def download_track(
                                               context={"status": "already_queued"})
         return {"status": "already_queued", "track_id": existing.id}
 
-    # Determine quality
-    quality, container = resolve_format(format)
+    try:
+        quality, container = resolve_format(format)
+    except ValueError as e:
+        return _format_error(request, e)
 
     # Auto-pick source: prefer spotify (searches YouTube Music anyway), fallback to youtube
     source = "spotify" if spotify_uri else "youtube"
@@ -327,6 +338,8 @@ async def download_track(
         track.spotify_uri = spotify_uri
     if youtube_id:
         track.youtube_id = youtube_id
+    if isrc:
+        track.isrc = isrc
     track.title = title
     track.artist = artist
     track.album = album
@@ -379,7 +392,10 @@ async def download_album(
     if not album_data:
         return HTMLResponse("<p>Album not found.</p>") if _is_htmx(request) else {"error": "Album not found"}
 
-    quality, container = resolve_format(format)
+    try:
+        quality, container = resolve_format(format)
+    except ValueError as e:
+        return _format_error(request, e)
 
     # Fetch genre
     album_genre = None
@@ -425,6 +441,8 @@ async def download_album(
             track.youtube_id = t.get("id")
             track.source = "youtube"
 
+        if t.get("isrc"):
+            track.isrc = t["isrc"]
         track.title = t["name"]
         track.artist = t.get("artist", "")
         track.album = album_data["name"]
@@ -452,21 +470,18 @@ async def download_album(
         # Re-render album detail with updated statuses
         tracks_with_status = []
         for t in tracks_data:
-            dl_status = None
+            ex = None
             if provider == "spotify" and t.get("uri"):
-                stmt = select(Track).where(Track.spotify_uri == t["uri"])
-                result = await session.execute(stmt)
-                ex = result.scalar_one_or_none()
-                dl_status = ex.status if ex else None
+                ex = (await session.execute(
+                    select(Track).where(Track.spotify_uri == t["uri"]))).scalar_one_or_none()
             elif provider == "youtube" and t.get("id"):
-                stmt = select(Track).where(Track.youtube_id == t["id"])
-                result = await session.execute(stmt)
-                ex = result.scalar_one_or_none()
-                dl_status = ex.status if ex else None
+                ex = (await session.execute(
+                    select(Track).where(Track.youtube_id == t["id"]))).scalar_one_or_none()
             tracks_with_status.append({
                 **t,
                 "sources": [{"provider": provider, "id": t.get("id", ""), "uri": t.get("uri", "")}],
-                "download_status": dl_status,
+                "download_status": ex.status if ex else None,
+                "db": ex.quality_readout() if ex else None,
             })
         return templates.TemplateResponse(
             request=request,
@@ -503,7 +518,10 @@ async def download_playlist(
     if not playlist_data:
         return HTMLResponse("<p>Playlist not found.</p>") if _is_htmx(request) else {"error": "Playlist not found"}
 
-    quality, container = resolve_format(format)
+    try:
+        quality, container = resolve_format(format)
+    except ValueError as e:
+        return _format_error(request, e)
 
     # Persist the playlist so device sync can generate an .m3u8 for it later.
     pl_name = playlist_data.get("name") or "Untitled Playlist"
@@ -549,6 +567,8 @@ async def download_playlist(
             track.youtube_id = t.get("id")
             track.source = "youtube"
 
+        if t.get("isrc"):
+            track.isrc = t["isrc"]
         track.title = t["name"]
         track.artist = t.get("artist", "")
         track.album = t.get("album", playlist_data.get("name", ""))
@@ -576,21 +596,18 @@ async def download_playlist(
     if _is_htmx(request):
         tracks_with_status = []
         for t in tracks_data:
-            dl_status = None
+            ex = None
             if provider == "spotify" and t.get("uri"):
-                stmt = select(Track).where(Track.spotify_uri == t["uri"])
-                result = await session.execute(stmt)
-                ex = result.scalar_one_or_none()
-                dl_status = ex.status if ex else None
+                ex = (await session.execute(
+                    select(Track).where(Track.spotify_uri == t["uri"]))).scalar_one_or_none()
             elif provider == "youtube" and t.get("id"):
-                stmt = select(Track).where(Track.youtube_id == t["id"])
-                result = await session.execute(stmt)
-                ex = result.scalar_one_or_none()
-                dl_status = ex.status if ex else None
+                ex = (await session.execute(
+                    select(Track).where(Track.youtube_id == t["id"]))).scalar_one_or_none()
             tracks_with_status.append({
                 **t,
                 "sources": [{"provider": provider, "id": t.get("id", ""), "uri": t.get("uri", "")}],
-                "download_status": dl_status,
+                "download_status": ex.status if ex else None,
+                "db": ex.quality_readout() if ex else None,
             })
         missing_count = sum(1 for t in tracks_with_status if t.get("download_status") != "done")
         return templates.TemplateResponse(

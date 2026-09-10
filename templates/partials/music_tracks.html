@@ -44,7 +44,8 @@
                 "image_url": track.image_url | default("", true),
                 "spotify_uri": track.sources[0].uri | default("", true) if track.sources[0].provider == "spotify" else "",
                 "spotify_artist_id": track.sources[0].artist_id | default("", true) if track.sources[0].provider == "spotify" else "",
-                "youtube_id": track.sources[0].id | default("", true) if track.sources[0].provider in ["youtube", "youtube music"] else ""
+                "youtube_id": track.sources[0].id | default("", true) if track.sources[0].provider in ["youtube", "youtube music"] else "",
+                "isrc": track.isrc | default("", true)
             } | tojson }}'
             hx-include="#dl-format-music"
             hx-target="this"

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -10,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings
 from db import get_session
 from models import Playlist, PlaylistTrack, Track
-from services import oauth_state
+from services import cookies, oauth_state
 from services import youtube_client as yt
 from services.formats import resolve_format
 from worker import download_worker
@@ -24,6 +25,27 @@ router = APIRouter()
 templates = Jinja2Templates(directory="templates")
 
 
+def _premium_view(state: dict) -> dict:
+    """The Premium verdict plus a ready-to-print time, so a re-check visibly changes the card."""
+    checked_at = state.get("checked_at")
+    if not checked_at:
+        return {**state, "checked_label": None}
+    moment = datetime.fromisoformat(checked_at)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    label = ("just now" if datetime.now(UTC) - moment < timedelta(minutes=1)
+             else moment.astimezone().strftime("%d %b %Y, %H:%M"))
+    return {**state, "checked_label": label}
+
+
+def _format_error(request: Request, error: ValueError):
+    """A format the app no longer offers: 400 for API callers, a badge htmx can swap."""
+    if _is_htmx(request):
+        return templates.TemplateResponse(request=request, name="partials/download_badge.html",
+                                          context={"status": "error", "message": str(error)})
+    raise HTTPException(status_code=400, detail=str(error))
+
+
 @router.get("/status")
 async def status():
     connected = await asyncio.to_thread(yt.is_connected)
@@ -35,8 +57,32 @@ async def status():
 @router.get("/status/html")
 async def status_html(request: Request):
     connected = await asyncio.to_thread(yt.is_connected)
+    premium = await asyncio.to_thread(cookies.premium_check_state)
     return templates.TemplateResponse(request=request, name="partials/yt_music_status.html",
-                                      context={"connected": connected})
+                                      context={"connected": connected, "premium": _premium_view(premium)})
+
+
+@router.get("/premium-check")
+async def premium_check():
+    """Last Premium verdict; POST /premium-check/run to measure it again."""
+    return await asyncio.to_thread(cookies.premium_check_state)
+
+
+@router.get("/premium-check/html")
+async def premium_check_html(request: Request):
+    premium = await asyncio.to_thread(cookies.premium_check_state)
+    return templates.TemplateResponse(request=request, name="partials/yt_music_status.html",
+                                      context={"premium_only": True, "premium": _premium_view(premium)})
+
+
+@router.post("/premium-check/run")
+async def premium_check_run(request: Request):
+    """Ask yt-dlp whether Premium audio is really offered for this session."""
+    premium = await asyncio.to_thread(cookies.premium_check)
+    if _is_htmx(request):
+        return templates.TemplateResponse(request=request, name="partials/yt_music_status.html",
+                                          context={"premium_only": True, "premium": _premium_view(premium)})
+    return premium
 
 
 @router.post("/setup")
@@ -267,7 +313,10 @@ async def download_track(
                                               context={"status": status})
         return {"status": status, "track_id": existing.id}
 
-    quality, container = resolve_format(format)
+    try:
+        quality, container = resolve_format(format)
+    except ValueError as e:
+        return _format_error(request, e)
 
     track = existing or Track(youtube_id=video_id)
     track.title = title
@@ -329,6 +378,11 @@ async def download_playlist(
         await session.execute(delete(PlaylistTrack).where(PlaylistTrack.playlist_id == db_playlist.id))
         await session.commit()
 
+    try:
+        quality, container = resolve_format(format)
+    except ValueError as e:
+        return _format_error(request, e)
+
     queued = []
     for position, t in enumerate(tracks_data):
         video_id = t["id"]
@@ -343,8 +397,6 @@ async def download_playlist(
             session.add(PlaylistTrack(playlist_id=db_playlist.id, track_id=existing.id, position=position))
             queued.append({"track_id": existing.id, "status": existing.status})
             continue
-
-        quality, container = resolve_format(format)
 
         track = existing or Track(youtube_id=video_id)
         track.title = t["name"]

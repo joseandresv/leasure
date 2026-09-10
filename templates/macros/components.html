@@ -43,10 +43,7 @@
     </span>
     <template class="deck-banner-db">
         {% if track.db and track.db.status == 'done' %}
-            {% if track.db.quality == 'flac_lossless' %}{{ badge('', quality='flac_lossless') }}
-            {% elif track.db.quality and 'flac' in track.db.quality %}{{ badge('', quality='flac') }}
-            {% elif track.db.quality == 'native' %}{{ badge('', quality='native') }}
-            {% else %}{{ badge('', quality='mp3') }}{% endif %}
+            {{ quality_badge(track.db) }}
             {% if track.db.synced %}<span class="badge badge-done">ON DEVICE</span>
             {% else %}<span class="badge badge-mp3">IN LIBRARY</span>{% endif %}
             {% if track.db.file_size %}<span class="deck-db-meta">{{ '%.1f' % (track.db.file_size / 1048576) }} MB</span>{% endif %}
@@ -67,7 +64,8 @@
                         "image_url": track.image_url | default("", true),
                         "spotify_uri": src.uri | default("", true) if src.provider == "spotify" else "",
                         "spotify_artist_id": src.artist_id | default("", true) if src.provider == "spotify" else "",
-                        "youtube_id": src.id | default("", true) if src.provider in ["youtube", "youtube music"] else ""
+                        "youtube_id": src.id | default("", true) if src.provider in ["youtube", "youtube music"] else "",
+                        "isrc": track.isrc | default("", true)
                     } | tojson }}'
                     hx-include="#dl-format-deck"
                     hx-target="this" hx-swap="outerHTML" hx-indicator="this">
@@ -123,31 +121,57 @@
 
 {# Format selector dropdown — shared across all download contexts #}
 {% macro format_selector(id_suffix='') %}
-<select name="format" id="dl-format{{ '-' + id_suffix if id_suffix else '' }}" class="format-select">
-    <option value="native">Original M4A (best)</option>
-    <option value="mp3">MP3 320 kbps</option>
-    <option value="flac">FLAC (transcoded)</option>
-    <option value="flac_lossless">FLAC lossless (Qobuz/Tidal)</option>
+<select name="format" id="dl-format{{ '-' + id_suffix if id_suffix else '' }}" class="format-select"
+        aria-label="Download format">
+    <option value="native" title="Keeps the source file as it is: AAC 256 kbps with a YouTube Music Premium account, no re-encode">Best (AAC 256 w/ Premium)</option>
+    <option value="mp3" title="Re-encoded to MP3 at 320 kbps for the widest player compatibility">MP3 320</option>
+    <option value="flac_lossless" title="Lossless FLAC from Qobuz or Tidal, needs streamrip credentials">FLAC lossless</option>
 </select>
 {% endmacro %}
 
-{# Status/quality badge #}
-{% macro badge(status, quality='') %}
+{# Download status badge #}
+{% macro badge(status) %}
 {% if status == 'done' or status == 'already_downloaded' %}
 <span class="badge badge-done">Downloaded</span>
 {% elif status in ['pending', 'downloading', 'queued', 'already_queued'] %}
 <span class="badge badge-downloading">{{ status if status in ['pending', 'downloading'] else 'Queued' }}</span>
 {% elif status == 'error' %}
 <span class="badge badge-error">Error</span>
-{% elif quality == 'flac_lossless' %}
-<span class="badge badge-lossless">FLAC Lossless</span>
-{% elif quality and 'flac' in quality %}
-<span class="badge">FLAC</span>
-{% elif quality == 'native' %}
-<span class="badge badge-native">Original</span>
-{% elif quality %}
-<span class="badge badge-mp3">MP3 320</span>
 {% endif %}
+{% endmacro %}
+
+{# What the file on disk actually is, from the download's provenance. Takes an ORM
+   Track or the deck's `db` dict. Rows downloaded before provenance was recorded have
+   no bitrate to report, so they say "AAC ?" rather than inventing one, and "FLAC"
+   is never printed unless is_lossless proves it. #}
+{% macro quality_badge(t) %}
+{%- if t and t.quality -%}
+{%- set tier = t.quality | string | lower -%}
+{%- set fmt = (t.format | default('', true)) | string | lower -%}
+{%- set lossless = true if t.is_lossless else false -%}
+{%- set label = 'AAC 256' if tier == 'aac_256'
+           else 'AAC 128' if tier == 'aac_128'
+           else 'Opus 160' if tier == 'opus_160'
+           else 'MP3 320' if tier == 'mp3_320'
+           else 'FLAC' if lossless
+           else 'MP3 320' if fmt == 'mp3'
+           else 'FLAC ?' if fmt == 'flac' or 'flac' in tier
+           else 'AAC ?' if fmt in ['m4a', 'aac', 'mp4']
+           else 'Opus ?' if fmt in ['opus', 'ogg', 'webm']
+           else 'Unknown' -%}
+{%- set cls = 'badge-lossless' if lossless
+         else 'badge-native' if tier in ['aac_256', 'aac_128', 'opus_160']
+         else 'badge-mp3' -%}
+{%- set detail = [] -%}
+{%- if t.source_codec %}{% set _ = detail.append('source ' ~ t.source_codec) %}{% endif -%}
+{%- if t.source_bitrate_kbps %}{% set _ = detail.append(t.source_bitrate_kbps ~ ' kbps') %}{% endif -%}
+{%- if t.premium_used %}{% set _ = detail.append('Premium session') %}{% endif -%}
+{%- if t.transcoded %}{% set _ = detail.append('re-encoded to ' ~ label) %}{% endif -%}
+<span class="badge {{ cls }}"{% if detail %} title="{{ detail | join(' · ') }}"{% endif %}>{{ label }}{%
+    if t.premium_used %} <i class="badge-note badge-premium">Premium</i>{% endif %}{%
+    if t.transcoded %} <i class="badge-note">re-encoded</i>{% endif %}</span>{%
+    if t.verification == 'duration_mismatch' %}<span class="badge-warn" title="This file's length does not match the track that was asked for{% if t.matched_title %} — Leasure matched “{{ t.matched_title }}”{% endif %}. Play it before you sync.">&#9888;</span>{% endif %}
+{%- endif -%}
 {% endmacro %}
 
 {# Download button — pure HTMX, replaces itself with a badge on success #}

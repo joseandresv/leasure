@@ -1,4 +1,4 @@
-{% from "macros/components.html" import badge %}
+{% from "macros/components.html" import quality_badge %}
 
 {% if tracks %}
 <table>
@@ -8,7 +8,7 @@
             <th>Title</th>
             <th>Artist</th>
             <th>Album</th>
-            <th>Format</th>
+            <th>Quality</th>
             <th>Synced</th>
         </tr>
     </thead>
@@ -20,15 +20,7 @@
             <td>{{ t.artist }}</td>
             <td>{{ t.album or '-' }}</td>
             <td>
-                {% if t.quality == 'flac_lossless' %}
-                {{ badge('', quality='flac_lossless') }}
-                {% elif 'flac' in t.quality %}
-                {{ badge('', quality='flac') }}
-                {% elif t.quality == 'native' %}
-                {{ badge('', quality='native') }}
-                {% else %}
-                {{ badge('', quality='mp3') }}
-                {% endif %}
+                {{ quality_badge(t) }}
             </td>
             <td>
                 {% if t.synced_at %}

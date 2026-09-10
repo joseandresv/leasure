@@ -38,13 +38,30 @@ A local music downloader and library manager built for the **HIFI WALKER H2** po
 
 ### How downloads work
 
+One pipeline handles every YouTube download (`services/yt_engine.py`):
+
 1. User selects a track/album/playlist from the Spotify or YouTube Music browser
 2. Track metadata is saved to SQLite and enqueued in the async download worker
-3. The worker searches YouTube Music (ytmusicapi) for the best audio match by title, artist, and duration
-4. yt-dlp downloads the audio, trying Chrome cookies first (Premium quality), falling back to standard
-5. ffmpeg post-processes to MP3 320kbps or FLAC
-6. The tagger service applies full ID3 tags, embeds album art, creates sidecar `.jpg`, and fetches `.lrc` lyrics
-7. Genre is looked up from MusicBrainz if not already known
+3. Source resolution: a known `youtube_id` is used as-is; otherwise YouTube Music (ytmusicapi) is searched and the results are scored on title, artist and duration. Live/remix/cover/karaoke/instrumental variants the request did not ask for are penalised, a duration more than 30 s off is disqualifying, and nothing below the minimum score is accepted. If YouTube Music has no confident match, five plain-YouTube results are scored the same way -- a track fails with "No confident match" rather than downloading the wrong recording
+4. yt-dlp downloads into a staging directory (`downloads/<track_id>/`) with the cookie file from `data/` (or the configured `COOKIE_FILE`). The stream preference is `141` (AAC 256, Premium) then `774` (Opus, Premium) then any M4A. When YouTube refuses the logged-in session the download stops and asks for fresh cookies; it never retries anonymously to fetch a quieter 128 kbps copy
+5. Provenance is read from yt-dlp's info dict (`format_id`, `acodec`, `abr`, `asr`, `format_note`) -- the file is never re-probed to guess what it was. The reported duration is checked against the requested track (within 10 s) and recorded as `verification`
+6. The finished file is moved atomically out of staging into the library and the staging directory is removed; there is no "most recent file in the folder" guesswork
+7. The tagger service applies full tags, embeds album art, creates sidecar `.jpg`, and fetches `.lrc` lyrics
+8. Genre is looked up from MusicBrainz if not already known
+
+`Track.quality` records the **result** (`aac_256`, `aac_128`, `opus_160`, `mp3_320`), alongside
+`source_format_id`, `source_codec`, `source_bitrate_kbps`, `source_sample_rate`, `premium_used`,
+`transcoded`, `is_lossless`, `verification`, `matched_title` and `match_score`.
+
+Formats offered are "Best available" (the source stream, remuxed, no re-encode), MP3 320, and
+FLAC lossless from a real lossless service. The old "FLAC (transcoded)" option is gone: a FLAC
+container filled from a YouTube stream claims a fidelity the source never had, and `flac_lossless`
+now fails with a clear message instead of silently transcoding a lossy source.
+
+The cookie file is the owner's Google session, so authenticated downloads are throttled
+(10-30 s between tracks, 5 MB/s ceiling, 3 retries) and capped at `YT_MAX_DOWNLOADS_PER_DAY`
+(default 50, counted in `data/yt_daily.json`). Over the cap tracks stay queued and resume the
+next day instead of failing.
 
 ### File organization
 
@@ -177,6 +194,21 @@ COOKIE_BROWSER=firefox
 ```
 
 Alternatively, you can set up manually through the web UI by pasting browser request headers (instructions are shown on the YouTube Music page).
+
+#### Premium check
+
+Premium audio (AAC 256, itag 141) is only served to a session YouTube recognises as a Premium subscriber, so "Premium quality" is worth verifying rather than assuming. The YouTube Music card on the home page shows **Premium: PASS / FAIL / not checked** with a **Check now** button, and the same verdict is available from the command line:
+
+```bash
+python -m scripts.premium_check          # exits 0 on PASS, 1 on FAIL
+python -m scripts.premium_check --video <youtube-id>
+```
+
+The check downloads nothing: it asks yt-dlp for the formats of one known track on `music.youtube.com` using `data/cookies.txt`.
+
+Authenticated downloads are capped per day by `YT_MAX_DOWNLOADS_PER_DAY` (default 50, counter in `data/yt_daily.json`); the worker leaves the rest queued once the cap is hit.
+
+That cookie file is what yt-dlp authenticates with. It is written automatically whenever you connect through the header-paste flow, and you can also drop in an export from a browser extension such as "Get cookies.txt LOCALLY" (save it as `data/cookies.txt`, or set `COOKIE_FILE` to another path). Cookies older than 12 hours are flagged as stale in the card. **Treat the file as your Google session**: keep it private and out of any synced folder.
 
 ### Configure YouTube (plain) — optional, for watch-history feed
 
@@ -331,8 +363,8 @@ leasure/
     youtube_client.py     # ytmusicapi + Google OAuth2 + InnerTube TVHTML5 history fetcher
     music_aggregator.py   # Unified Recently Listened: merges + dedupes + sorts by recency
     downloader.py         # Download dispatcher (routes to engines)
-    spotdl_engine.py      # yt-dlp download with YTMusic search + Chrome cookies
-    ytdlp_engine.py       # Direct yt-dlp download for YouTube sources
+    yt_engine.py          # The YouTube pipeline: scored match, staging dir, provenance, atomic move
+    ytdlp_opts.py         # Shared yt-dlp option sets (cookies, throttle, PO-token solver)
     streamrip_engine.py   # Lossless download via Qobuz/Tidal/Deezer (optional)
     bandcamp_engine.py    # Bandcamp lossless fallback (optional)
     archive_engine.py     # Internet Archive lossless fallback (optional)

@@ -75,7 +75,7 @@
         const dbWrap = deck.querySelector('.deck-dbstate');
         const tpl = banner.querySelector('.deck-banner-db');
         if (dbWrap && tpl) {
-            dbWrap.innerHTML = tpl.innerHTML;
+            dbWrap.replaceChildren(tpl.content.cloneNode(true));
             if (window.htmx) htmx.process(dbWrap);
         }
 

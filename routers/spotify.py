@@ -26,6 +26,14 @@ router = APIRouter()
 templates = Jinja2Templates(directory="templates")
 
 
+def _format_error(request: Request, error: ValueError):
+    """A format the app no longer offers: 400 for API callers, a badge htmx can swap."""
+    if _is_htmx(request):
+        return templates.TemplateResponse(request=request, name="partials/download_badge.html",
+                                          context={"status": "error", "message": str(error)})
+    raise HTTPException(status_code=400, detail=str(error))
+
+
 # --- HTML partial endpoints (for htmx) ---
 
 @router.get("/status/html")
@@ -272,6 +280,7 @@ async def download_track(
     duration_ms: int = 0,
     artwork_url: str = "",
     artist_id: str = "",
+    isrc: str = "",
     format: str = "mp3",
     session: AsyncSession = Depends(get_session),
 ):
@@ -299,9 +308,14 @@ async def download_track(
         if genres:
             genre = ", ".join(genres[:3])  # Take top 3 genres
 
-    quality, container = resolve_format(format)
+    try:
+        quality, container = resolve_format(format)
+    except ValueError as e:
+        return _format_error(request, e)
 
     track = existing or Track(spotify_uri=uri)
+    if isrc:
+        track.isrc = isrc
     track.title = title
     track.artist = artist
     track.album = album
@@ -354,6 +368,11 @@ async def download_album(
     else:
         album_genre = ", ".join(album_genres[:3])
 
+    try:
+        quality, container = resolve_format(format)
+    except ValueError as e:
+        return _format_error(request, e)
+
     for t in album_data["tracks"]:
         stmt = select(Track).where(Track.spotify_uri == t["uri"])
         result = await session.execute(stmt)
@@ -363,13 +382,13 @@ async def download_album(
             queued.append({"track_id": existing.id, "status": existing.status})
             continue
 
-        quality, container = resolve_format(format)
-
         # Extract year from release_date (format: YYYY or YYYY-MM-DD)
         release_date = album.get("release_date", "")
         year = int(release_date[:4]) if release_date and len(release_date) >= 4 else None
 
         track = existing or Track(spotify_uri=t["uri"])
+        if t.get("isrc"):
+            track.isrc = t["isrc"]
         track.title = t["name"]
         track.artist = t["artist"]
         track.album = album["name"]
@@ -448,6 +467,11 @@ async def download_playlist(
         await session.execute(delete(PlaylistTrack).where(PlaylistTrack.playlist_id == db_playlist.id))
         await session.commit()
 
+    try:
+        quality, container = resolve_format(format)
+    except ValueError as e:
+        return _format_error(request, e)
+
     queued = []
     for position, t in enumerate(tracks_data):
         # Queue track for download
@@ -461,8 +485,6 @@ async def download_playlist(
             queued.append({"track_id": existing.id, "status": existing.status})
             continue
 
-        quality, container = resolve_format(format)
-
         # Fetch genre from artist
         genre = None
         if t.get("artist_id"):
@@ -471,6 +493,8 @@ async def download_playlist(
                 genre = ", ".join(genres[:3])
 
         track = existing or Track(spotify_uri=t["uri"])
+        if t.get("isrc"):
+            track.isrc = t["isrc"]
         track.title = t["name"]
         track.artist = t["artist"]
         track.album = t.get("album", "")

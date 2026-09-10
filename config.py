@@ -30,8 +30,14 @@ class Settings(BaseSettings):
     # Browser to extract YouTube Music cookies from (chrome | firefox | edge | brave ...).
     # On native Windows, Chrome 127+ app-bound encryption can block extraction — use firefox there.
     cookie_browser: str = "chrome"
-    default_format: str = "mp3"  # mp3 | flac | flac_lossless
+    # Netscape cookies.txt yt-dlp authenticates with; defaults to data_dir/cookies.txt.
+    cookie_file: Path | None = None
+    # Track the Premium gate probes (yt-dlp's own "has format 141 on a YTM url" fixture).
+    premium_check_video_id: str = "XclachpHxis"
+    default_format: str = "mp3"  # native | mp3 | flac_lossless
     mp3_bitrate: int = 320
+    # Ceiling on authenticated YouTube downloads per day (counter in data/yt_daily.json).
+    yt_max_downloads_per_day: int = 50
     max_concurrent_downloads: int = 1
     artwork_size: int = 500
 

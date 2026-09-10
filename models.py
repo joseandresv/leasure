@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -19,6 +19,7 @@ class Track(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     spotify_uri: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
     youtube_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    isrc: Mapped[str | None] = mapped_column(String(16), index=True, nullable=True)
     title: Mapped[str] = mapped_column(String(500))
     artist: Mapped[str] = mapped_column(String(500))
     album: Mapped[str | None] = mapped_column(String(500), nullable=True)
@@ -29,7 +30,17 @@ class Track(Base):
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     year: Mapped[int | None] = mapped_column(Integer, nullable=True)
     format: Mapped[str] = mapped_column(String(16), default="mp3")
-    quality: Mapped[str] = mapped_column(String(32), default="mp3_320")  # mp3_320, flac_lossy, flac_lossless
+    quality: Mapped[str] = mapped_column(String(32), default="mp3_320")  # result tier: aac_256, opus_160, mp3_320...
+    source_format_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    source_codec: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    source_bitrate_kbps: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_sample_rate: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    premium_used: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    transcoded: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    is_lossless: Mapped[bool] = mapped_column(Boolean, default=False)
+    verification: Mapped[str | None] = mapped_column(String(32), nullable=True)  # ok, duration_mismatch, unverified
+    matched_title: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    match_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     file_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     file_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
     artwork_url: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -42,6 +53,21 @@ class Track(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     playlist_entries: Mapped[list["PlaylistTrack"]] = relationship(back_populates="track", cascade="all, delete-orphan")
+
+    def quality_readout(self) -> dict:
+        """The provenance fields the quality_badge macro reads, for the views that
+        hand templates plain dicts instead of the ORM row."""
+        return {
+            "quality": self.quality,
+            "format": self.format,
+            "premium_used": self.premium_used,
+            "transcoded": self.transcoded,
+            "is_lossless": self.is_lossless,
+            "verification": self.verification,
+            "matched_title": self.matched_title,
+            "source_bitrate_kbps": self.source_bitrate_kbps,
+            "source_codec": self.source_codec,
+        }
 
 
 class Playlist(Base):

@@ -3,7 +3,7 @@ import sqlite3
 from contextlib import closing
 from datetime import datetime
 
-from sqlalchemy import Integer, Numeric, String, event, inspect, text
+from sqlalchemy import Index, Integer, Numeric, String, event, inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from config import settings
@@ -67,10 +67,12 @@ def _add_column_default(column) -> str | None:
 
 
 def _migrate_missing_columns(conn) -> None:
-    """create_all only creates missing *tables*. Add any column the models
-    declare that the existing table lacks (additive only), after backing up."""
+    """create_all only creates missing *tables*. Add any column the models declare
+    that the existing table lacks, plus any index those tables are missing (additive
+    only), after backing up."""
     inspector = inspect(conn)
     pending: list[tuple[str, str]] = []
+    pending_indexes: list[Index] = []
     for table in Base.metadata.sorted_tables:
         if table.name not in inspector.get_table_names():
             continue
@@ -91,12 +93,17 @@ def _migrate_missing_columns(conn) -> None:
                     ddl += " NOT NULL"
                 ddl += f" DEFAULT {default}"
             pending.append((column.name, ddl))
-    if not pending:
+        known = {ix["name"] for ix in inspector.get_indexes(table.name)}
+        pending_indexes += [ix for ix in table.indexes if ix.name not in known]
+    if not pending and not pending_indexes:
         return
     _backup_db_file()
     for name, ddl in pending:
         logger.info("Migrating: adding column %s", name)
         conn.execute(text(ddl))
+    for index in sorted(pending_indexes, key=lambda ix: ix.name or ""):
+        logger.info("Migrating: creating index %s", index.name)
+        index.create(conn)
 
 
 async def init_db():

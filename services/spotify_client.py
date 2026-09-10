@@ -73,6 +73,27 @@ def get_artist_genres(artist_id: str) -> list[str]:
         return []
 
 
+def _isrc(t: dict) -> str | None:
+    return (t.get("external_ids") or {}).get("isrc")
+
+
+def _fetch_isrcs(sp: spotipy.Spotify, track_ids: list[str]) -> dict[str, str]:
+    """ISRC per track id. The album-tracks payload is a simplified object with no
+    external_ids, so the full track objects have to be fetched (50 per request)."""
+    isrcs: dict[str, str] = {}
+    for start in range(0, len(track_ids), 50):
+        batch = track_ids[start:start + 50]
+        try:
+            full = sp.tracks(batch)
+        except Exception as e:
+            logger.warning("Failed to fetch ISRCs for %d tracks: %s", len(batch), e)
+            continue
+        for t in (full or {}).get("tracks") or []:
+            if t and t.get("id") and _isrc(t):
+                isrcs[t["id"]] = _isrc(t)
+    return isrcs
+
+
 def get_saved_albums(limit: int = 20, offset: int = 0) -> dict | None:
     sp = get_client()
     if not sp:
@@ -103,6 +124,7 @@ def get_album_tracks(album_id: str) -> dict | None:
     if not sp:
         return None
     album = sp.album(album_id)
+    isrcs = _fetch_isrcs(sp, [t["id"] for t in album["tracks"]["items"] if t.get("id")])
     tracks = []
     for t in album["tracks"]["items"]:
         tracks.append({
@@ -114,6 +136,7 @@ def get_album_tracks(album_id: str) -> dict | None:
             "disc_number": t["disc_number"],
             "duration_ms": t["duration_ms"],
             "uri": t["uri"],
+            "isrc": isrcs.get(t["id"]),
         })
     return {
         "album": {
@@ -229,6 +252,7 @@ def _parse_track(t: dict) -> dict:
         "disc_number": t.get("disc_number"),
         "duration_ms": t.get("duration_ms", 0),
         "uri": t.get("uri", ""),
+        "isrc": _isrc(t),
     }
 
 
@@ -255,6 +279,7 @@ def get_currently_playing() -> dict | None:
             "duration_ms": t["duration_ms"],
             "progress_ms": result.get("progress_ms", 0),
             "uri": t["uri"],
+            "isrc": _isrc(t),
         }
     except Exception as e:
         logger.debug("Failed to get currently playing: %s", e)
@@ -288,6 +313,7 @@ def get_recently_played(limit: int = 50) -> list[dict] | None:
                 "track_number": t.get("track_number"),
                 "duration_ms": t["duration_ms"],
                 "uri": t["uri"],
+                "isrc": _isrc(t),
                 "played_at": item.get("played_at", ""),
                 "context_type": ctx.get("type"),
                 "context_uri": ctx.get("uri"),
@@ -315,6 +341,7 @@ def get_liked_songs(limit: int = 50, offset: int = 0) -> dict | None:
             "track_number": t.get("track_number"),
             "duration_ms": t["duration_ms"],
             "uri": t["uri"],
+            "isrc": _isrc(t),
         })
     return {
         "tracks": tracks,

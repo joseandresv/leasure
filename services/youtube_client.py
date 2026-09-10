@@ -5,6 +5,7 @@ import time
 import httpx
 
 from config import settings
+from services import cookies
 
 logger = logging.getLogger(__name__)
 
@@ -62,15 +63,15 @@ def _refresh_from_chrome() -> bool:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             cookie_jar = ydl.cookiejar
             # Build cookie string
-            cookies = []
+            cookie_pairs = []
             for c in cookie_jar:
                 if ".youtube.com" in c.domain:
-                    cookies.append(f"{c.name}={c.value}")
+                    cookie_pairs.append(f"{c.name}={c.value}")
 
-            if not cookies:
+            if not cookie_pairs:
                 return False
 
-            cookie_str = "; ".join(cookies)
+            cookie_str = "; ".join(cookie_pairs)
 
             # Find SAPISIDHASH-relevant cookies
             sapisid = None
@@ -103,6 +104,7 @@ x-origin: https://music.youtube.com"""
 
             from ytmusicapi import setup
             setup(filepath=str(HEADERS_PATH), headers_raw=headers_raw)
+            cookies.write_cookie_file_from_headers(HEADERS_PATH)
             logger.info("Auto-refreshed YouTube Music auth from Chrome cookies")
             return True
     except Exception as e:
@@ -119,6 +121,7 @@ def setup_from_headers(raw_headers: str) -> bool:
 
         from ytmusicapi import setup
         setup(filepath=str(HEADERS_PATH), headers_raw=raw_headers)
+        cookies.write_cookie_file_from_headers(HEADERS_PATH)
         logger.info("YouTube Music auth configured")
         return True
     except Exception as e:

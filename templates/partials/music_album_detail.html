@@ -1,4 +1,4 @@
-{% from "macros/components.html" import format_selector, badge, duration %}
+{% from "macros/components.html" import format_selector, badge, quality_badge, duration %}
 
 <div class="album-hero" {% if album.image_url %}style="--hero-bg-url: url('{{ album.image_url }}')"{% endif %}>
     <div class="album-hero-content">
@@ -61,6 +61,7 @@
     </div>
     <span class="track-duration">{{ duration(track.duration_ms) }}</span>
     {% if track.download_status == 'done' %}
+    {{ quality_badge(track.db) }}
     {{ badge('done') }}
     {% elif track.download_status in ['pending', 'downloading'] %}
     {{ badge(track.download_status) }}
@@ -79,7 +80,8 @@
                 "image_url": album.image_url | default("", true),
                 "spotify_uri": src.uri | default("", true) if src.provider | default("") == "spotify" else "",
                 "spotify_artist_id": src.artist_id | default("", true) if src.provider | default("") == "spotify" else "",
-                "youtube_id": src.id | default("", true) if src.provider | default("") == "youtube" else ""
+                "youtube_id": src.id | default("", true) if src.provider | default("") == "youtube" else "",
+                "isrc": track.isrc | default("", true)
             } | tojson }}'
             hx-include="#dl-format-detail"
             hx-target="this"
