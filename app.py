@@ -3,16 +3,13 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-# Ensure deno is on PATH for yt-dlp Premium quality downloads
-# (deno installs to ~/.deno/bin on all platforms; os.pathsep keeps this Windows-safe)
-_deno_bin = Path.home() / ".deno" / "bin"
-if _deno_bin.exists() and str(_deno_bin) not in os.environ.get("PATH", ""):
-    os.environ["PATH"] = f"{_deno_bin}{os.pathsep}{os.environ.get('PATH', '')}"
-
 import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from markupsafe import escape
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
 
 from config import settings
 from db import init_db
@@ -23,6 +20,14 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# Ensure deno is on PATH for yt-dlp Premium quality downloads
+# (deno installs to ~/.deno/bin on all platforms; os.pathsep keeps this Windows-safe).
+# yt-dlp is only imported lazily inside the download engines, so doing this after
+# the imports above is still early enough.
+_deno_bin = Path.home() / ".deno" / "bin"
+if _deno_bin.exists() and str(_deno_bin) not in os.environ.get("PATH", ""):
+    os.environ["PATH"] = f"{_deno_bin}{os.pathsep}{os.environ.get('PATH', '')}"
 
 
 @asynccontextmanager
@@ -37,6 +42,31 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Leasure", version="0.2.0", lifespan=lifespan)
+
+
+class SameOriginMiddleware(BaseHTTPMiddleware):
+    """Reject state-changing requests that a browser marks as cross-site.
+
+    Every mutating endpoint is called from our own page (htmx / fetch), so a
+    request whose Sec-Fetch-Site says "cross-site" or whose Origin does not
+    match the Host is a drive-by page on another tab, not the user. GET stays
+    open (nothing mutating is a GET any more)."""
+
+    async def dispatch(self, request, call_next):
+        if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+            site = request.headers.get("sec-fetch-site")
+            if site in ("cross-site", "same-site"):
+                return JSONResponse({"detail": "Cross-site request rejected"}, status_code=403)
+            origin = request.headers.get("origin")
+            host = request.headers.get("host")
+            if origin and host:
+                origin_host = origin.split("://", 1)[-1]
+                if origin_host != host:
+                    return JSONResponse({"detail": "Cross-site request rejected"}, status_code=403)
+        return await call_next(request)
+
+
+app.add_middleware(SameOriginMiddleware)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
@@ -92,7 +122,7 @@ async def status_bar(session: AsyncSession = Depends(get_session)):
     if dl_track:
         now_html = (
             f' | <span class="audio-bars"><span></span><span></span><span></span><span></span></span> '
-            f'{dl_track.artist} - {dl_track.title}'
+            f'{escape(dl_track.artist)} - {escape(dl_track.title)}'
         )
 
     return HTMLResponse(f'<span>{queue_html}{now_html}</span>')
@@ -104,23 +134,37 @@ async def home_carousel(session: AsyncSession = Depends(get_session)):
     result = await session.execute(
         select(Track.artwork_url, Track.album, Track.artist)
         .where(Track.status == "done", Track.artwork_url.isnot(None))
-        .group_by(Track.album)
+        .group_by(Track.artist, Track.album)
         .limit(30)
     )
-    albums = result.all()
-    if not albums:
+    covers = []
+    for url, album, artist in result.all():
+        if not url or not str(url).startswith(("https://", "http://")):
+            continue
+        covers.append(f'<img src="{escape(url)}" alt="{escape(album)}" title="{escape(artist)} - {escape(album)}" data-vibrant>')
+    if not covers:
         return HTMLResponse('<i style="color:var(--text-muted)">no music yet &mdash; download some tracks to see your collection</i>')
 
-    imgs = ""
-    for url, album, artist in albums:
-        if url:
-            imgs += f'<img src="{url}" alt="{album}" title="{artist} - {album}" data-vibrant>'
-    # Duplicate for seamless loop
-    html = f'<div class="lp-carousel"><div class="lp-carousel-inner">{imgs}{imgs}</div></div>'
+    # The marquee shifts the strip by -50%, so duplicating only loops seamlessly when one
+    # copy already fills the panel (80px covers + 0.5rem gap => 9 covers cover ~700px).
+    # Fewer than that: render each cover once and stop the animation, or it scrolls off.
+    strip = "".join(covers)
+    if len(covers) > 8:
+        inner = f'<div class="lp-carousel-inner">{strip}{strip}</div>'
+    else:
+        inner = f'<div class="lp-carousel-inner" style="animation:none">{strip}</div>'
+    html = f'<div class="lp-carousel">{inner}</div>'
 
     total = await session.scalar(select(func.count(Track.id)).where(Track.status == "done")) or 0
-    albums_count = len(albums)
-    html += f'<p style="font-size:0.85rem;color:var(--text-muted)">{total} tracks across {albums_count} albums</p>'
+    album_groups = (
+        select(Track.artist, Track.album).where(Track.status == "done").group_by(Track.artist, Track.album).subquery()
+    )
+    albums_count = await session.scalar(select(func.count()).select_from(album_groups)) or 0
+    html += (
+        f'<p style="font-size:0.85rem;color:var(--text-muted)">'
+        f'{total} track{"s" if total != 1 else ""} across '
+        f'{albums_count} album{"s" if albums_count != 1 else ""}</p>'
+    )
     return HTMLResponse(html)
 
 

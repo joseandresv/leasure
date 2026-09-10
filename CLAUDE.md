@@ -30,10 +30,25 @@ The H2 scans the entire SD card for audio files and builds its Category browser 
 Chose SQLite for simplicity (single-user app). Uses `aiosqlite` for async compatibility with FastAPI. The database lives at `data/leasure.db`.
 
 ### htmx for UI interactivity
-The frontend uses htmx for partial page updates. Routers have both JSON API endpoints and `/html` endpoints that return Jinja2-rendered HTML partials. The SSE sync progress stream (`/api/device/sync/stream`) uses `StreamingResponse`.
+The frontend uses htmx for partial page updates. Routers have both JSON API endpoints and `/html` endpoints that return Jinja2-rendered HTML partials. The SSE sync progress stream (`/api/device/sync/stream/{job_id}`) uses `StreamingResponse`.
 
 ### Sidecar files for H2
 The H2 reads `.jpg` sidecar files (same name as audio) for album art and `.lrc` files for synced lyrics. These are created alongside the audio files in the library and copied during sync.
+
+### Sync is a POST-created job streamed by id
+`POST /api/device/sync/start` validates the target with `resolve_sync_target()` (must be a volume `detect_devices()` found, never `device_type == "system"`) and returns a single-use job id; `GET /api/device/sync/stream/{job_id}` streams SSE progress. The old `GET /sync/stream?device_path=` was CSRF-able (a drive-by page could copy the library anywhere and delete playlists) and is gone. `SameOriginMiddleware` in `app.py` additionally rejects mutating requests the browser marks cross-site.
+
+### Playlist manifest on the card
+`services/playlist.py` writes `.leasure-playlists.json` at the card root listing the `.m3u8` files Leasure generated. `sweep_orphan_playlists()` only deletes names from that manifest, so user-made playlists are never removed.
+
+### One genre per file, full list in the DB
+`Track.genre` keeps the comma-joined list (used by the genre map); `tagger.primary_genre()` writes only the first genre to TCON / `genre` / `\xa9gen` because the H2 groups by exact tag text. Native M4A downloads are tagged via `mutagen.mp4`; Opus via Vorbis comments.
+
+### OAuth state
+`services/oauth_state.py` issues one-shot state tokens (10 min TTL) for both the Spotify and Google flows; callbacks reject unknown state and handle `error=` (declined consent) with a redirect instead of a 422.
+
+### Schema migration
+`db.init_db()` runs `create_all` and then `_migrate_missing_columns()`, which adds any column the models declare but the table lacks (additive only) after copying `leasure.db` to a timestamped `.bak`. SQLite pragmas (`foreign_keys`, WAL, `busy_timeout`) are set per connection.
 
 ## File Structure
 
@@ -66,7 +81,15 @@ services/
   platform.py       -- Runtime platform detection (windows | wsl2 | linux)
   formats.py        -- Shared download format/quality mapping
   device.py         -- Device detection (per-platform backends), FAT32 filename sanitization, device path builder
-  playlist.py       -- M3U playlist generation (H2 format)
+  playlist.py       -- M3U playlist generation (H2 format) + on-card manifest of generated files
+  oauth_state.py    -- one-shot OAuth state tokens shared by Spotify and Google flows
+
+tests/              -- pytest suite (ASGI client, temp data dir); .github/workflows/ci.yml runs ruff + pytest
+.claude/agents/     -- frontend-dev, backend-dev (Opus, load coding-standards), user-tester (Opus, read-only, loads ui-testing)
+.claude/skills/     -- coding-standards (rules for change agents), ui-testing (Playwright headless-browser QA recipe + probe.py),
+                       language skills: python-craft, jinja-htmx, javascript-craft, css-craft, shell-scripts;
+                       frontend-design + webapp-testing (Anthropic's official skills, Apache-2.0, vendored)
+docs/review-2026-08 -- Aug 2026 review output (gitignored; see its README.md and STATUS.md)
 
 templates/          -- Jinja2 templates (base.html + page templates + htmx partials)
 static/             -- CSS, JS assets
@@ -102,9 +125,19 @@ The H2 uses the album artist (TPE2/albumartist) tag for its Category browser. If
 
 ## How to Test
 
+### Automated
+```bash
+ruff check .
+pytest -q          # tests/ — temp data dir, ASGI client, no network; fixtures in tests/conftest.py
+```
+`tests/conftest.py` sets `DATA_DIR`/`LIBRARY_DIR`/`DOWNLOAD_DIR` env vars before importing `config`, and the `fake_device` fixture monkeypatches `detect_devices()` so sync tests get a temp "H2".
+
+### Browser-level QA
+The `user-tester` agent drives the running app in headless Chromium via the `ui-testing` skill (`.claude/skills/ui-testing/`). Python Playwright lives in `~/.venvs/leasure-tester`; Chromium needs `LD_LIBRARY_PATH=~/.local/chromium-deps/usr/lib/x86_64-linux-gnu` on this box (libs extracted from .deb without root).
+
 ### Run the development server
 ```bash
-source .venv/bin/activate
+source .venv/bin/activate          # or: LEASURE_VENV=~/.venvs/leasure scripts/run.sh
 uvicorn app:app --host 127.0.0.1 --port 8642 --reload
 ```
 
@@ -135,7 +168,8 @@ async def test_home():
 ## Environment
 
 - Runs on native Windows, plain Linux, or WSL2 (primary dev environment: WSL2 Ubuntu with Windows drives at /mnt/)
-- Python 3.11+ with venv at `.venv/` (created by `scripts/install.sh` / `scripts/install.ps1`)
+- Python 3.11+ with venv at `.venv/` (created by `scripts/install.sh` / `scripts/install.ps1`); on this WSL2 checkout the venv lives at `~/.venvs/leasure` (OneDrive folder) — start with `LEASURE_VENV=~/.venvs/leasure scripts/run.sh`
+- ffmpeg and deno are installed user-side here (`~/.local/bin/ffmpeg`, `~/.deno/bin/deno`) because sudo needs a password
 - ffmpeg must be installed (`sudo apt install ffmpeg` / `winget install Gyan.FFmpeg`)
 - deno must be installed for yt-dlp PO tokens
 - A browser logged into YouTube Music for Premium quality (Chrome by default; set `COOKIE_BROWSER=firefox` on native Windows if Chrome cookie extraction is blocked)

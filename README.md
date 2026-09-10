@@ -78,6 +78,11 @@ sudo dnf install ffmpeg        # Fedora
 curl -fsSL https://deno.land/install.sh | sh
 ```
 
+No sudo? Both tools also install fine into your home directory: a static ffmpeg build
+(<https://johnvansickle.com/ffmpeg/>) copied to `~/.local/bin`, and the deno release zip
+(<https://github.com/denoland/deno/releases>) extracted to `~/.deno/bin` (the app adds
+`~/.deno/bin` to `PATH` at startup).
+
 Then clone and install:
 
 ```bash
@@ -86,6 +91,14 @@ cd leasure
 scripts/install.sh     # creates .venv, installs requirements, checks ffmpeg/deno, copies .env.example to .env
 # edit .env (see Configuration below)
 scripts/run.sh
+```
+
+If the checkout lives in a OneDrive folder or on a Windows drive under WSL2, put the
+virtual environment somewhere else -- both scripts honour `LEASURE_VENV`:
+
+```bash
+LEASURE_VENV=~/.venvs/leasure scripts/install.sh
+LEASURE_VENV=~/.venvs/leasure scripts/run.sh
 ```
 
 ### Windows (native) quick start
@@ -238,8 +251,8 @@ Open <http://127.0.0.1:8642> in your browser.
 2. Go to the Device page
 3. Select your H2 from the detected devices list
 4. Preview the sync diff to see what will be added
-5. Click sync -- progress streams in real-time via SSE
-6. Playlists are generated as `.m3u` files at the SD card root
+5. Click sync -- the app validates that the target is one of the detected removable volumes (never the OS drive), creates a sync job with a `POST`, and streams progress in real time via SSE
+6. Playlists are generated as `.m3u8` files at the SD card root. Leasure records the files it wrote in a small `.leasure-playlists.json` manifest on the card and only ever removes those; playlists you put on the card yourself are left alone
 
 ## HIFI WALKER H2 Compatibility
 
@@ -248,8 +261,10 @@ The H2 is a portable HiFi music player that reads music from a micro SD card. Le
 ### Metadata
 
 - **ID3v2.4 tags** for MP3: TIT2, TPE1, TALB, TPE2, TRCK, TPOS, TCON, TDRC, APIC
-- **Vorbis comments** for FLAC: title, artist, album, albumartist, tracknumber, discnumber, genre, date
+- **Vorbis comments** for FLAC and Opus: title, artist, album, albumartist, tracknumber, discnumber, genre, date
+- **iTunes atoms** for native M4A/AAC downloads (`\xa9nam`, `\xa9ART`, `\xa9alb`, `aART`, `trkn`, `disk`, `\xa9gen`, `\xa9day`, `covr`)
 - **Album artist** (TPE2) is always set -- the H2 uses this for its Category browser; defaults to the primary artist if not explicitly provided
+- **One genre per file** -- the H2 groups its Genre category by the exact tag text, so only the top-ranked genre is written to the file; the full comma-separated list stays in the database for the genre map
 
 ### Sidecar files
 
@@ -258,8 +273,8 @@ The H2 is a portable HiFi music player that reads music from a micro SD card. Le
 
 ### Playlists
 
-- `.m3u` files must be at the **root** of the SD card
-- Paths inside are absolute from SD root (e.g., `/Artist/Album/01 - Track.mp3`)
+- `.m3u8` files (UTF-8 with BOM, CRLF) must be at the **root** of the SD card
+- Paths inside are relative to the SD root with forward slashes (e.g., `Artist/Album/01 - Track.mp3`)
 - The H2 shows these under its Explorer, not the Playlists category
 
 ### Folder structure
@@ -268,10 +283,24 @@ Artist folders go directly at the SD card root. No `MUSIC/` prefix is needed. Th
 
 ### Filename sanitization
 
-All filenames are sanitized for FAT32 compatibility (no `\/:*?"<>|` characters, max 200 chars).
+All filenames are sanitized for FAT32 compatibility (no `\/:*?"<>|` or control characters, Windows reserved names such as `CON`/`NUL` are prefixed, max 200 chars).
+
+## Development
+
+```bash
+LEASURE_DEV=1 scripts/install.sh   # also installs pytest + ruff (requirements-dev.txt)
+ruff check .
+pytest -q
+```
+
+Tests run against a temporary data directory and an in-process ASGI client -- no server, browser or network is needed. The M4A tagging test synthesizes a file with ffmpeg and is skipped when ffmpeg is absent. CI (`.github/workflows/ci.yml`) runs the same lint + tests on Python 3.11 and 3.13.
 
 ## Security
 
+- Leasure is a single-user local app: it binds to `127.0.0.1` and has no login. Do not expose the port to a network you do not control.
+- State-changing requests are rejected when the browser marks them cross-site (`Sec-Fetch-Site` / `Origin` check), and the device sync is created with a `POST` whose target must be a detected removable volume, so a web page in another tab cannot start a sync or point it at your system drive.
+- OAuth callbacks (Spotify, Google) require a one-shot `state` token issued by this process.
+- Provider metadata (titles, artists, artwork URLs) is HTML-escaped wherever it is rendered.
 - All Python packages in `requirements.txt` are pinned to minimum versions audited for known CVEs
 - No credentials are stored in source code; all secrets go in `.env` (excluded from git)
 - Spotify OAuth tokens are cached locally in `data/.spotify_cache`

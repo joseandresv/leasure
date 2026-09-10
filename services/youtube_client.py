@@ -1,8 +1,6 @@
-import hashlib
 import json
 import logging
 import time
-from pathlib import Path
 
 import httpx
 
@@ -120,7 +118,7 @@ def setup_from_headers(raw_headers: str) -> bool:
             raw_headers = _extract_headers_from_curl(raw_headers)
 
         from ytmusicapi import setup
-        result = setup(filepath=str(HEADERS_PATH), headers_raw=raw_headers)
+        setup(filepath=str(HEADERS_PATH), headers_raw=raw_headers)
         logger.info("YouTube Music auth configured")
         return True
     except Exception as e:
@@ -224,7 +222,7 @@ def get_history(limit: int = 50) -> list[dict] | None:
 
 # --- Google OAuth2 for YouTube history ---
 
-def get_youtube_oauth_url() -> str | None:
+def get_youtube_oauth_url(state: str | None = None) -> str | None:
     """Generate Google OAuth2 authorization URL."""
     if not settings.google_client_id:
         return None
@@ -237,6 +235,8 @@ def get_youtube_oauth_url() -> str | None:
         "access_type": "offline",
         "prompt": "consent",
     }
+    if state:
+        params["state"] = state
     return f"{GOOGLE_AUTH_URL}?{urlencode(params)}"
 
 
@@ -476,7 +476,7 @@ def get_album_tracks(browse_id: str) -> dict | None:
                 "id": t.get("videoId"),
                 "name": t["title"],
                 "artist": ", ".join(a["name"] for a in t.get("artists", []) if a.get("name")),
-                "track_number": t.get("index"),
+                "track_number": t.get("trackNumber") or t.get("index"),
                 "duration_ms": _parse_duration(t.get("duration", "")),
             })
         return {

@@ -1,5 +1,4 @@
 import logging
-from pathlib import Path
 
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
@@ -23,8 +22,8 @@ def _get_auth_manager() -> SpotifyOAuth:
     )
 
 
-def get_auth_url() -> str:
-    return _get_auth_manager().get_authorize_url()
+def get_auth_url(state: str | None = None) -> str:
+    return _get_auth_manager().get_authorize_url(state=state)
 
 
 def handle_callback(code: str) -> dict:
@@ -37,7 +36,14 @@ def get_client() -> spotipy.Spotify | None:
     if not settings.spotify_client_id or not settings.spotify_client_secret:
         return None
     auth = _get_auth_manager()
-    token_info = auth.get_cached_token()
+    try:
+        token_info = auth.get_cached_token()
+    except Exception as e:
+        # A failed refresh (revoked app, rotated secret, offline) must not turn
+        # every Spotify endpoint into a 500; report "not connected" instead so
+        # the UI offers the Connect link again.
+        logger.warning("Spotify token refresh failed, treating as disconnected: %s", e)
+        return None
     if not token_info:
         return None
     return spotipy.Spotify(auth_manager=auth)

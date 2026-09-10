@@ -1,5 +1,6 @@
 """Unified music router — provider-agnostic browsing, search, and smart download."""
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, Form, Query, Request
@@ -65,7 +66,7 @@ async def _enrich_deck_tracks(tracks, session):
 @router.get("/recent")
 async def recent(request: Request, refresh: bool = False, session: AsyncSession = Depends(get_session)):
     """Recently listened tracks — rendered as the vertical deck roulette."""
-    tracks = get_unified_recent(limit=50, force=refresh)
+    tracks = await asyncio.to_thread(get_unified_recent, 50, refresh)
     await _enrich_deck_tracks(tracks, session)
     return templates.TemplateResponse(
         request=request,
@@ -77,7 +78,7 @@ async def recent(request: Request, refresh: bool = False, session: AsyncSession 
 @router.get("/deck")
 async def deck(request: Request, refresh: bool = False, session: AsyncSession = Depends(get_session)):
     """THE DECK — recent tracks as a DDR-style banner wheel with a HiFi 'now selected' display."""
-    tracks = get_unified_recent(limit=50, force=refresh)  # match /recent so they share the cache
+    tracks = await asyncio.to_thread(get_unified_recent, 50, refresh)  # match /recent so they share the cache
     await _enrich_deck_tracks(tracks, session)
     return templates.TemplateResponse(
         request=request,
@@ -89,7 +90,7 @@ async def deck(request: Request, refresh: bool = False, session: AsyncSession = 
 @router.get("/albums")
 async def albums(request: Request, session: AsyncSession = Depends(get_session)):
     """All albums from all sources, merged."""
-    album_list = get_unified_albums()
+    album_list = await asyncio.to_thread(get_unified_albums)
 
     # Enrich with download counts
     for album in album_list:
@@ -107,7 +108,7 @@ async def albums(request: Request, session: AsyncSession = Depends(get_session))
 @router.get("/playlists")
 async def playlists(request: Request):
     """All playlists from all sources."""
-    playlist_list = get_unified_playlists()
+    playlist_list = await asyncio.to_thread(get_unified_playlists)
     return templates.TemplateResponse(
         request=request,
         name="partials/music_playlists.html",
@@ -118,7 +119,7 @@ async def playlists(request: Request):
 @router.get("/artists")
 async def artists(request: Request):
     """Unique artists from all sources."""
-    artist_list = get_unique_artists()
+    artist_list = await asyncio.to_thread(get_unique_artists)
     return templates.TemplateResponse(
         request=request,
         name="partials/music_artists.html",
@@ -138,7 +139,7 @@ async def album_detail(
     tracks = []
 
     if provider == "spotify":
-        data = sp.get_album_tracks(album_id)
+        data = await asyncio.to_thread(sp.get_album_tracks, album_id)
         if data:
             album = data["album"]
             album["image_url"] = album.get("image_url")
@@ -154,7 +155,7 @@ async def album_detail(
                 })
 
     elif provider == "youtube":
-        data = yt.get_album_tracks(album_id)
+        data = await asyncio.to_thread(yt.get_album_tracks, album_id)
         if data:
             album = data["album"]
             for t in data["tracks"]:
@@ -192,7 +193,7 @@ async def playlist_detail(
     tracks = []
 
     if provider == "spotify":
-        data = sp.get_playlist_tracks(playlist_id)
+        data = await asyncio.to_thread(sp.get_playlist_tracks, playlist_id)
         if data and not data.get("error"):
             playlist_info = data.get("playlist", {})
             for t in data["tracks"]:
@@ -206,7 +207,7 @@ async def playlist_detail(
                 })
 
     elif provider == "youtube":
-        data = yt.get_playlist_tracks(playlist_id)
+        data = await asyncio.to_thread(yt.get_playlist_tracks, playlist_id)
         if data:
             playlist_info = data.get("playlist", {})
             for t in data["tracks"]:
@@ -317,7 +318,7 @@ async def download_track(
     # Fetch genre from Spotify artist if available
     genre = None
     if spotify_artist_id:
-        genres = sp.get_artist_genres(spotify_artist_id)
+        genres = await asyncio.to_thread(sp.get_artist_genres, spotify_artist_id)
         if genres:
             genre = ", ".join(genres[:3])
 
@@ -365,12 +366,12 @@ async def download_album(
     tracks_data = []
 
     if provider == "spotify":
-        data = sp.get_album_tracks(album_id)
+        data = await asyncio.to_thread(sp.get_album_tracks, album_id)
         if data:
             album_data = data["album"]
             tracks_data = data["tracks"]
     elif provider == "youtube":
-        data = yt.get_album_tracks(album_id)
+        data = await asyncio.to_thread(yt.get_album_tracks, album_id)
         if data:
             album_data = data["album"]
             tracks_data = data["tracks"]
@@ -385,7 +386,7 @@ async def download_album(
     if provider == "spotify":
         album_genres = album_data.get("genres", [])
         if not album_genres and tracks_data:
-            artist_genres = sp.get_artist_genres(tracks_data[0].get("artist_id", ""))
+            artist_genres = await asyncio.to_thread(sp.get_artist_genres, tracks_data[0].get("artist_id", ""))
             if artist_genres:
                 album_genre = ", ".join(artist_genres[:3])
         elif album_genres:
@@ -489,12 +490,12 @@ async def download_playlist(
     tracks_data = []
 
     if provider == "spotify":
-        data = sp.get_playlist_tracks(playlist_id)
+        data = await asyncio.to_thread(sp.get_playlist_tracks, playlist_id)
         if data and not data.get("error"):
             playlist_data = data.get("playlist", {})
             tracks_data = data["tracks"]
     elif provider == "youtube":
-        data = yt.get_playlist_tracks(playlist_id)
+        data = await asyncio.to_thread(yt.get_playlist_tracks, playlist_id)
         if data:
             playlist_data = data.get("playlist", {})
             tracks_data = data.get("tracks", [])

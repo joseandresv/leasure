@@ -41,9 +41,9 @@ async def _download_ytdlp(track_id: int) -> Path | None:
 
 
 async def _download_lossless(track_id: int) -> Path | None:
-    from services.streamrip_engine import streamrip_download
-    from services.bandcamp_engine import bandcamp_download
     from services.archive_engine import archive_download
+    from services.bandcamp_engine import bandcamp_download
+    from services.streamrip_engine import streamrip_download
 
     for engine_fn, engine_name in [
         (streamrip_download, "streamrip"),

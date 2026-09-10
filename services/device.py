@@ -8,20 +8,36 @@ from services.platform import get_platform
 
 logger = logging.getLogger(__name__)
 
-FAT32_FORBIDDEN = re.compile(r'[\\/:*?"<>|]')
+# FAT32-forbidden characters plus ASCII control characters
+FAT32_FORBIDDEN = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
-AUDIO_EXTS = (".mp3", ".flac", ".wav", ".ape", ".dsf")
+AUDIO_EXTS = (".mp3", ".flac", ".wav", ".ape", ".dsf", ".dff", ".m4a", ".opus", ".ogg")
 
 # Folders that mark a drive as a Windows system volume, not a music player
 SYSTEM_DIR_NAMES = ("$RECYCLE.BIN", "System Volume Information", "Windows", "Program Files", "Users")
+# A Windows root, or a Program Files + Users pair, means an OS volume whatever its size.
+# "Users" alone is not enough: cards people organise by user name would be locked out.
+OS_MARKER_DIRS = ("Windows",)
+_PROGRAM_FILES_DIRS = ("Program Files", "Program Files (x86)")
+
+# Windows reserves these basenames (case-insensitive, with or without extension)
+_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL"} | {f"COM{i}" for i in range(1, 10)} | {f"LPT{i}" for i in range(1, 10)}
 
 
 def sanitize_filename(name: str, max_length: int = 200) -> str:
-    name = FAT32_FORBIDDEN.sub("_", name)
+    name = FAT32_FORBIDDEN.sub("_", name or "")
     name = name.strip(". ")
     if len(name) > max_length:
         name = name[:max_length].rstrip(". ")
+    if name.split(".")[0].upper() in _RESERVED_NAMES:
+        name = f"_{name}"
     return name or "Unknown"
+
+
+def is_system_volume(contents: list[str]) -> bool:
+    if any(d in contents for d in OS_MARKER_DIRS):
+        return True
+    return "Users" in contents and any(d in contents for d in _PROGRAM_FILES_DIRS)
 
 
 def _classify(path: str, label: str, drive_letter: str, removable_hint: bool) -> dict | None:
@@ -45,8 +61,9 @@ def _classify(path: str, label: str, drive_letter: str, removable_hint: bool) ->
         for d in contents
     )
 
-    # Guess device type: FAT32/exFAT and removable media are player candidates
-    if total_gb > 500:
+    # Guess device type: FAT32/exFAT and removable media are player candidates.
+    # An OS volume is never a sync target, however small it is.
+    if total_gb > 500 or is_system_volume(contents):
         device_type = "system"
     elif total_gb <= 512 and (has_music_files or removable_hint):
         device_type = "player"
@@ -97,7 +114,7 @@ def _detect_wsl2() -> list[dict]:
             mounted[mount_point[-1]] = fs_type
 
     candidates = []
-    for letter, fs_type in mounted.items():
+    for letter in mounted:
         path = f"/mnt/{letter}"
         if not os.path.isdir(path):
             continue
@@ -169,6 +186,32 @@ def detect_devices() -> list[dict]:
     type_order = {"player": 0, "removable": 1, "drive": 2, "system": 3}
     candidates.sort(key=lambda d: (type_order.get(d["device_type"], 9), d["label"]))
     return candidates
+
+
+def sync_targets() -> list[dict]:
+    """Volumes the app is allowed to write to: every detected volume except OS/system ones."""
+    return [d for d in detect_devices() if d["device_type"] != "system"]
+
+
+def resolve_sync_target(device_path: str) -> str | None:
+    """Return the canonical path of `device_path` if it is an allowed sync target, else None.
+
+    The sync endpoints write and delete files under the target, so the target must be
+    one of the volumes detect_devices() found (never the system drive) — a free-form
+    path from the request is not trusted."""
+    if not device_path:
+        return None
+    try:
+        wanted = os.path.normcase(os.path.realpath(device_path))
+    except OSError:
+        return None
+    for d in sync_targets():
+        try:
+            if os.path.normcase(os.path.realpath(d["path"])) == wanted:
+                return d["path"]
+        except OSError:
+            continue
+    return None
 
 
 def build_device_path(artist: str, album: str, track_number: int | None, title: str, ext: str) -> str:

@@ -6,6 +6,12 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
+# Where the virtual environment lives. Default is .venv inside the repo; set
+# LEASURE_VENV to put it elsewhere (recommended when the checkout sits in a
+# OneDrive/Dropbox folder or on a Windows drive under WSL2, where thousands of
+# small files are slow to sync and can hit drvfs EIO errors).
+VENV_DIR="${LEASURE_VENV:-.venv}"
+
 # --- Python >= 3.11 ---
 if ! command -v python3 >/dev/null 2>&1; then
     echo "Error: python3 not found on PATH. Install Python 3.11 or newer." >&2
@@ -19,15 +25,19 @@ fi
 echo "Found $(python3 --version)"
 
 # --- Virtual environment ---
-if [ ! -d .venv ]; then
-    echo "Creating virtual environment at .venv ..."
-    python3 -m venv .venv
+if [ ! -d "$VENV_DIR" ]; then
+    echo "Creating virtual environment at $VENV_DIR ..."
+    python3 -m venv "$VENV_DIR"
 else
-    echo "Virtual environment .venv already exists."
+    echo "Virtual environment $VENV_DIR already exists."
 fi
 
 echo "Installing dependencies from requirements.txt ..."
-.venv/bin/pip install -r requirements.txt
+"$VENV_DIR/bin/pip" install -r requirements.txt
+if [ "${LEASURE_DEV:-0}" = "1" ]; then
+    echo "Installing dev tools (pytest, ruff) ..."
+    "$VENV_DIR/bin/pip" install -r requirements-dev.txt
+fi
 
 # --- ffmpeg ---
 if command -v ffmpeg >/dev/null 2>&1; then
@@ -72,3 +82,6 @@ echo
 echo "Done. Next steps:"
 echo "  1. Edit .env and fill in your Spotify credentials."
 echo "  2. Start the server: scripts/run.sh"
+if [ "$VENV_DIR" != ".venv" ]; then
+    echo "     (export LEASURE_VENV=$VENV_DIR first, or run: LEASURE_VENV=$VENV_DIR scripts/run.sh)"
+fi

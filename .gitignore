@@ -21,4 +21,11 @@ cookies.txt
 *.cookies.txt
 *_cookies.txt
 .claude/
+!.claude/
+.claude/*
+!.claude/skills/
+!.claude/agents/
 ds-bundle/
+
+# Internal review material (enumerates unfixed issues; keep out of the public repo)
+docs/review-2026-08/

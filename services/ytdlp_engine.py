@@ -1,5 +1,4 @@
 import asyncio
-import io
 import logging
 from pathlib import Path
 
@@ -7,6 +6,7 @@ from config import settings
 from db import async_session
 from models import Track
 from services.device import sanitize_filename
+from services.ytdlp_opts import download_with_fallback
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,6 @@ async def ytdlp_download(track_id: int) -> Path | None:
         album = track.album or "Unknown"
         title = track.title or "Unknown"
         track_num = track.track_number
-        artwork_url = track.artwork_url
 
     if not youtube_id:
         logger.error("Track %d has no YouTube ID", track_id)
@@ -44,18 +43,19 @@ async def ytdlp_download(track_id: int) -> Path | None:
     url = f"https://www.youtube.com/watch?v={youtube_id}"
 
     def _do_download() -> Path | None:
-        import yt_dlp
-
         if native:
             # Keep the best AAC/M4A stream verbatim — no ffmpeg re-encode.
-            ydl_opts = {
-                "format": "bestaudio[ext=m4a]/bestaudio/best",
+            base_opts = {
+                # Prefer the AAC stream (the H2 plays M4A natively). If only Opus/WebM
+                # exists, "best" remuxes it into a taggable .opus without re-encoding.
+                "format": "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio",
                 "outtmpl": output_template,
+                "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "best"}],
                 "quiet": True,
                 "no_warnings": True,
             }
         else:
-            ydl_opts = {
+            base_opts = {
                 "format": "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best",
                 "outtmpl": output_template,
                 "postprocessors": [
@@ -69,8 +69,7 @@ async def ytdlp_download(track_id: int) -> Path | None:
                 "no_warnings": True,
             }
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+        download_with_fallback(url, base_opts)
 
         # Find the output file
         search_exts = ["m4a", "webm", "opus", "mp3", "flac"] if native else [fmt, "mp3", "flac", "opus", "m4a", "webm"]
@@ -104,56 +103,3 @@ async def ytdlp_download(track_id: int) -> Path | None:
             await session.commit()
 
     return result
-
-
-async def _apply_tags(audio_path: Path, track_id: int):
-    async with async_session() as session:
-        track = await session.get(Track, track_id)
-        if not track:
-            return
-
-    def _tag():
-        try:
-            from mutagen import File as MutagenFile
-            from mutagen.id3 import ID3, TIT2, TPE1, TALB, TRCK, TCON
-            from mutagen.flac import FLAC
-
-            if audio_path.suffix == ".mp3":
-                audio = MutagenFile(audio_path, easy=True)
-                if audio is not None:
-                    audio["title"] = track.title or ""
-                    audio["artist"] = track.artist or ""
-                    audio["album"] = track.album or ""
-                    if track.track_number:
-                        audio["tracknumber"] = str(track.track_number)
-                    if track.genre:
-                        audio["genre"] = track.genre
-                    audio.save()
-            elif audio_path.suffix == ".flac":
-                audio = FLAC(audio_path)
-                audio["title"] = track.title or ""
-                audio["artist"] = track.artist or ""
-                audio["album"] = track.album or ""
-                if track.track_number:
-                    audio["tracknumber"] = str(track.track_number)
-                if track.genre:
-                    audio["genre"] = track.genre
-                audio.save()
-        except Exception as e:
-            logger.warning("Failed to tag %s: %s", audio_path, e)
-
-    await asyncio.to_thread(_tag)
-
-
-async def _export_sidecar_artwork(audio_path: Path, artwork_url: str | None):
-    jpg_path = audio_path.with_suffix(".jpg")
-    if jpg_path.exists():
-        return
-
-    if artwork_url:
-        from services.artwork import download_and_save_artwork
-        await download_and_save_artwork(artwork_url, jpg_path)
-    else:
-        # Try extracting from the audio file
-        from services.spotdl_engine import _export_sidecar_artwork
-        await _export_sidecar_artwork(audio_path)

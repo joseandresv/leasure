@@ -1,4 +1,8 @@
-from fastapi import APIRouter, Depends, Query, Request
+import asyncio
+import logging
+from urllib.parse import quote
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
@@ -7,9 +11,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings
 from db import get_session
 from models import Playlist, PlaylistTrack, Track
+from services import oauth_state
 from services import spotify_client as sp
 from services.formats import resolve_format
 from worker import download_worker
+
+logger = logging.getLogger(__name__)
 
 
 def _is_htmx(request: Request) -> bool:
@@ -25,14 +32,14 @@ templates = Jinja2Templates(directory="templates")
 async def status_html(request: Request):
     if not settings.spotify_client_id:
         return templates.TemplateResponse(request=request, name="partials/spotify_status.html",
-                                          context={"connected": False})
-    connected = sp.is_connected()
+                                          context={"connected": False, "redirect_uri": settings.spotify_redirect_uri})
+    connected = await asyncio.to_thread(sp.is_connected)
     if connected:
-        profile = sp.get_user_profile()
+        profile = await asyncio.to_thread(sp.get_user_profile)
         return templates.TemplateResponse(request=request, name="partials/spotify_status.html",
                                           context={"connected": True, "user": profile.get("display_name", "Unknown") if profile else "Unknown"})
     return templates.TemplateResponse(request=request, name="partials/spotify_status.html",
-                                      context={"connected": False, "auth_url": sp.get_auth_url()})
+                                      context={"connected": False, "auth_url": "/api/spotify/auth"})
 
 
 @router.get("/albums/html")
@@ -42,7 +49,7 @@ async def albums_html(
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_session),
 ):
-    result = sp.get_saved_albums(limit=limit, offset=offset)
+    result = await asyncio.to_thread(sp.get_saved_albums, limit=limit, offset=offset)
     if result is None:
         return HTMLResponse('<p>Not connected to Spotify. <a href="/api/spotify/auth">Connect now</a></p>')
 
@@ -61,7 +68,7 @@ async def album_tracks_html(
     album_id: str,
     session: AsyncSession = Depends(get_session),
 ):
-    result = sp.get_album_tracks(album_id)
+    result = await asyncio.to_thread(sp.get_album_tracks, album_id)
     if result is None:
         return HTMLResponse('<p>Not connected to Spotify.</p>')
 
@@ -81,7 +88,7 @@ async def playlists_html(
     limit: int = Query(20, ge=1, le=50),
     offset: int = Query(0, ge=0),
 ):
-    result = sp.get_playlists(limit=limit, offset=offset)
+    result = await asyncio.to_thread(sp.get_playlists, limit=limit, offset=offset)
     if result is None:
         return HTMLResponse('<p>Not connected to Spotify. <a href="/api/spotify/auth">Connect now</a></p>')
     return templates.TemplateResponse(request=request, name="partials/playlist_list.html",
@@ -94,7 +101,7 @@ async def playlist_tracks_html(
     playlist_id: str,
     session: AsyncSession = Depends(get_session),
 ):
-    result = sp.get_playlist_tracks(playlist_id)
+    result = await asyncio.to_thread(sp.get_playlist_tracks, playlist_id)
     if result is None:
         return HTMLResponse('<p>Not connected to Spotify.</p>')
     if result.get("error"):
@@ -119,7 +126,7 @@ async def liked_html(
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_session),
 ):
-    result = sp.get_liked_songs(limit=limit, offset=offset)
+    result = await asyncio.to_thread(sp.get_liked_songs, limit=limit, offset=offset)
     if result is None:
         return HTMLResponse('<p>Not connected to Spotify. <a href="/api/spotify/auth">Connect now</a></p>')
 
@@ -139,23 +146,35 @@ async def liked_html(
 async def status():
     if not settings.spotify_client_id:
         return {"connected": False, "message": "Spotify credentials not configured. Add SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET to .env"}
-    connected = sp.is_connected()
+    connected = await asyncio.to_thread(sp.is_connected)
     if connected:
-        profile = sp.get_user_profile()
+        profile = await asyncio.to_thread(sp.get_user_profile)
         return {"connected": True, "user": profile.get("display_name", "Unknown") if profile else "Unknown"}
-    return {"connected": False, "auth_url": sp.get_auth_url()}
+    return {"connected": False, "auth_url": "/api/spotify/auth"}
 
 
 @router.get("/auth")
 async def auth():
     if not settings.spotify_client_id:
         return {"error": "Spotify credentials not configured"}
-    return RedirectResponse(sp.get_auth_url())
+    return RedirectResponse(sp.get_auth_url(state=oauth_state.issue()))
 
 
 @router.get("/callback")
-async def callback(code: str):
-    sp.handle_callback(code)
+async def callback(code: str = "", state: str = "", error: str = ""):
+    if error:
+        # User declined consent (or Spotify reported a problem): back to the app, no crash.
+        logger.info("Spotify authorization not granted: %s", error)
+        return RedirectResponse(f"/?spotify_error={quote(error)}")
+    if not oauth_state.verify(state):
+        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state. Start the Spotify connection again.")
+    if not code:
+        raise HTTPException(status_code=400, detail="Missing authorization code.")
+    try:
+        await asyncio.to_thread(sp.handle_callback, code)
+    except Exception as e:
+        logger.warning("Spotify token exchange failed: %s", e)
+        return RedirectResponse("/?spotify_error=token_exchange_failed")
     return RedirectResponse("/")
 
 
@@ -165,7 +184,7 @@ async def albums(
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_session),
 ):
-    result = sp.get_saved_albums(limit=limit, offset=offset)
+    result = await asyncio.to_thread(sp.get_saved_albums, limit=limit, offset=offset)
     if result is None:
         return {"error": "Not connected"}
 
@@ -179,7 +198,7 @@ async def albums(
 
 @router.get("/albums/{album_id}")
 async def album_tracks(album_id: str, session: AsyncSession = Depends(get_session)):
-    result = sp.get_album_tracks(album_id)
+    result = await asyncio.to_thread(sp.get_album_tracks, album_id)
     if result is None:
         return {"error": "Not connected to Spotify"}
 
@@ -197,7 +216,7 @@ async def playlists(
     limit: int = Query(20, ge=1, le=50),
     offset: int = Query(0, ge=0),
 ):
-    result = sp.get_playlists(limit=limit, offset=offset)
+    result = await asyncio.to_thread(sp.get_playlists, limit=limit, offset=offset)
     if result is None:
         return {"error": "Not connected"}
     return result
@@ -210,7 +229,7 @@ async def playlist_tracks(
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_session),
 ):
-    result = sp.get_playlist_tracks(playlist_id, limit=limit, offset=offset)
+    result = await asyncio.to_thread(sp.get_playlist_tracks, playlist_id, limit=limit, offset=offset)
     if result is None:
         return {"error": "Not connected to Spotify"}
 
@@ -229,7 +248,7 @@ async def liked_songs(
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_session),
 ):
-    result = sp.get_liked_songs(limit=limit, offset=offset)
+    result = await asyncio.to_thread(sp.get_liked_songs, limit=limit, offset=offset)
     if result is None:
         return {"error": "Not connected"}
 

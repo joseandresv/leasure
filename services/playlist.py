@@ -8,6 +8,7 @@ H2 playlist rules:
 - .m3u8 extension + UTF-8 BOM so non-ASCII filenames resolve
 - CRLF line endings for FAT32 / embedded-player compatibility
 """
+import json
 import logging
 from pathlib import Path
 
@@ -54,27 +55,65 @@ def generate_all_playlists(playlists: dict[str, list[dict]], device_root: Path) 
     return generated
 
 
+MANIFEST_NAME = ".leasure-playlists.json"
+
+
+def _manifest_path(device_root: Path) -> Path:
+    return device_root / MANIFEST_NAME
+
+
+def read_manifest(device_root: Path) -> set[str]:
+    """Names of the playlist files Leasure itself wrote to this card on earlier syncs."""
+    path = _manifest_path(device_root)
+    if not path.exists():
+        return set()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return {str(n) for n in data.get("files", [])}
+    except (OSError, ValueError) as e:
+        logger.warning("Unreadable playlist manifest %s: %s", path, e)
+        return set()
+
+
+def write_manifest(device_root: Path, files: set[str]) -> None:
+    path = _manifest_path(device_root)
+    try:
+        path.write_text(json.dumps({"version": 1, "files": sorted(files)}, indent=2), encoding="utf-8")
+    except OSError as e:
+        logger.warning("Failed to write playlist manifest %s: %s", path, e)
+
+
 def sweep_orphan_playlists(device_root: Path, keep_names: set[str]) -> list[str]:
     """
-    Delete .m3u / .m3u8 files at device root whose stem isn't in keep_names.
+    Delete playlist files *that Leasure wrote on a previous sync* and that no longer
+    correspond to a DB playlist. Playlists the user put on the card by hand are never
+    touched: only names recorded in the card's manifest are candidates.
 
-    `keep_names` must contain the sanitized stems that generate_m3u would produce
-    (same sanitization: forbidden FAT32 chars stripped, whitespace trimmed).
+    `keep_names` must contain the sanitized stems that generate_m3u would produce.
     """
+    ours = read_manifest(device_root)
     removed = []
-    for f in device_root.iterdir():
-        if not f.is_file():
-            continue
-        if f.suffix.lower() not in (".m3u", ".m3u8"):
-            continue
+    for name in sorted(ours):
+        f = device_root / name
         if f.stem in keep_names:
+            continue
+        if not f.is_file() or f.suffix.lower() not in (".m3u", ".m3u8"):
             continue
         try:
             f.unlink()
             removed.append(f.name)
         except OSError as e:
             logger.warning("Failed to remove orphan playlist %s: %s", f, e)
+    if removed:
+        write_manifest(device_root, ours - set(removed))
     return removed
+
+
+def record_generated_playlists(device_root: Path, paths: list[Path]) -> None:
+    """Remember which playlist files this sync wrote so a later sweep can reclaim them."""
+    ours = read_manifest(device_root)
+    ours.update(p.name for p in paths)
+    write_manifest(device_root, ours)
 
 
 def sanitize_playlist_stem(name: str) -> str:

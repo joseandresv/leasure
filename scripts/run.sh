@@ -8,9 +8,10 @@ PORT="${1:-8642}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-if [ ! -x .venv/bin/python ]; then
-    echo "Error: .venv not found. Run scripts/install.sh first." >&2
+VENV_DIR="${LEASURE_VENV:-.venv}"
+if [ ! -x "$VENV_DIR/bin/python" ]; then
+    echo "Error: $VENV_DIR not found. Run scripts/install.sh first (set LEASURE_VENV to use a venv elsewhere)." >&2
     exit 1
 fi
 
-exec .venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port "$PORT"
+exec "$VENV_DIR/bin/python" -m uvicorn app:app --host 127.0.0.1 --port "$PORT"

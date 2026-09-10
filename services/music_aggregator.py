@@ -4,7 +4,7 @@ import logging
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -60,7 +60,7 @@ def _ytmusic_bucket_ts(played: str, position: int) -> float:
     YT Music history groups items coarsely ("Today", "Yesterday", "This week", etc.).
     Within a bucket we use the list position as a tiebreaker (earlier position = more recent).
     """
-    now = datetime.now(timezone.utc).timestamp()
+    now = datetime.now(UTC).timestamp()
     day = 86400
     bucket = (played or "").strip().lower()
 
@@ -76,7 +76,7 @@ def _ytmusic_bucket_ts(played: str, position: int) -> float:
         # Try to parse an actual date like "Nov 24, 2023"
         for fmt in ("%b %d, %Y", "%B %d, %Y", "%Y-%m-%d"):
             try:
-                dt = datetime.strptime(bucket, fmt).replace(tzinfo=timezone.utc)
+                dt = datetime.strptime(bucket, fmt).replace(tzinfo=UTC)
                 base = dt.timestamp()
                 break
             except ValueError:
@@ -133,7 +133,7 @@ def _compute_entity_recency(limit: int = 50) -> dict:
         return cached
 
     t0 = time.perf_counter()
-    now = datetime.now(timezone.utc).timestamp()
+    now = datetime.now(UTC).timestamp()
     artists: dict[str, float] = {}
     albums: dict[tuple[str, str], float] = {}
     playlists: dict[str, float] = {}
@@ -341,7 +341,7 @@ def get_unified_recent(limit: int = 50, force: bool = False) -> list[dict]:
 
     t0 = time.perf_counter()
     tracks = []
-    now = datetime.now(timezone.utc).timestamp()
+    now = datetime.now(UTC).timestamp()
 
     # Fan out the 4 slow fetches in parallel
     with ThreadPoolExecutor(max_workers=4) as ex:

@@ -1,19 +1,19 @@
-from collections import defaultdict
+from collections import Counter, defaultdict
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db import get_session
 from models import Track
+from services.tagger import primary_artist
 
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
 
 
-@router.get("/stats")
-async def library_stats(session: AsyncSession = Depends(get_session)):
+async def _library_totals(session: AsyncSession) -> dict:
     total = await session.scalar(select(func.count(Track.id)).where(Track.status == "done"))
     total_size = await session.scalar(select(func.sum(Track.file_size)).where(Track.status == "done"))
     return {
@@ -22,12 +22,15 @@ async def library_stats(session: AsyncSession = Depends(get_session)):
     }
 
 
+@router.get("/stats")
+async def library_stats(session: AsyncSession = Depends(get_session)):
+    return await _library_totals(session)
+
+
 @router.get("/stats/html")
 async def library_stats_html(request: Request, session: AsyncSession = Depends(get_session)):
-    total = await session.scalar(select(func.count(Track.id)).where(Track.status == "done"))
-    total_size = await session.scalar(select(func.sum(Track.file_size)).where(Track.status == "done"))
     return templates.TemplateResponse(request=request, name="partials/dashboard_stats.html",
-                                      context={"total_tracks": total or 0, "total_size_mb": round((total_size or 0) / (1024 * 1024), 1)})
+                                      context=await _library_totals(session))
 
 
 async def _query_tracks(q: str, limit: int, offset: int, session: AsyncSession):
@@ -91,33 +94,42 @@ async def list_tracks_html(
 async def genre_graph(session: AsyncSession = Depends(get_session)):
     """Return genre-based graph data for Sigma.js visualization."""
     result = await session.execute(
-        select(
-            Track.album,
-            func.min(Track.album_artist).label("artist"),
-            func.min(Track.artwork_url).label("artwork_url"),
-            func.min(Track.genre).label("genre"),
-        )
+        select(Track.album, Track.album_artist, Track.artist, Track.artwork_url, Track.genre)
         .where(Track.status == "done", Track.album.isnot(None))
-        .group_by(Track.album)
+        .order_by(Track.album)
     )
-    albums = result.all()
+
+    albums: dict[tuple[str, str], dict] = {}
+    genre_track_counts: Counter[str] = Counter()
+
+    # Two artists can share an album title, so key by artist too — the same grouping
+    # the H2 browses by (album artist, defaulted to the primary artist as in the tagger).
+    for album, album_artist, artist, artwork, genre_str in result.all():
+        genres = list(dict.fromkeys(
+            g.strip().lower() for g in (genre_str or "").split(",") if g.strip()
+        ))
+        key_artist = album_artist or primary_artist(artist) or "Unknown"
+        entry = albums.setdefault((key_artist, album), {"artist": key_artist, "artwork": artwork, "genres": Counter()})
+        entry["artwork"] = entry["artwork"] or artwork
+        entry["genres"].update(genres)
+        genre_track_counts.update(genres)
 
     nodes = []
     genre_index = defaultdict(list)
 
-    for i, (album, artist, artwork, genre_str) in enumerate(albums):
+    for i, ((_, album), entry) in enumerate(albums.items()):
         node_id = f"album_{i}"
-        genres = [g.strip().lower() for g in genre_str.split(",")] if genre_str else []
+        # the client colours a node by its first genre, so lead with the album's dominant one
+        genres = [g for g, _ in sorted(entry["genres"].items(), key=lambda kv: (-kv[1], kv[0]))]
         nodes.append({
             "id": node_id,
             "label": album or "Unknown",
-            "artist": artist or "Unknown",
-            "image": artwork or "",
+            "artist": entry["artist"],
+            "image": entry["artwork"] or "",
             "genres": genres,
         })
         for genre in genres:
-            if genre:
-                genre_index[genre].append(node_id)
+            genre_index[genre].append(node_id)
 
     # Edges: connect albums sharing genres
     edges = []
@@ -135,10 +147,10 @@ async def genre_graph(session: AsyncSession = Depends(get_session)):
     palette = ["#0066ff", "#c9a961", "#00cc66", "#cc3333", "#ff9900",
                "#9966ff", "#ff6699", "#00cccc", "#ff6600", "#6699ff"]
     genre_colors = {}
-    for i, genre in enumerate(sorted(genre_index.keys())):
+    for i, genre in enumerate(sorted(genre_track_counts)):
         genre_colors[genre] = {
             "color": palette[i % len(palette)],
-            "count": len(genre_index[genre]),
+            "count": genre_track_counts[genre],
         }
 
     return {"nodes": nodes, "edges": edges, "genres": genre_colors}

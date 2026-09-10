@@ -1,12 +1,11 @@
 import asyncio
 import logging
-from datetime import datetime
 
 from sqlalchemy import select
 
 from config import settings
 from db import async_session
-from models import Track
+from models import Track, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +71,12 @@ class DownloadWorker:
                 raise
             except Exception as e:
                 logger.exception("Worker %d failed on track %d: %s", worker_id, track_id, e)
-                await self._set_status(track_id, "error", str(e))
+                try:
+                    await self._set_status(track_id, "error", str(e))
+                except Exception:
+                    # The consumer loop must survive a DB hiccup here, or the
+                    # queue silently stops being drained.
+                    logger.exception("Worker %d could not record error for track %d", worker_id, track_id)
             finally:
                 self.queue.task_done()
 
@@ -100,7 +104,7 @@ class DownloadWorker:
                     track = await session.get(Track, track_id)
                     track.file_path = str(result_path)
                     track.status = "done"
-                    track.downloaded_at = datetime.utcnow()
+                    track.downloaded_at = utc_now()
                     await session.commit()
                 logger.info("Track %d downloaded to %s", track_id, result_path)
             else:

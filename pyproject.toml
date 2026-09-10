@@ -22,3 +22,23 @@ dependencies = [
 
 [project.scripts]
 leasure = "app:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "ruff>=0.8"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 130
+target-version = "py311"
+extend-exclude = ["docs", ".design-sync", "static", ".claude"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501", "B008"]  # long lines in templates-as-strings; Depends() defaults are FastAPI idiom
+
+[tool.ruff.lint.isort]
+known-first-party = ["routers", "services", "app", "config", "db", "models", "worker"]

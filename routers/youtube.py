@@ -1,4 +1,7 @@
-from fastapi import APIRouter, Depends, Form, Query, Request
+import asyncio
+import logging
+
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
@@ -7,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings
 from db import get_session
 from models import Playlist, PlaylistTrack, Track
+from services import oauth_state
 from services import youtube_client as yt
 from services.formats import resolve_format
 from worker import download_worker
@@ -15,13 +19,14 @@ from worker import download_worker
 def _is_htmx(request: Request) -> bool:
     return request.headers.get("HX-Request") == "true"
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
 
 
 @router.get("/status")
 async def status():
-    connected = yt.is_connected()
+    connected = await asyncio.to_thread(yt.is_connected)
     if connected:
         return {"connected": True}
     return {"connected": False, "message": "YouTube Music not connected."}
@@ -29,32 +34,14 @@ async def status():
 
 @router.get("/status/html")
 async def status_html(request: Request):
-    connected = yt.is_connected()
-    if connected:
-        return HTMLResponse('<p><mark>Connected</mark> to YouTube Music</p>')
-    return HTMLResponse('''
-        <details open>
-            <summary>Not connected to YouTube Music. Click to set up.</summary>
-            <p>To connect YouTube Music:</p>
-            <ol>
-                <li>Open <a href="https://music.youtube.com" target="_blank">music.youtube.com</a> in Chrome while logged in</li>
-                <li>Press <strong>F12</strong> to open Developer Tools → <strong>Network</strong> tab</li>
-                <li>Reload the page (F5)</li>
-                <li>Right-click the first request → <strong>Copy</strong> → <strong>Copy as cURL (bash)</strong></li>
-                <li>Paste below and submit</li>
-            </ol>
-            <form hx-post="/api/youtube/setup" hx-target="#yt-setup-result" hx-swap="innerHTML">
-                <textarea name="headers_raw" rows="6" placeholder="Paste cURL command or raw headers here..." style="font-family: monospace; font-size: 0.8rem;"></textarea>
-                <button type="submit">Connect YouTube Music</button>
-            </form>
-            <div id="yt-setup-result"></div>
-        </details>
-    ''')
+    connected = await asyncio.to_thread(yt.is_connected)
+    return templates.TemplateResponse(request=request, name="partials/yt_music_status.html",
+                                      context={"connected": connected})
 
 
 @router.post("/setup")
 async def setup(headers_raw: str = Form(...)):
-    success = yt.setup_from_headers(headers_raw)
+    success = await asyncio.to_thread(yt.setup_from_headers, headers_raw)
     if success:
         return HTMLResponse('<p><mark>Connected!</mark> Reload the page to browse your library.</p>')
     return HTMLResponse('<p style="color: var(--pico-del-color);">Failed to connect. Make sure you copied the full request headers.</p>')
@@ -63,7 +50,7 @@ async def setup(headers_raw: str = Form(...)):
 @router.get("/oauth/connect")
 async def oauth_connect():
     """Redirect to Google OAuth2 for YouTube history access."""
-    url = yt.get_youtube_oauth_url()
+    url = yt.get_youtube_oauth_url(state=oauth_state.issue())
     if not url:
         return HTMLResponse('<p style="color: var(--pico-del-color);">Google OAuth not configured. '
                             'Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to .env</p>')
@@ -71,9 +58,16 @@ async def oauth_connect():
 
 
 @router.get("/oauth/callback")
-async def oauth_callback(code: str = Query(...)):
+async def oauth_callback(code: str = "", state: str = "", error: str = ""):
     """Handle Google OAuth2 callback."""
-    success = yt.handle_youtube_oauth_callback(code)
+    if error:
+        logger.info("YouTube authorization not granted: %s", error)
+        return RedirectResponse("/?yt_oauth=denied")
+    if not oauth_state.verify(state):
+        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state. Start the YouTube connection again.")
+    if not code:
+        raise HTTPException(status_code=400, detail="Missing authorization code.")
+    success = await asyncio.to_thread(yt.handle_youtube_oauth_callback, code)
     if success:
         return RedirectResponse("/?yt_oauth=ok")
     return HTMLResponse('<p style="color: var(--pico-del-color);">YouTube OAuth failed. Please try again.</p>')
@@ -82,27 +76,24 @@ async def oauth_callback(code: str = Query(...)):
 @router.get("/oauth/status")
 async def oauth_status():
     """Check YouTube OAuth connection status."""
-    connected = yt.is_youtube_oauth_connected()
+    connected = await asyncio.to_thread(yt.is_youtube_oauth_connected)
     configured = bool(settings.google_client_id)
     return {"connected": connected, "configured": configured}
 
 
 @router.get("/oauth/status/html")
-async def oauth_status_html():
+async def oauth_status_html(request: Request):
     """HTML status for YouTube OAuth (history access)."""
-    if yt.is_youtube_oauth_connected():
-        return HTMLResponse('<p><mark>Connected</mark> to YouTube (history)</p>')
-    if settings.google_client_id:
-        return HTMLResponse(
-            '<p>YouTube history not connected. '
-            '<a href="/api/youtube/oauth/connect">Connect YouTube</a></p>')
-    return HTMLResponse(
-        '<p style="color: var(--text-muted);">YouTube history: add GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET to .env</p>')
+    connected = await asyncio.to_thread(yt.is_youtube_oauth_connected)
+    return templates.TemplateResponse(request=request, name="partials/yt_oauth_status.html",
+                                      context={"connected": connected,
+                                               "configured": bool(settings.google_client_id),
+                                               "redirect_uri": settings.google_redirect_uri})
 
 
 @router.get("/playlists")
 async def playlists():
-    result = yt.get_playlists()
+    result = await asyncio.to_thread(yt.get_playlists)
     if result is None:
         return HTMLResponse('<p>Not connected to YouTube Music.</p>')
     return result
@@ -110,7 +101,7 @@ async def playlists():
 
 @router.get("/playlists/html")
 async def playlists_html(request: Request):
-    result = yt.get_playlists()
+    result = await asyncio.to_thread(yt.get_playlists)
     if result is None:
         return HTMLResponse('<p>Not connected to YouTube Music.</p>')
     return templates.TemplateResponse(request=request, name="partials/yt_playlist_list.html",
@@ -122,7 +113,7 @@ async def playlist_tracks(
     playlist_id: str,
     session: AsyncSession = Depends(get_session),
 ):
-    result = yt.get_playlist_tracks(playlist_id)
+    result = await asyncio.to_thread(yt.get_playlist_tracks, playlist_id)
     if result is None:
         return {"error": "Not connected to YouTube Music"}
 
@@ -141,7 +132,7 @@ async def playlist_tracks_html(
     playlist_id: str,
     session: AsyncSession = Depends(get_session),
 ):
-    result = yt.get_playlist_tracks(playlist_id)
+    result = await asyncio.to_thread(yt.get_playlist_tracks, playlist_id)
     if result is None:
         return HTMLResponse('<p>Not connected to YouTube Music.</p>')
 
@@ -159,7 +150,7 @@ async def playlist_tracks_html(
 
 @router.get("/albums")
 async def albums():
-    result = yt.get_library_albums()
+    result = await asyncio.to_thread(yt.get_library_albums)
     if result is None:
         return HTMLResponse('<p>Not connected to YouTube Music.</p>')
     return result
@@ -167,7 +158,7 @@ async def albums():
 
 @router.get("/albums/html")
 async def albums_html(request: Request):
-    result = yt.get_library_albums()
+    result = await asyncio.to_thread(yt.get_library_albums)
     if result is None:
         return HTMLResponse('<p>Not connected to YouTube Music.</p>')
     return templates.TemplateResponse(request=request, name="partials/yt_albums.html",
@@ -179,7 +170,7 @@ async def album_tracks(
     browse_id: str,
     session: AsyncSession = Depends(get_session),
 ):
-    result = yt.get_album_tracks(browse_id)
+    result = await asyncio.to_thread(yt.get_album_tracks, browse_id)
     if result is None:
         return {"error": "Not connected to YouTube Music"}
 
@@ -199,7 +190,7 @@ async def album_tracks_html(
     browse_id: str,
     session: AsyncSession = Depends(get_session),
 ):
-    result = yt.get_album_tracks(browse_id)
+    result = await asyncio.to_thread(yt.get_album_tracks, browse_id)
     if result is None:
         return HTMLResponse('<p>Not connected to YouTube Music.</p>')
 
@@ -217,7 +208,7 @@ async def album_tracks_html(
 
 @router.get("/liked")
 async def liked_songs(session: AsyncSession = Depends(get_session)):
-    result = yt.get_liked_songs()
+    result = await asyncio.to_thread(yt.get_liked_songs)
     if result is None:
         return HTMLResponse('<p>Not connected to YouTube Music.</p>')
 
@@ -232,7 +223,7 @@ async def liked_songs(session: AsyncSession = Depends(get_session)):
 
 @router.get("/liked/html")
 async def liked_songs_html(request: Request, session: AsyncSession = Depends(get_session)):
-    result = yt.get_liked_songs()
+    result = await asyncio.to_thread(yt.get_liked_songs)
     if result is None:
         return HTMLResponse('<p>Not connected to YouTube Music.</p>')
 

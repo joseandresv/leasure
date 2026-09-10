@@ -6,10 +6,9 @@ from config import settings
 from db import async_session
 from models import Track
 from services.device import sanitize_filename
+from services.ytdlp_opts import download_with_fallback
 
 logger = logging.getLogger(__name__)
-
-COOKIE_FILE = settings.data_dir / "cookies.txt"
 
 
 def _search_ytmusic(title: str, artist: str, duration_ms: int = 0) -> str | None:
@@ -76,7 +75,6 @@ async def spotdl_download(track_id: int) -> Path | None:
         artist = track.artist or "Unknown"
         album = track.album or "Unknown"
         track_num = track.track_number
-        artwork_url = track.artwork_url
         duration_ms = track.duration_ms or 0
 
     if not spotify_uri:
@@ -105,14 +103,15 @@ async def spotdl_download(track_id: int) -> Path | None:
 
     # Step 3: Download with yt-dlp
     def _do_download() -> Path | None:
-        import yt_dlp
-
         if native:
             # Prefer the best AAC/M4A stream and keep it verbatim — no ffmpeg re-encode.
             # The H2 plays M4A/AAC natively; this is the highest fidelity our sources can give.
             base_opts = {
-                "format": "bestaudio[ext=m4a]/bestaudio/best",
+                # Prefer the AAC stream (the H2 plays M4A natively). If only Opus/WebM
+                # exists, "best" remuxes it into a taggable .opus without re-encoding.
+                "format": "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio",
                 "outtmpl": output_template,
+                "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "best"}],
                 "quiet": True,
                 "no_warnings": True,
             }
@@ -134,23 +133,7 @@ async def spotdl_download(track_id: int) -> Path | None:
         if url.startswith("ytsearch"):
             base_opts["default_search"] = "ytsearch1"
 
-        # Try with Chrome cookies first (Premium quality), fall back without
-        attempts = []
-        premium_opts = {**base_opts, "cookiesfrombrowser": (settings.cookie_browser,), "remote_components": ["ejs:github"]}
-        attempts.append(("premium", premium_opts))
-        attempts.append(("standard", {**base_opts, "remote_components": ["ejs:github"]}))
-
-        for label, ydl_opts in attempts:
-            try:
-                logger.info("Trying download (%s quality)", label)
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([url])
-                break  # Success
-            except Exception as e:
-                if label == "premium":
-                    logger.warning("Premium download failed, trying without cookies: %s", str(e)[:100])
-                    continue
-                raise  # Last attempt, let it propagate
+        download_with_fallback(url, base_opts)
 
         # Find the downloaded file
         search_exts = ["m4a", "webm", "opus", "mp3", "flac"] if native else [fmt, "mp3", "flac", "opus", "m4a", "webm"]
@@ -188,92 +171,3 @@ async def spotdl_download(track_id: int) -> Path | None:
         logger.error("No file found after download for track %d", track_id)
 
     return result
-
-
-# Legacy functions kept for ytdlp_engine compatibility
-async def _apply_tags(audio_path: Path, track_id: int):
-    async with async_session() as session:
-        track = await session.get(Track, track_id)
-        if not track:
-            return
-
-    def _tag():
-        try:
-            from mutagen import File as MutagenFile
-            from mutagen.flac import FLAC
-
-            if audio_path.suffix == ".mp3":
-                audio = MutagenFile(audio_path, easy=True)
-                if audio is not None:
-                    audio["title"] = track.title or ""
-                    audio["artist"] = track.artist or ""
-                    audio["album"] = track.album or ""
-                    if track.album_artist:
-                        audio["albumartist"] = track.album_artist
-                    if track.track_number:
-                        audio["tracknumber"] = str(track.track_number)
-                    if track.genre:
-                        audio["genre"] = track.genre
-                    if track.year:
-                        audio["date"] = str(track.year)
-                    audio.save()
-            elif audio_path.suffix == ".flac":
-                audio = FLAC(audio_path)
-                audio["title"] = track.title or ""
-                audio["artist"] = track.artist or ""
-                audio["album"] = track.album or ""
-                if track.album_artist:
-                    audio["albumartist"] = track.album_artist
-                if track.track_number:
-                    audio["tracknumber"] = str(track.track_number)
-                if track.genre:
-                    audio["genre"] = track.genre
-                if track.year:
-                    audio["date"] = str(track.year)
-                audio.save()
-            logger.info("Tagged %s", audio_path)
-        except Exception as e:
-            logger.warning("Failed to tag %s: %s", audio_path, e)
-
-    await asyncio.to_thread(_tag)
-
-
-async def _export_sidecar_artwork(audio_path: Path, artwork_url: str | None):
-    jpg_path = audio_path.with_suffix(".jpg")
-    if jpg_path.exists():
-        return
-
-    if artwork_url:
-        from services.artwork import download_and_save_artwork
-        await download_and_save_artwork(artwork_url, jpg_path)
-    else:
-        def _extract():
-            try:
-                from mutagen import File as MutagenFile
-                from PIL import Image
-                import io
-
-                audio = MutagenFile(audio_path)
-                if audio is None:
-                    return
-
-                art_data = None
-                if hasattr(audio, "tags") and audio.tags:
-                    for key in audio.tags:
-                        if str(key).startswith("APIC"):
-                            art_data = audio.tags[key].data
-                            break
-                if art_data is None and hasattr(audio, "pictures"):
-                    for pic in audio.pictures:
-                        art_data = pic.data
-                        break
-
-                if art_data:
-                    img = Image.open(io.BytesIO(art_data))
-                    img = img.resize((settings.artwork_size, settings.artwork_size), Image.LANCZOS)
-                    img.convert("RGB").save(jpg_path, "JPEG", quality=90)
-                    logger.info("Exported album art to %s", jpg_path)
-            except Exception as e:
-                logger.warning("Failed to export album art for %s: %s", audio_path, e)
-
-        await asyncio.to_thread(_extract)

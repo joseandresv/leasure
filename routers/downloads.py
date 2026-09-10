@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, Depends, Request
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
@@ -9,6 +11,13 @@ from worker import download_worker
 
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
+
+
+def _format_downloaded_at(value: datetime | None) -> str | None:
+    """Display form of a naive UTC timestamp, shown in the server's local zone."""
+    if not value:
+        return None
+    return value.replace(tzinfo=UTC).astimezone().strftime("%d %b %Y, %H:%M")
 
 
 @router.get("/queue")
@@ -97,6 +106,6 @@ async def download_history_html(
                                           {"id": t.id, "title": t.title, "artist": t.artist,
                                            "album": t.album, "format": t.format, "quality": t.quality,
                                            "engine_used": t.engine_used,
-                                           "downloaded_at": t.downloaded_at.isoformat() if t.downloaded_at else None}
+                                           "downloaded_at": _format_downloaded_at(t.downloaded_at)}
                                           for t in tracks
                                       ]})
