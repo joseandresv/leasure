@@ -30,7 +30,7 @@
                 {% endif %}
             </td>
             <td style="font-family: var(--font-mono); font-size: 0.78rem;">{{ t.engine_used or '-' }}</td>
-            <td><small style="color: var(--text-muted);">{{ t.downloaded_at[:16] if t.downloaded_at else '-' }}</small></td>
+            <td><small style="color: var(--text-muted);">{{ t.downloaded_at or '-' }}</small></td>
         </tr>
     {% endfor %}
     </tbody>

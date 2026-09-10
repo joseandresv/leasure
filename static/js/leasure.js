@@ -131,6 +131,52 @@ function startSync(e) {
     var btn = document.getElementById('sync-btn');
     var status = document.getElementById('sync-status');
 
+    function resetButton() {
+        btn.disabled = false;
+        btn.textContent = 'SYNC TO DEVICE';
+        btn.classList.remove('syncing');
+    }
+    // kind 'error' = the sync was attempted and failed, 'warning' = it was refused
+    // before anything ran, so the toast must not claim a failure.
+    function showNotice(message, kind) {
+        resetButton();
+        status.textContent = '';
+        var box = document.createElement('div');
+        box.className = 'sync-result';
+        if (kind === 'error') {
+            box.classList.add('sync-result-error');
+        } else {
+            box.classList.add('sync-result-warning');
+        }
+        var p = document.createElement('p');
+        p.textContent = message;
+        box.appendChild(p);
+        status.appendChild(box);
+        if (Alpine.store('toast')) {
+            Alpine.store('toast').add(kind === 'error' ? 'Sync failed: ' + message : message, kind);
+        }
+    }
+    function showError(message) {
+        showNotice(message, 'error');
+    }
+
+    // Loose comparison (trailing separator, drive-letter case) so a path the server
+    // would accept is never blocked here.
+    function isDetectedDrive(candidate) {
+        var wanted = String(candidate).replace(/[\\/]+$/, '').toLowerCase();
+        return window.leasureDrives.some(function(p) {
+            return String(p).replace(/[\\/]+$/, '').toLowerCase() === wanted;
+        });
+    }
+
+    // The server is the source of truth and answers an unknown target with 400;
+    // this only spares the browser that failed request for the usual typo. Drives
+    // are undefined until a scan has run — then fall through to the server.
+    if (window.leasureDrives && !isDetectedDrive(path)) {
+        showNotice('Not a detected drive — click Scan and pick the H2.', 'warning');
+        return;
+    }
+
     btn.disabled = true;
     btn.textContent = 'Syncing...';
     btn.classList.add('syncing');
@@ -139,67 +185,107 @@ function startSync(e) {
         '<div class="progress-bar"><div class="progress-bar-fill" id="sync-progress-fill" style="width:0%"></div></div>' +
         '<p id="sync-detail" class="sync-detail"></p></div>';
 
-    var es = new EventSource('/api/device/sync/stream?device_path=' + encodeURIComponent(path) + '&scope=' + scope);
-    var total = 0;
+    // The sync is created with a POST (a cross-site page cannot forge that from a
+    // plain navigation), then its progress is streamed by job id.
+    var body = new URLSearchParams();
+    body.set('device_path', path);
+    body.set('scope', scope);
+    fetch('/api/device/sync/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString()
+    }).then(function(resp) {
+        return resp.json().then(function(data) {
+            if (!resp.ok) { throw new Error(data.detail || ('HTTP ' + resp.status)); }
+            return data;
+        });
+    }).then(function(job) {
+        streamSync(job.job_id);
+    }).catch(function(err) {
+        showError(err.message || 'Could not start sync');
+    });
 
-    es.onmessage = function(event) {
-        var data = JSON.parse(event.data);
-        var fill = document.getElementById('sync-progress-fill');
-        var detail = document.getElementById('sync-detail');
+    function streamSync(jobId) {
+        var es = new EventSource('/api/device/sync/stream/' + encodeURIComponent(jobId));
+        var total = 0;
 
-        if (data.type === 'start') {
-            total = data.total;
-            detail.textContent = 'Starting sync of ' + data.total + ' tracks...';
-        } else if (data.type === 'progress') {
-            var pct = total > 0 ? Math.round((data.current / total) * 100) : 0;
-            fill.style.width = pct + '%';
-            detail.innerHTML = '<strong>' + data.synced + '/' + data.total + '</strong> &middot; ' +
-                data.artist + ' - ' + data.track;
-        } else if (data.type === 'playlists') {
-            detail.textContent = data.message;
-        } else if (data.type === 'done') {
+        es.onmessage = function(event) {
+            var data = JSON.parse(event.data);
+            var fill = document.getElementById('sync-progress-fill');
+            var detail = document.getElementById('sync-detail');
+
+            if (data.type === 'start') {
+                total = data.total;
+                detail.textContent = 'Starting sync of ' + data.total + ' tracks...';
+            } else if (data.type === 'progress') {
+                var pct = total > 0 ? Math.round((data.current / total) * 100) : 0;
+                fill.style.width = pct + '%';
+                // Provider metadata goes in as text, never as markup.
+                detail.textContent = '';
+                var strong = document.createElement('strong');
+                strong.textContent = data.synced + '/' + data.total;
+                detail.appendChild(strong);
+                detail.appendChild(document.createTextNode(' · ' + data.artist + ' - ' + data.track));
+            } else if (data.type === 'playlists') {
+                detail.textContent = data.message;
+            } else if (data.type === 'done') {
+                es.close();
+                resetButton();
+
+                status.textContent = '';
+                var box = document.createElement('div');
+                box.className = 'sync-result sync-result-success';
+                var h4 = document.createElement('h4');
+                h4.textContent = 'Sync Complete';
+                box.appendChild(h4);
+                var p = document.createElement('p');
+                var n = document.createElement('strong');
+                n.textContent = data.synced;
+                p.appendChild(n);
+                p.appendChild(document.createTextNode(' tracks synced (' + data.size_mb + ' MB)'));
+                if (data.playlists) {
+                    p.appendChild(document.createTextNode(' · '));
+                    var pl = document.createElement('strong');
+                    pl.textContent = data.playlists;
+                    p.appendChild(pl);
+                    p.appendChild(document.createTextNode(' playlists generated'));
+                }
+                box.appendChild(p);
+                if (data.errors && data.errors.length > 0) {
+                    var details = document.createElement('details');
+                    var summary = document.createElement('summary');
+                    summary.textContent = data.errors.length + ' error(s)';
+                    details.appendChild(summary);
+                    var ul = document.createElement('ul');
+                    data.errors.forEach(function(err) {
+                        var li = document.createElement('li');
+                        var small = document.createElement('small');
+                        small.textContent = err;
+                        li.appendChild(small);
+                        ul.appendChild(li);
+                    });
+                    details.appendChild(ul);
+                    box.appendChild(details);
+                }
+                status.appendChild(box);
+
+                if (Alpine.store('toast')) {
+                    Alpine.store('toast').add('Sync complete: ' + data.synced + ' tracks', 'success');
+                }
+
+                htmx.ajax('GET', '/api/device/files/html?device_path=' + encodeURIComponent(path), '#device-files');
+                htmx.ajax('GET', '/api/device/diff/html?device_path=' + encodeURIComponent(path), '#sync-diff');
+            } else if (data.type === 'error') {
+                es.close();
+                showError(data.message);
+            }
+        };
+
+        es.onerror = function() {
             es.close();
-            btn.disabled = false;
-            btn.textContent = 'SYNC TO DEVICE';
-            btn.classList.remove('syncing');
-
-            var html = '<div class="sync-result sync-result-success">' +
-                '<h4>Sync Complete</h4>' +
-                '<p><strong>' + data.synced + '</strong> tracks synced (' + data.size_mb + ' MB)';
-            if (data.playlists) html += ' &middot; <strong>' + data.playlists + '</strong> playlists generated';
-            html += '</p>';
-            if (data.errors && data.errors.length > 0) {
-                html += '<details><summary>' + data.errors.length + ' error(s)</summary><ul>';
-                data.errors.forEach(function(err) { html += '<li><small>' + err + '</small></li>'; });
-                html += '</ul></details>';
-            }
-            html += '</div>';
-            status.innerHTML = html;
-
-            if (Alpine.store('toast')) {
-                Alpine.store('toast').add('Sync complete: ' + data.synced + ' tracks', 'success');
-            }
-
-            htmx.ajax('GET', '/api/device/files/html?device_path=' + encodeURIComponent(path), '#device-files');
-            htmx.ajax('GET', '/api/device/diff/html?device_path=' + encodeURIComponent(path), '#sync-diff');
-        } else if (data.type === 'error') {
-            es.close();
-            btn.disabled = false;
-            btn.textContent = 'Start Sync';
-            btn.classList.remove('syncing');
-            status.innerHTML = '<div class="sync-result sync-result-error"><p>' + data.message + '</p></div>';
-            if (Alpine.store('toast')) {
-                Alpine.store('toast').add('Sync failed: ' + data.message, 'error');
-            }
-        }
-    };
-
-    es.onerror = function() {
-        es.close();
-        btn.disabled = false;
-        btn.textContent = 'SYNC TO DEVICE';
-        btn.classList.remove('syncing');
-    };
+            showError('Connection to the sync stream was lost. The sync keeps running on the server — refresh the Device page to see the result.');
+        };
+    }
 }
 
 /* ── Device Drive Selection ── */
@@ -212,6 +298,25 @@ function selectDrive(path) {
 }
 
 /* ── Genre Graph (Sigma.js) ── */
+
+var GRAPH_LABEL = {
+    font: 'Orbitron, JetBrains Mono, system-ui, sans-serif',
+    weight: '600',
+    size: 11,
+    nodeSize: 10
+};
+
+// Room the widest label needs to the right of its node, capped so the margin never
+// eats more than a quarter of the frame.
+function labelStagePadding(nodes, container) {
+    var ctx = document.createElement('canvas').getContext('2d');
+    if (!ctx) return 40;
+    ctx.font = GRAPH_LABEL.weight + ' ' + GRAPH_LABEL.size + 'px ' + GRAPH_LABEL.font;
+    var widest = nodes.reduce(function(w, node) {
+        return Math.max(w, ctx.measureText(node.label || '').width);
+    }, 0);
+    return Math.round(Math.min(GRAPH_LABEL.nodeSize + 6 + widest, container.clientHeight / 4));
+}
 
 function initGraph(event) {
     var container = document.getElementById('genre-graph');
@@ -236,7 +341,7 @@ function initGraph(event) {
             label: node.label,
             x: Math.random() * 100,
             y: Math.random() * 100,
-            size: 10,
+            size: GRAPH_LABEL.nodeSize,
             color: color,
             image: node.image,
             artist: node.artist
@@ -255,22 +360,26 @@ function initGraph(event) {
     });
 
     // Run ForceAtlas2 layout
-    if (window.graphologyLayoutForceAtlas2) {
-        var settings = graphologyLayoutForceAtlas2.inferSettings(graph);
+    var forceAtlas2 = window.graphologyLibrary && window.graphologyLibrary.layoutForceAtlas2;
+    if (forceAtlas2) {
+        var settings = forceAtlas2.inferSettings(graph);
         settings.gravity = 1;
-        graphologyLayoutForceAtlas2.assign(graph, { settings: settings, iterations: 100 });
+        forceAtlas2.assign(graph, { settings: settings, iterations: 100 });
     }
 
-    // Render
+    // Render. Sigma frames node *centres* and draws each label to the right of its
+    // node, so the right-most label runs past the canvas unless the stage padding —
+    // a pixel margin kept on every edge — covers the widest label. Rescaling the
+    // layout coordinates would not help: Sigma re-normalises them to the node extent.
     var renderer = new Sigma(graph, container, {
         renderLabels: true,
         labelColor: { color: '#cfe6ff' },
-        labelFont: 'Orbitron, JetBrains Mono, system-ui, sans-serif',
-        labelWeight: '600',
-        labelSize: 11,
+        labelFont: GRAPH_LABEL.font,
+        labelWeight: GRAPH_LABEL.weight,
+        labelSize: GRAPH_LABEL.size,
         defaultEdgeColor: 'rgba(56,214,255,0.12)',
         defaultNodeColor: '#38d6ff',
-        stagePadding: 40,
+        stagePadding: labelStagePadding(data.nodes, container),
         minCameraRatio: 0.3,
         maxCameraRatio: 3,
     });
@@ -278,12 +387,18 @@ function initGraph(event) {
     // Genre legend
     var legend = document.getElementById('genre-legend');
     if (legend && data.genres) {
-        var html = '';
+        legend.replaceChildren();
         Object.keys(data.genres).sort().forEach(function(g) {
             var info = data.genres[g];
-            html += '<span class="genre-pill" style="--pill-color:' + info.color + '">' + g + ' (' + info.count + ')</span> ';
+            var pill = document.createElement('span');
+            pill.className = 'genre-pill';
+            // genre names come from provider tags; only a literal hex colour may reach CSS
+            if (/^#[0-9a-f]{3,8}$/i.test(info.color || '')) {
+                pill.style.setProperty('--pill-color', info.color);
+            }
+            pill.textContent = g + ' (' + info.count + ')';
+            legend.appendChild(pill);
         });
-        legend.innerHTML = html;
     }
 
     // Click node to show info

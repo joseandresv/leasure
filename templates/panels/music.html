@@ -1,4 +1,4 @@
-{% from "macros/components.html" import menu_head, format_selector %}
+{% from "macros/components.html" import menu_head, ctl, format_selector %}
 {{ menu_head('MUSIC', 'SELECT MUSIC') }}
 
 {# THE DECK shell — the H2 player + "NOW SELECTED" readout live in a persistent
@@ -75,6 +75,13 @@
 
         <div id="music-results" hx-get="/api/music/deck" hx-trigger="load" hx-swap="innerHTML">
             <i style="color: var(--text-muted);">loading...</i>
+        </div>
+
+        <div class="menu-foot" aria-hidden="true">
+            {{ ctl('↕', 'SELECT') }}
+            {{ ctl('⌨', 'SEARCH') }}
+            {{ ctl('▼', 'DOWNLOAD') }}
+            {{ ctl('↻', 'REFRESH') }}
         </div>
     </div>
 

@@ -1,0 +1,16 @@
+{% if connected %}
+<p><mark>Connected</mark> to YouTube (history)</p>
+{% elif configured %}
+<p>YouTube history not connected. <a href="/api/youtube/oauth/connect">Connect YouTube</a></p>
+{% else %}
+<p style="color: var(--text-muted);">YouTube history isn't set up yet.</p>
+<details>
+    <summary>How to set up</summary>
+    <ol>
+        <li>Create an OAuth client ID (type: Web application) in the <a href="https://console.cloud.google.com/apis/credentials" target="_blank">Google Cloud console</a></li>
+        <li>Add <code>{{ redirect_uri }}</code> to the client's authorised redirect URIs</li>
+        <li>Copy the client ID and secret into <code>.env</code> as <code>GOOGLE_CLIENT_ID</code> and <code>GOOGLE_CLIENT_SECRET</code></li>
+        <li>Restart Leasure</li>
+    </ol>
+</details>
+{% endif %}

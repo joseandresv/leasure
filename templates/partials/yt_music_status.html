@@ -1,0 +1,20 @@
+{% if connected %}
+<p><mark>Connected</mark> to YouTube Music</p>
+{% else %}
+<p style="color: var(--text-muted);">YouTube Music isn't set up yet.</p>
+<details>
+    <summary>How to set up</summary>
+    <ol>
+        <li>Open <a href="https://music.youtube.com" target="_blank">music.youtube.com</a> in Chrome while logged in</li>
+        <li>Press <strong>F12</strong> to open Developer Tools → <strong>Network</strong> tab</li>
+        <li>Reload the page (F5)</li>
+        <li>Right-click the first request → <strong>Copy</strong> → <strong>Copy as cURL (bash)</strong></li>
+        <li>Paste below and submit</li>
+    </ol>
+    <form hx-post="/api/youtube/setup" hx-target="#yt-setup-result" hx-swap="innerHTML">
+        <textarea name="headers_raw" rows="6" placeholder="Paste cURL command or raw headers here..." style="font-family: var(--font-mono);"></textarea>
+        <button type="submit">Connect YouTube Music</button>
+    </form>
+    <div id="yt-setup-result"></div>
+</details>
+{% endif %}

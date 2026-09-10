@@ -25,7 +25,7 @@
 
     <!-- Sigma.js + graphology (genre graph) -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/graphology/0.25.4/graphology.umd.min.js" defer></script>
-    <script src="https://cdn.jsdelivr.net/npm/graphology-layout-forceatlas2@0.10.1/dist/graphology-layout-forceatlas2.min.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/graphology-library@0.8.0/dist/graphology-library.min.js" defer></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/sigma.js/2.4.0/sigma.min.js" defer></script>
 </head>
 <body>
@@ -58,8 +58,7 @@
 
     <!-- Footer -->
     <div class="site-footer">
-        leasure v0.2 &mdash; mp3 sync station &mdash;
-        <span hx-get="/api/library/stats" hx-trigger="load, every 10s" hx-swap="innerHTML" style="display:inline">...</span>
+        leasure v0.2 &mdash; mp3 sync station
     </div>
 
     <!-- Toast Notifications (Alpine.js) -->

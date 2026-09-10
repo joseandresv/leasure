@@ -40,6 +40,7 @@
 
     function init() {
         buildCarousel();
+        trackPanelBodyScroll();
         buildDevice();
         setupNavigation();
         navigateToPanel('home', true);
@@ -71,6 +72,9 @@
             panel.className = 'carousel-panel';
             panel.id = 'panel-' + name;
             panel.dataset.index = i;
+            // Off-screen panels stay out of the tab order and the a11y tree until
+            // navigateToPanel activates one.
+            panel.inert = true;
             panel.appendChild(template.content.cloneNode(true));
 
             const angle = ANGLE_STEP * i;
@@ -124,7 +128,7 @@
 
         // Now that the panel is in its final 2D position, anchor the device to its slot
         placeDevice();
-        setTimeout(placeDevice, 80);
+        setTimeout(() => placeDevice(), 80);
     }
 
     function popInPanel(name) {
@@ -144,8 +148,10 @@
         // Restore 3D transform
         const angle = ANGLE_STEP * idx;
         panel.style.position = 'absolute';
-        panel.style.left = '-540px';
-        panel.style.top = '-420px';
+        // Clear the pop-out centering so the stylesheet's --panel-w/--panel-h
+        // offsets take over again — the panel size is viewport-relative.
+        panel.style.left = '';
+        panel.style.top = '';
         panel.style.transform = `rotateY(${angle}deg) translateZ(${RADIUS}px) scale(0.5)`;
         panel.style.pointerEvents = 'none';
     }
@@ -220,7 +226,54 @@
         }
     }
 
-    function placeDevice() {
+    // The panel frame clips and its body (.menu-deck / .rhythm-deck) is the only
+    // scroller, so the docked bezel moves under the viewport-positioned canvas.
+    // Re-anchor on scroll, instantly — a glide would trail behind the bezel.
+    function trackPanelBodyScroll() {
+        let queued = false;
+        const onScroll = () => {
+            if (queued) return;
+            queued = true;
+            requestAnimationFrame(() => { queued = false; placeDevice(true); });
+        };
+        document.querySelectorAll('.carousel-panel > .menu-deck, .carousel-panel > .rhythm-deck')
+            .forEach(body => {
+                if (body.dataset.deviceScrollBound) return;
+                body.dataset.deviceScrollBound = '1';
+                body.addEventListener('scroll', onScroll, { passive: true });
+            });
+    }
+
+    // The panel body's own top mask band, read from CSS so the two cannot drift.
+    const BODY_FADE = parseFloat(
+        getComputedStyle(document.documentElement).getPropertyValue('--body-fade')) || 10;
+
+    function unclipDevice(canvas) {
+        canvas.style.clipPath = 'none';
+        canvas.style.maskImage = 'none';
+        canvas.style.webkitMaskImage = 'none';
+    }
+
+    // The canvas floats above the panels, so it is not clipped by the panel frame:
+    // when the bezel scrolls past the body's edge, clip the Walker to match. The top
+    // edge fades over the same band as the body's mask so the Walker dissolves under
+    // the pinned masthead instead of being cut by it.
+    function clipToScroller(canvas, slotRect, slotEl) {
+        const panel = slotEl.closest('.carousel-panel');
+        const body = panel && panel.querySelector(':scope > .menu-deck, :scope > .rhythm-deck');
+        if (!body) { unclipDevice(canvas); return; }
+        const view = body.getBoundingClientRect();
+        const cut = n => Math.max(0, Math.round(n)) + 'px';
+        canvas.style.clipPath = `inset(0 ${cut(slotRect.right - view.right)} ` +
+            `${cut(slotRect.bottom - view.bottom)} ${cut(view.left - slotRect.left)})`;
+        const fadeStart = Math.round(view.top - slotRect.top);
+        const fade = fadeStart + BODY_FADE <= 0 ? 'none'
+            : `linear-gradient(to bottom, transparent ${fadeStart}px, #000 ${fadeStart + BODY_FADE}px)`;
+        canvas.style.maskImage = fade;
+        canvas.style.webkitMaskImage = fade;
+    }
+
+    function placeDevice(instant) {
         const canvas = document.getElementById('device-canvas');
         if (!canvas) return;
 
@@ -245,7 +298,7 @@
             Math.abs(a.left - b.left) < 2 && Math.abs(a.top - b.top) < 2 &&
             Math.abs(a.width - b.width) < 2 && Math.abs(a.height - b.height) < 2;
         const still = slotRect && near(slotRect, lastDock);
-        canvas.style.transition = still ? 'none'
+        canvas.style.transition = (still || instant) ? 'none'
             : 'top 500ms cubic-bezier(.2,.7,.3,1), left 500ms cubic-bezier(.2,.7,.3,1), width 500ms cubic-bezier(.2,.7,.3,1), height 500ms cubic-bezier(.2,.7,.3,1), opacity 500ms ease';
         canvas.style.bottom = 'auto';
         canvas.style.transform = 'none';
@@ -263,9 +316,11 @@
             canvas.style.height = slotRect.height + 'px';
             canvas.style.opacity = '1';
             lastDock = { left: slotRect.left, top: slotRect.top, width: slotRect.width, height: slotRect.height };
+            clipToScroller(canvas, slotRect, slotEl);
             const host = slotEl.closest('.rhythm-deck') || slotEl.closest('.menu-stage') || slotEl;
             if (host) host.classList.add('device-mounted');
         } else if (activePanel === 'music') {
+            unclipDevice(canvas);
             // Music sub-tabs (Albums/Playlists/Artists) have no bezel — big hero dock.
             const h = 300, w = 216;
             canvas.style.left = '32px';
@@ -274,6 +329,7 @@
             canvas.style.height = h + 'px';
             canvas.style.opacity = '1';
         } else {
+            unclipDevice(canvas);
             // Fallback corner dock (e.g. before a panel's stage has laid out)
             canvas.style.left = '28px';
             canvas.style.top = '28px';
@@ -324,6 +380,7 @@
             const el = document.getElementById('panel-' + n);
             if (!el) return;
             el.style.pointerEvents = 'none';
+            el.inert = n !== name;
             if (n === name) {
                 el.style.opacity = '1';
                 el.style.visibility = 'visible';

@@ -82,6 +82,21 @@
     --radius-md: 5px;
     --radius-lg: 8px;
 
+    /* Carousel panel box — shrinks to fit small laptops (1024x768, 1280x800)
+       and stays at its designed 1080x840 from 944px of height up. The panel is
+       centred, so reserving the nav rail's width on BOTH sides is what keeps
+       the rail from covering panel controls. */
+    --nav-rail-space: 84px;   /* 48px button + 24px inset + 12px clearance */
+    --status-bar-h: 28px;     /* measured height of the fixed LED status bar */
+    --site-footer-h: 17px;    /* measured height of the footer line above it */
+    --bottom-chrome: calc(var(--status-bar-h) + var(--site-footer-h) + 8px);
+    --panel-w: min(1080px, 100vw - 2 * var(--nav-rail-space));
+    /* The panel is viewport-centred, so clearing the fixed bottom chrome costs
+       its height at the top as well — hence the doubled term. */
+    --panel-h: min(840px, 100vh - 2 * var(--bottom-chrome));
+    /* Top fade band of every panel body; scene.js reads it to clip the Walker. */
+    --body-fade: 10px;
+
     /* Spacing */
     --space-xs: 0.25rem;
     --space-sm: 0.5rem;
@@ -206,12 +221,15 @@ body > canvas { display: none !important; }
 
 .carousel-panel {
     position: absolute;
-    width: 1080px;
-    height: 840px;
-    left: -540px;
-    top: -420px;
-    overflow-y: auto;
-    overflow-x: hidden;
+    width: var(--panel-w);
+    height: var(--panel-h);
+    left: calc(var(--panel-w) / -2);
+    top: calc(var(--panel-h) / -2);
+    /* The frame itself never scrolls: it clips (so nothing draws over the
+       border or the rounded corners) and its body is the only scroller. */
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
     background:
         var(--energy-slash),
         var(--tech-grid),
@@ -233,9 +251,26 @@ body > canvas { display: none !important; }
     pointer-events: none;  /* JS sets auto on active panel */
     font-family: var(--font-ui);
     color: var(--text-primary);
+}
+
+/* Panel body — the masthead stays pinned above it, this is what scrolls.
+   Every panel is either a .menu-deck or (Music) a .rhythm-deck wrapper. */
+.carousel-panel > .menu-deck,
+.carousel-panel > .rhythm-deck {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding-top: 8px;
+    padding-right: 8px;   /* keeps the scrollbar off the content's right edge */
+    /* Scrolled content dissolves into the pinned masthead instead of being cut
+       by it; the 8px inset above keeps the fade over empty space at scroll 0. */
+    -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 var(--body-fade));
+            mask-image: linear-gradient(180deg, transparent 0, #000 var(--body-fade));
     scrollbar-width: thin;
     scrollbar-color: #555 #2a2a2e;
 }
+.carousel-panel > .menu-masthead { flex: 0 0 auto; }
 
 /* 2D overlay for active panel — outside 3D context, pointer events work */
 #panel-overlay {
@@ -252,18 +287,31 @@ body > canvas { display: none !important; }
     pointer-events: auto;
 }
 
-.carousel-panel::-webkit-scrollbar { width: 5px; }
-.carousel-panel::-webkit-scrollbar-track { background: var(--bg-dark); }
-.carousel-panel::-webkit-scrollbar-thumb { background: #555; border-radius: 3px; }
+.carousel-panel > .menu-deck::-webkit-scrollbar,
+.carousel-panel > .rhythm-deck::-webkit-scrollbar { width: 5px; }
+.carousel-panel > .menu-deck::-webkit-scrollbar-track,
+.carousel-panel > .rhythm-deck::-webkit-scrollbar-track { background: var(--bg-dark); }
+.carousel-panel > .menu-deck::-webkit-scrollbar-thumb,
+.carousel-panel > .rhythm-deck::-webkit-scrollbar-thumb { background: #555; border-radius: 3px; }
 
-/* Content sizing for 1080px panel (rendered 2x, scaled 0.5 in JS transform) */
+/* Content sizing for 1080px panel (rendered 2x, scaled 0.5 in JS transform).
+   Body copy and controls are sized from --panel-text, which is fluid: 14px in a
+   narrow window, the designed 16px from 1280px up. Deriving each size with
+   calc() instead of em keeps nested text (small inside p, code inside li) from
+   compounding. Headings and the pixel-font HUD labels stay fixed by design. */
+.carousel-panel {
+    --panel-text: clamp(0.875rem, 0.68rem + 0.4vw, 1rem);
+    font-size: var(--panel-text);
+}
 .carousel-panel h2 { font-size: 1.1rem; margin-bottom: 0.4rem; }
 .carousel-panel h3 { font-size: 1rem; }
-.carousel-panel p, .carousel-panel td, .carousel-panel th,
-.carousel-panel label, .carousel-panel small { font-size: 0.9rem; }
-.carousel-panel b { font-size: 0.95rem; }
-.carousel-panel input, .carousel-panel select, .carousel-panel textarea { font-size: 0.9rem; padding: 0.4rem 0.6rem; }
-.carousel-panel button { font-size: 0.85rem; padding: 0.3rem 0.7rem; min-height: 34px; }
+.carousel-panel p, .carousel-panel li, .carousel-panel td, .carousel-panel th,
+.carousel-panel label, .carousel-panel small { font-size: calc(0.9 * var(--panel-text)); }
+.carousel-panel b { font-size: calc(0.95 * var(--panel-text)); }
+.carousel-panel input, .carousel-panel textarea { font-size: calc(0.9 * var(--panel-text)); padding: 0.4rem 0.6rem; }
+/* Selects keep the arrow's gutter — the shorthand above would paint text over it. */
+.carousel-panel select { font-size: calc(0.9 * var(--panel-text)); padding: 0.4rem 2rem 0.4rem 0.6rem; }
+.carousel-panel button { font-size: calc(0.85 * var(--panel-text)); padding: 0.3rem 0.7rem; min-height: 34px; }
 .carousel-panel .badge { font-size: 0.7rem; padding: 0.1rem 0.4rem; }
 .carousel-panel .track-row { padding: 0.35rem 0.4rem; gap: 0.4rem; }
 .carousel-panel .track-title { font-size: 0.9rem; }
@@ -287,7 +335,7 @@ body > canvas { display: none !important; }
 .carousel-panel .album-hero { padding: 0.8rem; }
 .carousel-panel .album-art { width: 120px; height: 120px; }
 .carousel-panel .album-meta h3 { font-size: 1.1rem; }
-.carousel-panel .format-select { min-width: 140px; font-size: 0.85rem; }
+.carousel-panel .format-select { min-width: 140px; font-size: calc(0.85 * var(--panel-text)); }
 .carousel-panel #genre-graph { height: 380px; }
 .carousel-panel .source-badge { font-size: 0.7rem; padding: 0.1rem 0.4rem; }
 .carousel-panel fieldset { padding: 0.5rem; }
@@ -390,6 +438,14 @@ body > canvas { display: none !important; }
 
 /* --- 6. Panels & Surfaces --- */
 
+code, kbd, pre {
+    font-family: var(--font-mono);
+    /* em, not rem: a mono fragment must track the sentence around it — the
+       UA's fixed 13px monospace default is what made inline code look tiny. */
+    font-size: 0.88em;
+}
+code, pre { overflow-wrap: anywhere; }
+
 article, details, .metal-panel {
     background: var(--bg-navy-glass);
     border: 1px solid rgba(56, 214, 255, 0.14);
@@ -399,8 +455,18 @@ article, details, .metal-panel {
     margin-bottom: var(--space-md);
 }
 
+details:not([open]) { padding: 0; }
+details:not([open]) > summary {
+    margin: 0;
+    border-bottom: none;
+    border-radius: var(--radius-md);
+}
+
 article > header, details > summary {
     background: linear-gradient(180deg, #1a2742, #0e1830);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
     margin: calc(-1 * var(--space-md));
     margin-bottom: var(--space-md);
     padding: var(--space-sm) var(--space-md);
@@ -555,6 +621,7 @@ select {
     width: auto;
     min-width: 140px;
     display: inline-block;
+    text-overflow: ellipsis;
 }
 
 label { font-size: 0.85rem; color: var(--text-secondary); display: block; margin-bottom: var(--space-xs); }
@@ -1028,9 +1095,12 @@ dialog header button:hover { color: var(--text-primary); }
 
 /* --- 18. Toast Notifications --- */
 
+/* Docked bottom-right so toasts clear the masthead READY chip and the fixed
+   status bar. */
 .toast-container {
     position: fixed;
-    top: 16px;
+    top: auto;
+    bottom: calc(var(--bottom-chrome) + 8px);
     right: 80px;
     z-index: 1000;
     display: flex;
@@ -1075,6 +1145,8 @@ dialog header button:hover { color: var(--text-primary); }
 .toast-item.error { color: var(--color-error); }
 .toast-item.error::before { background: var(--color-error); animation: badge-pulse 0.7s ease-in-out infinite; }
 .toast-item.info::before { background: var(--accent-amber); box-shadow: 0 0 8px var(--accent-amber), inset 0 0 2px rgba(255, 255, 255, 0.6); }
+.toast-item.warning { color: var(--color-warning); }
+.toast-item.warning::before { background: var(--color-warning); }
 
 
 /* --- 19. Audio Bars --- */
@@ -1198,6 +1270,7 @@ dialog header button:hover { color: var(--text-primary); }
 
 .sync-result-success { color: var(--color-success); }
 .sync-result-error { color: var(--color-error); }
+.sync-result-warning { color: var(--color-warning); }
 
 
 /* --- 24. Drive Cards --- */
@@ -1228,7 +1301,7 @@ dialog header button:hover { color: var(--text-primary); }
 
 .site-footer {
     position: fixed;
-    bottom: 28px;
+    bottom: var(--status-bar-h);
     left: 0;
     right: 0;
     text-align: center;
@@ -1281,7 +1354,7 @@ dialog header button:hover { color: var(--text-primary); }
 
 /* --- 27. Responsive --- */
 
-@media (max-width: 900px) {
+@media (max-width: 1023px) {
     .vinyl-wrap { width: 100px; height: 100px; }
     .vinyl-wrap img { width: 40px; height: 40px; }
     .album-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
@@ -1308,12 +1381,11 @@ dialog header button:hover { color: var(--text-primary); }
 
     .nav-sphere-btn { width: 40px; height: 40px; font-size: 1rem; }
 
-    .scene-panel {
-        width: 95vw !important;
-        height: 70vh !important;
-    }
+    /* Rail is docked to the bottom here, so the panel may use the full width. */
+    :root { --panel-w: 95vw; --panel-h: 70vh; }
 
-    .toast-container { right: 8px; left: 8px; }
+    /* Clears the nav rail once it docks to the bottom of the viewport. */
+    .toast-container { right: 8px; left: 8px; bottom: 92px; }
     .toast-item { max-width: 100%; }
 }
 
@@ -1399,9 +1471,15 @@ dialog header button:hover { color: var(--text-primary); }
    blurred ambient backdrop that floods the bezel with the album's color — the
    Walker floats in front of its own glowing "now playing" wash (fills the void). */
 .rhythm-deck.device-mounted .deck-screen-img {
+    /* Anchored to the bezel's padding box rather than scaled up: an overscanned
+       wash overflowed the bezel by ~25px each side (clipped, but it made the
+       bezel a scroll container), and the 14px frame already hides the blur's
+       soft edge. */
+    position: absolute;
+    top: 0;
+    left: 0;
     opacity: 0.42;
-    filter: blur(26px) saturate(1.5) brightness(0.75);
-    transform: scale(1.3);
+    filter: blur(22px) saturate(1.5) brightness(0.75);
     animation: none;
 }
 .rhythm-deck.device-mounted .deck-screen-glare,
@@ -1747,13 +1825,22 @@ dialog header button:hover { color: var(--text-primary); }
     --deck-accent: var(--album-accent);
     --deck-accent-soft: var(--album-accent-soft);
     --deck-accent-faint: var(--album-accent-faint);
-    position: sticky; top: 2px;
+    position: sticky; top: 10px;
     display: flex; flex-direction: column; gap: 12px;
 }
 /* The bezel reuses .deck-display-bezel; here we just make it portrait to fit
    the upright Walker, and label it. */
 .menu-stage .deck-display-bezel {
     aspect-ratio: 3 / 4;
+    /* A container so the stage ribbon can react to the Walker's own width. */
+    container-type: inline-size;
+}
+/* The ribbon is 109px wide and the bezel clips its own overflow, so drop it
+   once the Walker is narrower than that (the query is on the bezel's content
+   box: its width less 2 x 14px of padding). The cap line under the LED still
+   names the device. */
+@container (max-width: 82px) {
+    .deck-stage-tag { display: none; }
 }
 .menu-stage-fallback {
     position: absolute; inset: 14px; z-index: 1;
@@ -1780,10 +1867,18 @@ dialog header button:hover { color: var(--text-primary); }
 .menu-stage.device-mounted .menu-stage-fallback,
 .rhythm-deck.device-mounted .menu-stage-fallback { opacity: 0; }
 
-/* On narrow viewports, drop the stage above the content */
-@media (max-width: 760px) {
-    .menu-deck { grid-template-columns: 1fr; }
-    .menu-stage { position: relative; max-width: 240px; margin: 0 auto; }
+/* On narrow viewports the two columns no longer fit: the Walker shrinks and
+   rides above the content. It is never hidden — with no bezel to dock into,
+   scene.js falls back to the corner dock and floats the canvas over the menu. */
+@media (max-width: 1100px) {
+    .menu-deck { grid-template-columns: 1fr; gap: 14px; }
+    .menu-stage { position: relative; }
+    /* Only the Walker shrinks — the Deck's readout keeps the full row. The
+       height cap matters more than the width here: the scrolling panel body is
+       the viewport minus ~237px of fixed chrome, and the 3/4 bezel would eat
+       two thirds of it at 800x600. 22vh - 52px of width holds it near 30%. */
+    .menu-stage .deck-display-bezel,
+    .menu-stage .deck-display-led { width: min(176px, 100%, 22vh - 52px); align-self: center; }
 }
 
 

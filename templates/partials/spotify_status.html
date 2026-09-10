@@ -3,5 +3,14 @@
 {% elif auth_url %}
 <p>Not connected. <a href="{{ auth_url }}">Connect Spotify</a></p>
 {% else %}
-<p style="color: var(--text-muted);">Spotify credentials not configured. Add SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET to .env</p>
+<p style="color: var(--text-muted);">Spotify isn't set up yet.</p>
+<details>
+    <summary>How to set up</summary>
+    <ol>
+        <li>Create an app in the <a href="https://developer.spotify.com/dashboard" target="_blank">Spotify developer dashboard</a></li>
+        <li>Add <code>{{ redirect_uri }}</code> to the app's redirect URIs</li>
+        <li>Copy the app's client ID and secret into <code>.env</code> as <code>SPOTIFY_CLIENT_ID</code> and <code>SPOTIFY_CLIENT_SECRET</code></li>
+        <li>Restart Leasure</li>
+    </ol>
+</details>
 {% endif %}

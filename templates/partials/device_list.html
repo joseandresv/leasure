@@ -1,3 +1,10 @@
+<script>
+// startSync checks a typed path against this list before posting, so the common
+// typo never reaches the server. The server still validates every sync target.
+window.leasureDrives = ({{ devices | tojson }} || [])
+    .filter(d => d.device_type !== 'system')
+    .map(d => d.path);
+</script>
 {% if devices %}
 {% for d in devices %}
 <div class="drive-card" {% if d.device_type == 'player' %}style="border-color: var(--accent-blue);"{% endif %}>
@@ -20,7 +27,7 @@
         </small>
     </div>
     {% if d.device_type != 'system' %}
-    <button class="outline" onclick="selectDrive('{{ d.path }}')">
+    <button class="outline" onclick='selectDrive({{ d.path | tojson }})'>
         Select
     </button>
     {% endif %}
