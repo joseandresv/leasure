@@ -445,6 +445,15 @@ code, kbd, pre {
     font-size: 0.88em;
 }
 code, pre { overflow-wrap: anywhere; }
+/* Undoes the rule above for URLs the user retypes: the template marks the only
+   break points with <wbr>, so a path segment never splits across lines. */
+.code-uri { overflow-wrap: normal; word-break: normal; }
+
+/* Table cells carry their own gutter — without it adjacent columns of provider
+   text (title/artist/album) run together with no visible break. */
+table { border-collapse: collapse; }
+th, td { padding: 0.35rem 1rem 0.35rem 0; }
+th:last-child, td:last-child { padding-right: 0; }
 
 article, details, .metal-panel {
     background: var(--bg-navy-glass);
@@ -1360,7 +1369,6 @@ dialog header button:hover { color: var(--text-primary); }
     .album-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
     .album-hero-content { flex-direction: column; }
     .album-art { width: 120px; height: 120px; }
-    .grid, .grid-2 { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 640px) {
@@ -1872,6 +1880,9 @@ dialog header button:hover { color: var(--text-primary); }
    scene.js falls back to the corner dock and floats the canvas over the menu. */
 @media (max-width: 1100px) {
     .menu-deck { grid-template-columns: 1fr; gap: 14px; }
+    /* Card rows collapse with the deck: a half-width card in a single-column
+       menu is narrower than its own content. */
+    .grid, .grid-2 { grid-template-columns: 1fr; }
     .menu-stage { position: relative; }
     /* Only the Walker shrinks — the Deck's readout keeps the full row. The
        height cap matters more than the width here: the scrolling panel body is
@@ -1879,6 +1890,14 @@ dialog header button:hover { color: var(--text-primary); }
        two thirds of it at 800x600. 22vh - 52px of width holds it near 30%. */
     .menu-stage .deck-display-bezel,
     .menu-stage .deck-display-led { width: min(176px, 100%, 22vh - 52px); align-self: center; }
+}
+
+/* Short windows: the scrolling body is barely 360px tall, so the VU strip and the
+   caption under the bezel — decoration, not information — go, and the stage block
+   drops from ~42% of the body to under a third. */
+@media (max-height: 700px) {
+    .menu-stage .deck-display-led,
+    .menu-stage-cap { display: none; }
 }
 
 

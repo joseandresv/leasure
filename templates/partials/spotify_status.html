@@ -1,3 +1,4 @@
+{% from "macros/components.html" import url_code %}
 {% if connected %}
 <p><mark>Connected</mark> as <strong>{{ user }}</strong></p>
 {% elif auth_url %}
@@ -8,7 +9,7 @@
     <summary>How to set up</summary>
     <ol>
         <li>Create an app in the <a href="https://developer.spotify.com/dashboard" target="_blank">Spotify developer dashboard</a></li>
-        <li>Add <code>{{ redirect_uri }}</code> to the app's redirect URIs</li>
+        <li>Add {{ url_code(redirect_uri) }} to the app's redirect URIs</li>
         <li>Copy the app's client ID and secret into <code>.env</code> as <code>SPOTIFY_CLIENT_ID</code> and <code>SPOTIFY_CLIENT_SECRET</code></li>
         <li>Restart Leasure</li>
     </ol>

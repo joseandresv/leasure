@@ -308,14 +308,28 @@ var GRAPH_LABEL = {
 
 // Room the widest label needs to the right of its node, capped so the margin never
 // eats more than a quarter of the frame.
-function labelStagePadding(nodes, container) {
+function labelStagePadding(labels, container) {
     var ctx = document.createElement('canvas').getContext('2d');
     if (!ctx) return 40;
     ctx.font = GRAPH_LABEL.weight + ' ' + GRAPH_LABEL.size + 'px ' + GRAPH_LABEL.font;
-    var widest = nodes.reduce(function(w, node) {
-        return Math.max(w, ctx.measureText(node.label || '').width);
+    var widest = labels.reduce(function(w, label) {
+        return Math.max(w, ctx.measureText(label).width);
     }, 0);
     return Math.round(Math.min(GRAPH_LABEL.nodeSize + 6 + widest, container.clientHeight / 4));
+}
+
+// Album titles repeat across artists ("Greatest Hits"); name the artist only on the
+// nodes that would otherwise be indistinguishable.
+function graphLabels(nodes) {
+    var titleCount = Object.create(null);
+    nodes.forEach(function(node) {
+        var title = node.label || '';
+        titleCount[title] = (titleCount[title] || 0) + 1;
+    });
+    return nodes.map(function(node) {
+        var title = node.label || '';
+        return (titleCount[title] > 1 && node.artist) ? title + ' — ' + node.artist : title;
+    });
 }
 
 function initGraph(event) {
@@ -333,12 +347,14 @@ function initGraph(event) {
     }
 
     var graph = new graphology.Graph();
+    var labels = graphLabels(data.nodes);
 
-    data.nodes.forEach(function(node) {
+    data.nodes.forEach(function(node, i) {
         var genreKey = (node.genres[0] || '').toLowerCase();
         var color = (data.genres[genreKey] || {}).color || '#38d6ff';
         graph.addNode(node.id, {
-            label: node.label,
+            label: labels[i],
+            title: node.label,
             x: Math.random() * 100,
             y: Math.random() * 100,
             size: GRAPH_LABEL.nodeSize,
@@ -379,7 +395,7 @@ function initGraph(event) {
         labelSize: GRAPH_LABEL.size,
         defaultEdgeColor: 'rgba(56,214,255,0.12)',
         defaultNodeColor: '#38d6ff',
-        stagePadding: labelStagePadding(data.nodes, container),
+        stagePadding: labelStagePadding(labels, container),
         minCameraRatio: 0.3,
         maxCameraRatio: 3,
     });
@@ -405,7 +421,7 @@ function initGraph(event) {
     renderer.on('clickNode', function(e) {
         var attrs = graph.getNodeAttributes(e.node);
         if (Alpine.store('toast')) {
-            Alpine.store('toast').add(attrs.artist + ' — ' + attrs.label, 'info');
+            Alpine.store('toast').add(attrs.artist + ' — ' + attrs.title, 'info');
         }
     });
 }

@@ -124,10 +124,10 @@
 {# Format selector dropdown — shared across all download contexts #}
 {% macro format_selector(id_suffix='') %}
 <select name="format" id="dl-format{{ '-' + id_suffix if id_suffix else '' }}" class="format-select">
-    <option value="native">Original M4A — no re-encode (best)</option>
-    <option value="mp3">MP3 320kbps</option>
-    <option value="flac">FLAC (transcoded, not true lossless)</option>
-    <option value="flac_lossless">FLAC Lossless (needs Qobuz/Tidal/Archive)</option>
+    <option value="native">Original M4A (best)</option>
+    <option value="mp3">MP3 320 kbps</option>
+    <option value="flac">FLAC (transcoded)</option>
+    <option value="flac_lossless">FLAC lossless (Qobuz/Tidal)</option>
 </select>
 {% endmacro %}
 
@@ -300,3 +300,11 @@
 </button>
 {% endif %}
 {% endmacro %}
+
+{# A URL the user copies by hand: it may only wrap before a path separator, so a
+   redirect URI is never split mid-token. #}
+{% macro url_code(url) %}
+{%- set head, sep, path = url.partition('//') -%}
+{%- set parts = path.split('/') -%}
+<code class="code-uri">{{ head }}{{ sep }}{{ parts[0] }}{%- for seg in parts[1:] %}<wbr>/{{ seg }}{% endfor -%}</code>
+{%- endmacro %}
