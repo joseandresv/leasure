@@ -137,6 +137,29 @@ If PowerShell refuses to run the scripts, allow them for the current session fir
 Set-ExecutionPolicy -Scope Process Bypass
 ```
 
+### Desktop shortcut (Windows)
+
+Put a Leasure icon on the Windows desktop:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\create_shortcut.ps1
+```
+
+Then double-click **Leasure**. The shortcut runs `scripts\launch.ps1`, which reuses the
+server if one already answers on the port, otherwise starts it -- from `.venv` on a native
+Windows install, or inside WSL2 when the checkout only has a Linux venv (WSL forwards the
+port, so <http://localhost:8642> works either way) -- and opens the browser once it responds.
+
+Stop it again with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\launch.ps1 -Stop
+```
+
+Options: `-Port 8645` for another port, `-NoBrowser` to start the server only,
+`-StartMenu` (on `create_shortcut.ps1`) to add a Start menu entry. Set
+`LEASURE_WSL_DISTRO` if the Leasure checkout lives in a distro other than the default one.
+
 ### Manual setup (any platform)
 
 If you'd rather not use the install scripts:
