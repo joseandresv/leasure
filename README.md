@@ -148,17 +148,35 @@ powershell -ExecutionPolicy Bypass -File scripts\create_shortcut.ps1
 Then double-click **Leasure**. The shortcut runs `scripts\launch.ps1`, which reuses the
 server if one already answers on the port, otherwise starts it -- from `.venv` on a native
 Windows install, or inside WSL2 when the checkout only has a Linux venv (WSL forwards the
-port, so <http://localhost:8642> works either way) -- and opens the browser once it responds.
+port, so <http://localhost:8642> works either way) -- and opens Leasure in a Chrome or Edge
+app window once it responds.
 
-Stop it again with:
+**Closing the app window stops the server**, but never mid-job: the launcher waits until
+the download queue and any device sync have finished (re-checking every 10 s) and then
+shuts the server down. If the server was already running before you double-clicked, the
+window closing leaves it alone.
+
+The app window uses its own browser profile in `data/browser-profile/`, so it has none of
+your bookmarks, extensions or logins. It also exposes a loopback-only DevTools port (written
+to `data/browser-cdp.json` while the window lives) that Leasure uses to read your YouTube
+Music login from that window. When the server runs inside WSL2 with NAT networking it cannot
+reach that port, so the launcher reads the cookies itself and relays them through
+`data/browser-cookies.json` (refreshed on request and every 5 minutes; both files are deleted
+when the window closes).
+
+To keep the server running instead, start it with `-NoAppWindow`: it opens your default
+browser in a normal tab and leaves the server up (the same happens if no Chrome or Edge is
+found). Stop it again with:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\launch.ps1 -Stop
 ```
 
-Options: `-Port 8645` for another port, `-NoBrowser` to start the server only,
-`-StartMenu` (on `create_shortcut.ps1`) to add a Start menu entry. Set
-`LEASURE_WSL_DISTRO` if the Leasure checkout lives in a distro other than the default one.
+Options: `-Port 8645` for another port, `-NoAppWindow` to use the default browser,
+`-NoBrowser` to start the server only, `-StartMenu` (on `create_shortcut.ps1`) to add a
+Start menu entry. Set `LEASURE_BROWSER` to a Chromium-based exe to host the app window with
+something other than Chrome or Edge, and `LEASURE_WSL_DISTRO` if the Leasure checkout lives
+in a distro other than the default one.
 
 ### Manual setup (any platform)
 
@@ -208,15 +226,37 @@ The Spotify OAuth flow requests the following scopes: `user-library-read`, `play
 
 ### Configure YouTube Music
 
-YouTube Music authentication is handled automatically via browser cookies (Chrome by default). As long as you are logged into YouTube Music in that browser, the app will auto-refresh credentials on each connection check.
+#### Sign in inside Leasure (recommended)
 
-To extract cookies from a different browser, set `COOKIE_BROWSER` in `.env` (default `chrome`; any browser yt-dlp supports works: `firefox`, `edge`, `brave`, ...):
+Start Leasure from the desktop shortcut (`scripts/launch.ps1`). It opens the app in its own
+Chrome/Edge window with a profile of its own (`data/browser-profile/`) and a DevTools port on
+`127.0.0.1`, recorded in `data/browser-cdp.json`. Because that window belongs to Leasure, the app
+can read the login out of it -- no header pasting, no cookie export:
 
-```env
-COOKIE_BROWSER=firefox
-```
+1. On the home page, the YouTube Music card offers **Open YouTube Music and sign in** -- it opens
+   `music.youtube.com` in a second window of the same profile
+2. Sign in there (this profile is separate from your everyday browser, so it asks once)
+3. Back on the card, press **I'm signed in -- use this login**
 
-Alternatively, you can set up manually through the web UI by pasting browser request headers (instructions are shown on the YouTube Music page).
+The cookies are written to `data/cookies.txt`, the ytmusicapi headers to
+`data/youtube_headers.json`, and the Premium check runs immediately so the card shows the real
+verdict. Downloads re-read the login from the window whenever the cookie file is older than
+6 hours, so a window that stays signed in keeps working without any further clicks. On a WSL2
+install the launcher hands the cookies over through `data/browser-cookies.json` instead, which
+works the same way but needs the app window (and so the launcher) to still be open.
+
+#### Fallbacks
+
+- **Header paste** -- the **How to set up** panel on the same card takes browser request headers
+  (or a "Copy as cURL" command) and derives the same cookie file. Use it on headless hosts or when
+  you did not start Leasure from the shortcut
+- **A browser profile on disk** -- when no cookie file exists, yt-dlp extracts cookies from the
+  browser set by `COOKIE_BROWSER` in `.env` (default `chrome`; `firefox`, `edge`, `brave`, ... also
+  work). Chrome 127+ app-bound encryption often blocks this on native Windows:
+
+  ```env
+  COOKIE_BROWSER=firefox
+  ```
 
 #### Premium check
 
@@ -360,6 +400,7 @@ Tests run against a temporary data directory and an in-process ASGI client -- no
 - No credentials are stored in source code; all secrets go in `.env` (excluded from git)
 - Spotify OAuth tokens are cached locally in `data/.spotify_cache`
 - YouTube Music headers are stored locally in `data/youtube_headers.json`
+- The app window's DevTools port (`data/browser-cdp.json`) listens on `127.0.0.1` only, and Leasure reads cookies from it rather than from your everyday browser profile. Any other process running as you could read that window's cookies through the same port -- the same trust level as `data/cookies.txt` sitting on disk. The window's profile lives in `data/browser-profile/` (gitignored); delete it to sign out
 - YouTube (plain) OAuth tokens are stored locally in `data/youtube_oauth.json` and auto-refresh
 - The server binds to `127.0.0.1` by default (localhost only)
 
@@ -383,6 +424,7 @@ leasure/
     library.py            # Library browsing
   services/
     spotify_client.py     # Spotipy wrapper (OAuth, library, recently_played, currently_playing)
+    browser_session.py    # Reads the YouTube login from Leasure's own browser window over CDP
     youtube_client.py     # ytmusicapi + Google OAuth2 + InnerTube TVHTML5 history fetcher
     music_aggregator.py   # Unified Recently Listened: merges + dedupes + sorts by recency
     downloader.py         # Download dispatcher (routes to engines)

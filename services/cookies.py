@@ -3,7 +3,8 @@
 Premium quality (itag 141 AAC 256 / 774 Opus) is only served to a logged-in Premium
 session on a music.youtube.com URL. A browser profile is not readable on every host
 (WSL2 has none; Chrome 127+ app-bound encryption blocks extraction on Windows), so the
-Netscape cookies.txt written here — derived from the manual header paste — is the
+Netscape cookies.txt written here — from the login in Leasure's own browser window
+(services/browser_session.py) or the manual header paste — is the
 primary credential, and `premium_check()` makes "does Premium reach yt-dlp?" a fact.
 """
 
@@ -82,9 +83,48 @@ def _write_atomic(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
-def _netscape_lines(cookie_header: str) -> list[str]:
-    expiry = int((datetime.now(UTC) + timedelta(days=COOKIE_LIFETIME_DAYS)).timestamp())
-    lines = []
+def _netscape_line(cookie: dict, default_expiry: int) -> str:
+    domain = cookie["domain"]
+    expires = int(cookie.get("expires") or 0)
+    return "\t".join([
+        domain,
+        "TRUE" if domain.startswith(".") else "FALSE",
+        "/",
+        "TRUE" if cookie.get("secure", True) else "FALSE",
+        str(expires if expires > 0 else default_expiry),
+        cookie["name"],
+        cookie["value"],
+    ])
+
+
+def write_cookie_file(session_cookies: list[dict], source: str) -> Path | None:
+    """Write the Netscape cookies.txt yt-dlp authenticates with, from cookie dicts.
+
+    Each dict needs `domain`, `name` and `value`; a positive `expires` (epoch seconds) and
+    `secure` are used when the browser supplied them. `source` is recorded in the meta file
+    and shown on the card ("headers", "app-window", "browser")."""
+    default_expiry = int((datetime.now(UTC) + timedelta(days=COOKIE_LIFETIME_DAYS)).timestamp())
+    lines: dict[tuple[str, str], str] = {}
+    for cookie in session_cookies:
+        name, value, domain = cookie.get("name"), cookie.get("value"), cookie.get("domain")
+        if not name or not value or not domain or not is_auth_cookie(name):
+            continue
+        lines[(domain, name)] = _netscape_line(cookie, default_expiry)
+
+    if not lines:
+        logger.warning("No usable YouTube auth cookies to write (source %s)", source)
+        return None
+
+    path = cookie_file_path()
+    _write_atomic(path, "# Netscape HTTP Cookie File\n" + "\n".join(lines.values()) + "\n")
+    _write_atomic(_meta_path(), json.dumps({"source": source, "written_at": datetime.now(UTC).isoformat()}))
+    logger.info("Wrote %d YouTube cookie lines to %s (source %s)", len(lines), path, source)
+    return path
+
+
+def _header_cookies(cookie_header: str) -> list[dict]:
+    """Cookie dicts from a pasted `cookie` header, which carries no expiry or secure flag."""
+    session_cookies = []
     for pair in cookie_header.split("; "):
         name, sep, value = pair.strip().partition("=")
         if not sep or not is_auth_cookie(name):
@@ -92,9 +132,8 @@ def _netscape_lines(cookie_header: str) -> list[str]:
         domains = [".youtube.com"]
         if name in _GOOGLE_DOMAIN_NAMES or name.startswith(AUTH_COOKIE_PREFIX):
             domains.append(".google.com")
-        for domain in domains:
-            lines.append(f"{domain}\tTRUE\t/\tTRUE\t{expiry}\t{name}\t{value}")
-    return lines
+        session_cookies += [{"domain": domain, "name": name, "value": value} for domain in domains]
+    return session_cookies
 
 
 def write_cookie_file_from_headers(headers_path: Path | None = None) -> Path | None:
@@ -109,16 +148,7 @@ def write_cookie_file_from_headers(headers_path: Path | None = None) -> Path | N
         return None
 
     cookie_header = next((v for k, v in headers.items() if k.lower() == "cookie"), "")
-    lines = _netscape_lines(cookie_header) if cookie_header else []
-    if not lines:
-        logger.warning("No usable YouTube auth cookies in %s", headers_path)
-        return None
-
-    path = cookie_file_path()
-    _write_atomic(path, "# Netscape HTTP Cookie File\n" + "\n".join(lines) + "\n")
-    _write_atomic(_meta_path(), json.dumps({"source": "headers", "written_at": datetime.now(UTC).isoformat()}))
-    logger.info("Wrote %d YouTube cookie lines to %s", len(lines), path)
-    return path
+    return write_cookie_file(_header_cookies(cookie_header), source="headers") if cookie_header else None
 
 
 def refresh_from_browser() -> bool:

@@ -185,7 +185,7 @@ async def test_premium_check_html_reports_the_verdict_in_plain_words(client, mon
     resp = await client.get("/api/youtube/premium-check/html")
     assert resp.status_code == 200
     assert "Premium: FAIL" in resp.text
-    assert "Cookies 3.0 h old (from pasted headers)" in resp.text
+    assert "Cookies from pasted headers, 3.0 h old" in resp.text
 
 
 @pytest.mark.asyncio

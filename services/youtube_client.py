@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import time
@@ -11,6 +12,10 @@ logger = logging.getLogger(__name__)
 
 HEADERS_PATH = settings.data_dir / "youtube_headers.json"
 OAUTH_TOKEN_PATH = settings.data_dir / "youtube_oauth.json"
+
+# SAPISIDHASH is built from SAPISID; __Secure-3PAPISID is the third-party copy of the same
+# value, and some cookie sets only carry that one.
+_SAPISID_NAMES = ("SAPISID", "__Secure-3PAPISID")
 
 # Google OAuth2 endpoints
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -54,61 +59,52 @@ def is_connected() -> bool:
         return False
 
 
-def _refresh_from_chrome() -> bool:
-    """Try to auto-extract YouTube Music cookies from Chrome browser."""
-    try:
-        import yt_dlp
-        # Use yt-dlp's cookie extraction to get fresh cookies from Chrome
-        ydl_opts = {"quiet": True, "cookiesfrombrowser": (settings.cookie_browser,)}
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            cookie_jar = ydl.cookiejar
-            # Build cookie string
-            cookie_pairs = []
-            for c in cookie_jar:
-                if ".youtube.com" in c.domain:
-                    cookie_pairs.append(f"{c.name}={c.value}")
+def write_headers_from_cookie_pairs(pairs: list[tuple[str, str]]) -> bool:
+    """Write the ytmusicapi header file from browser cookie name/value pairs."""
+    cookie_pairs = [(name, value) for name, value in pairs if name and value]
+    sapisid = next((value for name, value in cookie_pairs if name in _SAPISID_NAMES), None)
+    if not sapisid:
+        logger.warning("No SAPISID cookie in the browser session; cannot build YouTube Music headers")
+        return False
 
-            if not cookie_pairs:
-                return False
-
-            cookie_str = "; ".join(cookie_pairs)
-
-            # Find SAPISIDHASH-relevant cookies
-            sapisid = None
-            for c in cookie_jar:
-                if c.name == "SAPISID":
-                    sapisid = c.value
-                    break
-
-            if not sapisid:
-                return False
-
-            # Generate SAPISIDHASH
-            import hashlib
-            import time
-            timestamp = int(time.time())
-            hash_input = f"{timestamp} {sapisid} https://music.youtube.com"
-            hash_value = hashlib.sha1(hash_input.encode()).hexdigest()
-            auth = f"SAPISIDHASH {timestamp}_{hash_value}_u"
-
-            headers_raw = f"""cookie: {cookie_str}
+    timestamp = int(time.time())
+    digest = hashlib.sha1(f"{timestamp} {sapisid} https://music.youtube.com".encode()).hexdigest()
+    cookie_str = "; ".join(f"{name}={value}" for name, value in cookie_pairs)
+    headers_raw = f"""cookie: {cookie_str}
 user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36
 accept: */*
 accept-language: en-US,en;q=0.9
 origin: https://music.youtube.com
-authorization: {auth}
+authorization: SAPISIDHASH {timestamp}_{digest}_u
 x-youtube-client-name: 67
 x-youtube-client-version: 1.20260403.09.00
 x-goog-authuser: 0
 x-origin: https://music.youtube.com"""
 
-            from ytmusicapi import setup
-            setup(filepath=str(HEADERS_PATH), headers_raw=headers_raw)
-            cookies.write_cookie_file_from_headers(HEADERS_PATH)
-            logger.info("Auto-refreshed YouTube Music auth from Chrome cookies")
-            return True
+    try:
+        from ytmusicapi import setup
+
+        setup(filepath=str(HEADERS_PATH), headers_raw=headers_raw)
     except Exception as e:
-        logger.debug("Chrome cookie auto-refresh failed: %s", e)
+        logger.warning("ytmusicapi rejected the generated headers: %s", e)
+        return False
+    return True
+
+
+def _refresh_from_chrome() -> bool:
+    """Try to auto-extract YouTube Music cookies from the configured browser profile."""
+    try:
+        import yt_dlp
+
+        with yt_dlp.YoutubeDL({"quiet": True, "cookiesfrombrowser": (settings.cookie_browser,)}) as ydl:
+            pairs = [(c.name, c.value) for c in ydl.cookiejar if ".youtube.com" in c.domain]
+        if not pairs or not write_headers_from_cookie_pairs(pairs):
+            return False
+        cookies.write_cookie_file_from_headers(HEADERS_PATH)
+        logger.info("Auto-refreshed YouTube Music auth from %s cookies", settings.cookie_browser)
+        return True
+    except Exception as e:
+        logger.debug("Browser cookie auto-refresh failed: %s", e)
         return False
 
 

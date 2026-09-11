@@ -8,14 +8,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db import get_session
 from models import Track
+from routers import device as device_router
 from worker import download_worker
 
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
 
+ACTIVE_STATUSES = ["downloading", "converting", "tagging", "pending"]
 # Failures stay in the queue until the user retries or dismisses them: an error that is
 # only visible as a counter in the footer is an error nobody fixes.
-QUEUE_STATUSES = ["downloading", "converting", "tagging", "pending", "error"]
+QUEUE_STATUSES = [*ACTIVE_STATUSES, "error"]
 _QUEUE_ORDER = case({"downloading": 0, "converting": 0, "tagging": 0, "pending": 1, "error": 2},
                     value=Track.status, else_=3)
 
@@ -50,9 +52,17 @@ async def _queue_rows(session: AsyncSession) -> list[dict]:
     return [_queue_row(t) for t in result.scalars().all()]
 
 
+def _sync_running() -> bool:
+    return any(not job["task"].done() for job in device_router._SYNC_JOBS.values())
+
+
 @router.get("/queue")
 async def queue_status(session: AsyncSession = Depends(get_session)):
-    return {"queue_size": download_worker.queue_size, "tracks": await _queue_rows(session)}
+    """Queue contents plus `active`: work in flight, which the desktop launcher waits on
+    before it stops the server."""
+    rows = await _queue_rows(session)
+    active = any(r["status"] in ACTIVE_STATUSES for r in rows) or _sync_running()
+    return {"queue_size": download_worker.queue_size, "active": active, "tracks": rows}
 
 
 @router.get("/queue/html")

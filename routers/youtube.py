@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings
 from db import get_session
 from models import Playlist, PlaylistTrack, Track
-from services import cookies, oauth_state
+from services import browser_session, cookies, oauth_state
 from services import youtube_client as yt
 from services.formats import resolve_format
 from worker import download_worker
@@ -54,12 +54,35 @@ async def status():
     return {"connected": False, "message": "YouTube Music not connected."}
 
 
-@router.get("/status/html")
-async def status_html(request: Request):
+async def _status_card(request: Request, session_error: str | None = None):
     connected = await asyncio.to_thread(yt.is_connected)
     premium = await asyncio.to_thread(cookies.premium_check_state)
+    session = await asyncio.to_thread(browser_session.session_status)
     return templates.TemplateResponse(request=request, name="partials/yt_music_status.html",
-                                      context={"connected": connected, "premium": _premium_view(premium)})
+                                      context={"connected": connected, "premium": _premium_view(premium),
+                                               "session_error": session_error, **session})
+
+
+@router.get("/status/html")
+async def status_html(request: Request):
+    return await _status_card(request)
+
+
+@router.get("/session/status")
+async def session_status():
+    """Whether the login can be read from Leasure's own browser window, and the cookie file state."""
+    session = await asyncio.to_thread(browser_session.session_status)
+    cookie = await asyncio.to_thread(cookies.cookie_file_status)
+    return {**session, "cookie": cookie}
+
+
+@router.post("/session/import")
+async def session_import(request: Request):
+    """Take the YouTube login from Leasure's browser window: cookies.txt, API headers, Premium check."""
+    result = await asyncio.to_thread(browser_session.import_session)
+    if _is_htmx(request):
+        return await _status_card(request, session_error=result["error"])
+    return result
 
 
 @router.get("/premium-check")

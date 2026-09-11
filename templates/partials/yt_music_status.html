@@ -1,3 +1,4 @@
+{% macro cookie_age(age_hours) %}{% if age_hours is not none and age_hours < 1 %}{{ (age_hours * 60) | round | int }} min old{% else %}{{ age_hours }} h old{% endif %}{% endmacro %}
 {% macro premium_block(premium) %}
 {% set cookie = premium.cookie %}
 {% set state = premium.state or ('pass' if premium.premium else ('unchecked' if premium.premium is none else 'fail')) %}
@@ -22,7 +23,7 @@
 {% endif %}
 {% if cookie.exists %}
 <p style="color: var(--text-muted);">
-    Cookies {{ cookie.age_hours }} h old{% if cookie.source == 'headers' %} (from pasted headers){% elif cookie.source == 'browser' %} (from your browser){% else %} (from a cookies.txt you supplied){% endif %}{% if cookie.stale %} — old enough that YouTube may have expired them{% endif %}.
+    Cookies {% if cookie.source == 'app-window' %}from the Leasure window{% elif cookie.source == 'headers' %}from pasted headers{% elif cookie.source == 'browser' %}from your browser{% else %}from a cookies.txt you supplied{% endif %}, {{ cookie_age(cookie.age_hours) }}{% if cookie.stale %} — old enough that YouTube may have expired them{% endif %}.
 </p>
 {% endif %}
 {% if state != 'not_configured' %}
@@ -38,11 +39,26 @@
 {% endmacro %}
 {% if premium_only %}
 {{ premium_block(premium) }}
-{% elif connected %}
+{% else %}
+<div id="yt-session-card">
+{% if connected %}
 <p><mark>Connected</mark> to YouTube Music</p>
 <div id="yt-premium-check">{{ premium_block(premium) }}</div>
 {% else %}
+{% if app_window %}
+<p><b>Sign in inside Leasure</b></p>
+{% if not logged_in %}
+<p><a href="https://music.youtube.com" target="_blank" rel="noopener">Open YouTube Music and sign in</a>, then come back to this window.</p>
+{% endif %}
+<button type="button" hx-post="/api/youtube/session/import" hx-target="#yt-session-card"
+        hx-swap="outerHTML" hx-disabled-elt="this">I'm signed in — use this login</button>
+{% else %}
 <p style="color: var(--text-muted);">YouTube Music isn't set up yet.</p>
+<p style="color: var(--text-muted);">Tip: start Leasure from the desktop shortcut to sign in without pasting headers.</p>
+{% endif %}
+{% if session_error %}
+<p style="color: var(--color-error);">{{ session_error }}</p>
+{% endif %}
 <details>
     <summary>How to set up</summary>
     <ol>
@@ -58,4 +74,6 @@
     </form>
     <div id="yt-setup-result"></div>
 </details>
+{% endif %}
+</div>
 {% endif %}

@@ -1,4 +1,6 @@
 """The download queue as the user sees it: failures, retry, dismiss, and format refusals."""
+import asyncio
+
 import pytest
 
 from models import Track
@@ -37,6 +39,32 @@ async def test_queue_orders_downloading_then_pending_then_error(client, db):
 
     tracks = (await client.get("/api/downloads/queue")).json()["tracks"]
     assert [t["status"] for t in tracks] == ["downloading", "pending", "error"]
+
+
+@pytest.mark.asyncio
+async def test_queue_is_active_only_while_work_is_in_flight(client, db):
+    await _add_track(db, title="Broken", artist="A", status="error")
+    assert (await client.get("/api/downloads/queue")).json()["active"] is False
+
+    await _add_track(db, title="Running", artist="A", status="downloading")
+    assert (await client.get("/api/downloads/queue")).json()["active"] is True
+
+
+@pytest.mark.asyncio
+async def test_queue_is_active_while_a_device_sync_is_still_copying(client, db):
+    from routers import device
+
+    copying = asyncio.Event()
+    task = asyncio.create_task(copying.wait())
+    device._SYNC_JOBS["test-job"] = {"task": task}
+    try:
+        assert (await client.get("/api/downloads/queue")).json()["active"] is True
+    finally:
+        copying.set()
+        await task
+        device._SYNC_JOBS.pop("test-job")
+
+    assert (await client.get("/api/downloads/queue")).json()["active"] is False
 
 
 @pytest.mark.asyncio

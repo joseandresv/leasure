@@ -3,7 +3,7 @@
 import logging
 
 from config import settings
-from services import cookies
+from services import browser_session, cookies
 
 logger = logging.getLogger(__name__)
 
@@ -29,9 +29,12 @@ def build_download_attempts(base_opts: dict) -> list[tuple[str, dict]]:
 
     The cookie file (services.cookies) wins over live browser extraction: it is cheaper
     (no keyring/decrypt on every download) and works on hosts with no browser profile
-    (WSL2, headless). When it exists there is no cookie-less retry — a refusal means the
+    (WSL2, headless). When Leasure runs in its own browser window the file is re-read from
+    that window's login first, so a signed-in window keeps downloads authenticated without
+    any pasting. When the file exists there is no cookie-less retry — a refusal means the
     cookies need refreshing, and an anonymous retry would only serve 128 kbps."""
     common = {**base_opts, "remote_components": ["ejs:github"]}
+    browser_session.ensure_fresh_cookies()
     status = cookies.cookie_file_status()
     if status["exists"]:
         if status["stale"]:
