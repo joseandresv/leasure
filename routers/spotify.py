@@ -14,6 +14,7 @@ from models import Playlist, PlaylistTrack, Track
 from services import oauth_state
 from services import spotify_client as sp
 from services.formats import resolve_format
+from services.tracks import optional_int, upsert_track
 from worker import download_worker
 
 logger = logging.getLogger(__name__)
@@ -276,7 +277,11 @@ async def download_track(
     title: str,
     artist: str,
     album: str = "",
+    album_artist: str = "",
     track_number: int = 0,
+    disc_number: str = "",
+    total_tracks: str = "",
+    year: str = "",
     duration_ms: int = 0,
     artwork_url: str = "",
     artist_id: str = "",
@@ -313,26 +318,25 @@ async def download_track(
     except ValueError as e:
         return _format_error(request, e)
 
-    track = existing or Track(spotify_uri=uri)
-    if isrc:
-        track.isrc = isrc
-    track.title = title
-    track.artist = artist
-    track.album = album
-    track.genre = genre
-    track.track_number = track_number
-    track.duration_ms = duration_ms
-    track.artwork_url = artwork_url
-    track.format = container
-    track.quality = quality
-    track.source = "spotify"
-    track.status = "pending"
-    track.error_message = None
-
-    if not existing:
-        session.add(track)
-    await session.commit()
-    await session.refresh(track)
+    track = await upsert_track(
+        session,
+        {
+            "spotify_uri": uri,
+            "isrc": isrc,
+            "title": title,
+            "artist": artist,
+            "album": album,
+            "album_artist": album_artist or None,
+            "genre": genre,
+            "track_number": track_number,
+            "disc_number": optional_int(disc_number),
+            "total_tracks": optional_int(total_tracks),
+            "year": optional_int(year),
+            "duration_ms": duration_ms,
+            "artwork_url": artwork_url,
+        },
+        quality=quality, container=container, source="spotify", existing=existing,
+    )
 
     await download_worker.enqueue(track.id)
     if _is_htmx(request):
@@ -382,33 +386,26 @@ async def download_album(
             queued.append({"track_id": existing.id, "status": existing.status})
             continue
 
-        # Extract year from release_date (format: YYYY or YYYY-MM-DD)
-        release_date = album.get("release_date", "")
-        year = int(release_date[:4]) if release_date and len(release_date) >= 4 else None
-
-        track = existing or Track(spotify_uri=t["uri"])
-        if t.get("isrc"):
-            track.isrc = t["isrc"]
-        track.title = t["name"]
-        track.artist = t["artist"]
-        track.album = album["name"]
-        track.album_artist = album["artist"]
-        track.track_number = t["track_number"]
-        track.disc_number = t.get("disc_number")
-        track.duration_ms = t["duration_ms"]
-        track.artwork_url = album["image_url"]
-        track.year = year
-        track.genre = album_genre
-        track.format = container
-        track.quality = quality
-        track.source = "spotify"
-        track.status = "pending"
-        track.error_message = None
-
-        if not existing:
-            session.add(track)
-        await session.commit()
-        await session.refresh(track)
+        track = await upsert_track(
+            session,
+            {
+                "spotify_uri": t["uri"],
+                "isrc": t.get("isrc"),
+                "title": t["name"],
+                "artist": t["artist"],
+                "album": album["name"],
+                "album_artist": album.get("album_artist") or album["artist"],
+                "genre": album_genre,
+                "track_number": t["track_number"],
+                "disc_number": t.get("disc_number"),
+                "total_tracks": album.get("total_tracks"),
+                "total_discs": album.get("total_discs"),
+                "duration_ms": t["duration_ms"],
+                "year": sp.release_year(album.get("release_date")),
+                "artwork_url": album["image_url"],
+            },
+            quality=quality, container=container, source="spotify", existing=existing,
+        )
 
         await download_worker.enqueue(track.id)
         queued.append({"track_id": track.id, "status": "queued"})
@@ -492,27 +489,25 @@ async def download_playlist(
             if genres:
                 genre = ", ".join(genres[:3])
 
-        track = existing or Track(spotify_uri=t["uri"])
-        if t.get("isrc"):
-            track.isrc = t["isrc"]
-        track.title = t["name"]
-        track.artist = t["artist"]
-        track.album = t.get("album", "")
-        track.track_number = t.get("track_number")
-        track.disc_number = t.get("disc_number")
-        track.duration_ms = t.get("duration_ms", 0)
-        track.artwork_url = t.get("album_image_url", "")
-        track.genre = genre
-        track.format = container
-        track.quality = quality
-        track.source = "spotify"
-        track.status = "pending"
-        track.error_message = None
-
-        if not existing:
-            session.add(track)
-        await session.commit()
-        await session.refresh(track)
+        track = await upsert_track(
+            session,
+            {
+                "spotify_uri": t["uri"],
+                "isrc": t.get("isrc"),
+                "title": t["name"],
+                "artist": t["artist"],
+                "album": t.get("album", ""),
+                "album_artist": t.get("album_artist"),
+                "genre": genre,
+                "track_number": t.get("track_number"),
+                "disc_number": t.get("disc_number"),
+                "total_tracks": t.get("total_tracks"),
+                "duration_ms": t.get("duration_ms", 0),
+                "year": t.get("year"),
+                "artwork_url": t.get("album_image_url", ""),
+            },
+            quality=quality, container=container, source="spotify", existing=existing,
+        )
 
         # Add to playlist entry
         session.add(PlaylistTrack(playlist_id=db_playlist.id, track_id=track.id, position=position))

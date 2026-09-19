@@ -23,6 +23,22 @@ GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 YOUTUBE_OAUTH_SCOPE = "https://www.googleapis.com/auth/youtube"
 
 
+def first_artist(artists: list | None) -> str | None:
+    """First credited artist as ytmusicapi lists them — no comma splitting, so a name
+    like "Earth, Wind & Fire" stays whole."""
+    for a in artists or []:
+        if a.get("name"):
+            return a["name"]
+    return None
+
+
+def _year(value) -> int | None:
+    try:
+        return int(str(value)[:4])
+    except (TypeError, ValueError):
+        return None
+
+
 def get_client():
     try:
         from ytmusicapi import YTMusic
@@ -170,6 +186,7 @@ def get_playlist_tracks(playlist_id: str, limit: int = 500) -> dict | None:
                 "name": t["title"],
                 "artist": ", ".join(a["name"] for a in t.get("artists", []) if a.get("name")),
                 "album": t.get("album", {}).get("name") if t.get("album") else None,
+                "album_artist": first_artist(t.get("artists")),
                 "duration_ms": _parse_duration(t.get("duration", "")),
                 "image_url": t["thumbnails"][-1]["url"] if t.get("thumbnails") else None,
             })
@@ -207,6 +224,7 @@ def get_history(limit: int = 50) -> list[dict] | None:
                 "name": t["title"],
                 "artist": ", ".join(a["name"] for a in t.get("artists", []) if a.get("name")),
                 "album": t.get("album", {}).get("name") if t.get("album") else None,
+                "album_artist": first_artist(t.get("artists")),
                 "duration_ms": _parse_duration(t.get("duration", "")),
                 "image_url": t["thumbnails"][-1]["url"] if t.get("thumbnails") else None,
                 "played": t.get("played", ""),  # Coarse bucket: "Today", "Yesterday", or date
@@ -433,6 +451,7 @@ def get_liked_songs(limit: int = 100) -> list[dict] | None:
                 "name": t["title"],
                 "artist": ", ".join(a["name"] for a in t.get("artists", []) if a.get("name")),
                 "album": t.get("album", {}).get("name") if t.get("album") else None,
+                "album_artist": first_artist(t.get("artists")),
                 "duration_ms": _parse_duration(t.get("duration", "")),
                 "image_url": t["thumbnails"][-1]["url"] if t.get("thumbnails") else None,
             })
@@ -469,6 +488,8 @@ def get_album_tracks(browse_id: str) -> dict | None:
         return None
     try:
         album = yt.get_album(browse_id)
+        album_artist = ", ".join(a["name"] for a in album.get("artists") or [] if a.get("name"))
+        year = _year(album.get("year"))
         tracks = []
         for t in album.get("tracks", []):
             tracks.append({
@@ -477,13 +498,18 @@ def get_album_tracks(browse_id: str) -> dict | None:
                 "artist": ", ".join(a["name"] for a in t.get("artists", []) if a.get("name")),
                 "track_number": t.get("trackNumber") or t.get("index"),
                 "duration_ms": _parse_duration(t.get("duration", "")),
+                "album_artist": album_artist or first_artist(t.get("artists")),
+                "year": year,
             })
         return {
             "album": {
                 "name": album.get("title", ""),
-                "artist": ", ".join(a["name"] for a in album.get("artists", []) if a.get("name")),
+                "artist": album_artist,
+                "album_artist": album_artist or (tracks[0]["album_artist"] if tracks else None),
                 "image_url": album["thumbnails"][-1]["url"] if album.get("thumbnails") else None,
                 "year": album.get("year"),
+                "total_tracks": album.get("trackCount") or len(tracks),
+                "total_discs": None,
             },
             "tracks": tracks,
         }

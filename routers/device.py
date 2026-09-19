@@ -133,7 +133,8 @@ def _copy_track(src: Path, target: Path, track: Track) -> int:
     """Copy the audio file plus its .jpg/.lrc sidecars. Runs in a worker thread.
     Returns the size of the audio file on the device."""
     ext = src.suffix.lstrip(".")
-    dst = target / build_device_path(track.artist, track.album, track.track_number, track.title, ext)
+    dst = target / build_device_path(track.artist, track.album, track.track_number, track.title, ext,
+                                     album_artist=track.album_artist)
     dst.parent.mkdir(parents=True, exist_ok=True)
     # copyfile, not copy2: drvfs/FAT32 cannot take the permission bits copy2 sets
     shutil.copyfile(str(src), str(dst))
@@ -142,7 +143,8 @@ def _copy_track(src: Path, target: Path, track: Track) -> int:
         sidecar_src = src.with_suffix(f".{sidecar_ext}")
         if sidecar_src.exists():
             sidecar_dst = target / build_device_path(
-                track.artist, track.album, track.track_number, track.title, sidecar_ext
+                track.artist, track.album, track.track_number, track.title, sidecar_ext,
+                album_artist=track.album_artist
             )
             shutil.copyfile(str(sidecar_src), str(sidecar_dst))
     return size
@@ -175,8 +177,9 @@ async def _write_playlists(session: AsyncSession, target: Path, errors: list[str
                 t = await session.get(Track, entry.track_id)
                 if t and t.status == "done" and t.file_path:
                     pl_tracks.append(
-                        {"artist": t.artist, "album": t.album, "track_number": t.track_number,
-                         "title": t.title, "format": t.format, "duration_ms": t.duration_ms}
+                        {"artist": t.artist, "album": t.album, "album_artist": t.album_artist,
+                         "track_number": t.track_number, "title": t.title, "format": t.format,
+                         "duration_ms": t.duration_ms}
                     )
             if pl_tracks:
                 written.append(await asyncio.to_thread(generate_m3u, pl.name, pl_tracks, target))
@@ -425,7 +428,8 @@ async def sync_diff_html(
         src = Path(track.file_path)
         ext = src.suffix.lstrip(".")
         rel_path = build_device_path(
-            track.artist, track.album, track.track_number, track.title, ext
+            track.artist, track.album, track.track_number, track.title, ext,
+            album_artist=track.album_artist
         )
         if rel_path in device_files:
             already_synced.append({"title": track.title, "artist": track.artist, "album": track.album})

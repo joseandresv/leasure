@@ -14,6 +14,7 @@ from models import Playlist, PlaylistTrack, Track
 from services import browser_session, cookies, oauth_state
 from services import youtube_client as yt
 from services.formats import resolve_format
+from services.tracks import optional_int, upsert_track
 from worker import download_worker
 
 
@@ -313,7 +314,11 @@ async def download_track(
     title: str,
     artist: str,
     album: str = "",
+    album_artist: str = "",
     track_number: int = 0,
+    disc_number: str = "",
+    total_tracks: str = "",
+    year: str = "",
     duration_ms: int = 0,
     image_url: str = "",
     format: str = "mp3",
@@ -341,23 +346,23 @@ async def download_track(
     except ValueError as e:
         return _format_error(request, e)
 
-    track = existing or Track(youtube_id=video_id)
-    track.title = title
-    track.artist = artist
-    track.album = album
-    track.track_number = track_number
-    track.duration_ms = duration_ms
-    track.artwork_url = image_url
-    track.format = container
-    track.quality = quality
-    track.source = "youtube"
-    track.status = "pending"
-    track.error_message = None
-
-    if not existing:
-        session.add(track)
-    await session.commit()
-    await session.refresh(track)
+    track = await upsert_track(
+        session,
+        {
+            "youtube_id": video_id,
+            "title": title,
+            "artist": artist,
+            "album": album,
+            "album_artist": album_artist or None,
+            "track_number": track_number,
+            "disc_number": optional_int(disc_number),
+            "total_tracks": optional_int(total_tracks),
+            "year": optional_int(year),
+            "duration_ms": duration_ms,
+            "artwork_url": image_url,
+        },
+        quality=quality, container=container, source="youtube", existing=existing,
+    )
 
     await download_worker.enqueue(track.id)
     if _is_htmx(request):
@@ -421,22 +426,20 @@ async def download_playlist(
             queued.append({"track_id": existing.id, "status": existing.status})
             continue
 
-        track = existing or Track(youtube_id=video_id)
-        track.title = t["name"]
-        track.artist = t.get("artist", "")
-        track.album = t.get("album", "")
-        track.duration_ms = t.get("duration_ms", 0)
-        track.artwork_url = t.get("image_url", "")
-        track.format = container
-        track.quality = quality
-        track.source = "youtube"
-        track.status = "pending"
-        track.error_message = None
-
-        if not existing:
-            session.add(track)
-        await session.commit()
-        await session.refresh(track)
+        track = await upsert_track(
+            session,
+            {
+                "youtube_id": video_id,
+                "title": t["name"],
+                "artist": t.get("artist", ""),
+                "album": t.get("album", ""),
+                "album_artist": t.get("album_artist"),
+                "duration_ms": t.get("duration_ms", 0),
+                "year": t.get("year"),
+                "artwork_url": t.get("image_url", ""),
+            },
+            quality=quality, container=container, source="youtube", existing=existing,
+        )
 
         session.add(PlaylistTrack(playlist_id=db_playlist.id, track_id=track.id, position=position))
         await download_worker.enqueue(track.id)

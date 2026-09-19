@@ -88,6 +88,16 @@ def _ytmusic_bucket_ts(played: str, position: int) -> float:
     return base - position * 0.001
 
 
+def _tag_fields(track: dict) -> dict:
+    """The album-level tag fields a provider track carries into a download."""
+    return {
+        "album_artist": track.get("album_artist"),
+        "year": track.get("year"),
+        "disc_number": track.get("disc_number"),
+        "total_tracks": track.get("total_tracks"),
+    }
+
+
 def _normalize_key(title: str, artist: str) -> str:
     """Create a dedup key from title + artist."""
     return f"{title.strip().lower()}|{artist.strip().lower().split(',')[0]}"
@@ -365,6 +375,7 @@ def get_unified_recent(limit: int = 50, force: bool = False) -> list[dict]:
             "duration_ms": sp_now.get("duration_ms", 0),
             "track_number": sp_now.get("track_number", 0),
             "isrc": sp_now.get("isrc"),
+            **_tag_fields(sp_now),
             "sources": [{"provider": "spotify", "id": sp_now["id"], "uri": sp_now.get("uri", ""),
                          "artist_id": sp_now.get("artist_id", "")}],
             # Future-dated so it wins even if plain YT is hammering "now" timestamps
@@ -383,6 +394,7 @@ def get_unified_recent(limit: int = 50, force: bool = False) -> list[dict]:
                 "duration_ms": t.get("duration_ms", 0),
                 "track_number": t.get("track_number", 0),
                 "isrc": t.get("isrc"),
+                **_tag_fields(t),
                 "sources": [{"provider": "spotify", "id": t["id"], "uri": t.get("uri", ""),
                              "artist_id": t.get("artist_id", "")}],
                 "_ts": _parse_spotify_ts(t.get("played_at", "")),
@@ -399,6 +411,7 @@ def get_unified_recent(limit: int = 50, force: bool = False) -> list[dict]:
                 "image_url": t.get("image_url"),
                 "duration_ms": t.get("duration_ms", 0),
                 "track_number": 0,
+                **_tag_fields(t),
                 "sources": [{"provider": "youtube music", "id": t["id"]}],
                 "_ts": _ytmusic_bucket_ts(t.get("played", ""), i),
             })

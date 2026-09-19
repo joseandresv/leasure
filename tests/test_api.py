@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime
 
 import pytest
@@ -356,3 +357,102 @@ async def test_library_tracks_html_marks_a_premium_download(client, db):
 
     resp = await client.get("/api/library/tracks/html")
     assert "Premium" in resp.text
+
+
+def _hx_vals(html: str) -> list[dict]:
+    return [json.loads(m) for m in re.findall(r"hx-vals='([^']*)'", html)]
+
+
+@pytest.mark.asyncio
+async def test_playlist_track_download_keeps_its_own_album(client, db, monkeypatch):
+    from routers import music as music_router
+
+    monkeypatch.setattr(music_router.yt, "get_playlist_tracks", lambda pid, limit=500: {
+        "playlist": {"name": "Road Trip", "image_url": "https://img/playlist.jpg"},
+        "tracks": [{"id": "vid1", "name": "Blue Monday", "artist": "New Order",
+                    "album": "Substance", "album_artist": "New Order", "duration_ms": 1000,
+                    "image_url": "https://img/substance.jpg"}],
+    })
+
+    resp = await client.get("/api/music/playlist/youtube/PL1")
+    assert resp.status_code == 200
+    vals = _hx_vals(resp.text)[0]
+    assert vals["album"] == "Substance"
+    assert vals["album_artist"] == "New Order"
+    assert vals["image_url"] == "https://img/substance.jpg"
+
+
+@pytest.mark.asyncio
+async def test_playlist_track_without_an_album_falls_back_to_the_playlist(client, db, monkeypatch):
+    from routers import music as music_router
+
+    monkeypatch.setattr(music_router.yt, "get_playlist_tracks", lambda pid, limit=500: {
+        "playlist": {"name": "Road Trip", "image_url": "https://img/playlist.jpg"},
+        "tracks": [{"id": "vid2", "name": "Untitled", "artist": "Nobody",
+                    "album": None, "album_artist": None, "duration_ms": 1000,
+                    "image_url": None}],
+    })
+
+    resp = await client.get("/api/music/playlist/youtube/PL1")
+    vals = _hx_vals(resp.text)[0]
+    assert vals["album"] == "Road Trip"
+    assert vals["album_artist"] == ""
+    assert vals["image_url"] == "https://img/playlist.jpg"
+
+
+@pytest.mark.asyncio
+async def test_spotify_playlist_track_download_uses_its_album_cover(client, db, monkeypatch):
+    from routers import music as music_router
+
+    monkeypatch.setattr(music_router.sp, "get_playlist_tracks", lambda pid: {
+        "playlist": {"name": "Road Trip", "image_url": "https://img/playlist.jpg"},
+        "tracks": [{"id": "t1", "uri": "spotify:track:t1", "name": "Blue Monday",
+                    "artist": "New Order", "album": "Substance", "album_artist": "New Order",
+                    "album_image_url": "https://img/substance.jpg", "duration_ms": 1000}],
+    })
+
+    resp = await client.get("/api/music/playlist/spotify/PL1")
+    vals = _hx_vals(resp.text)[0]
+    assert vals["image_url"] == "https://img/substance.jpg"
+
+
+@pytest.mark.asyncio
+async def test_bulk_playlist_download_stores_each_track_own_album_cover(client, db, monkeypatch):
+    from sqlalchemy import select
+
+    from routers import music as music_router
+
+    monkeypatch.setattr(music_router.sp, "get_playlist_tracks", lambda pid: {
+        "playlist": {"name": "Road Trip", "image_url": "https://img/playlist.jpg"},
+        "tracks": [{"uri": "spotify:track:t1", "name": "Blue Monday", "artist": "New Order",
+                    "album": "Substance", "album_artist": "New Order",
+                    "album_image_url": "https://img/substance.jpg", "duration_ms": 1000}],
+    })
+
+    resp = await client.post("/api/music/download/playlist/spotify/PL1", data={"format": "mp3"})
+    assert resp.status_code == 200
+
+    async with db() as session:
+        track = (await session.execute(
+            select(Track).where(Track.spotify_uri == "spotify:track:t1"))).scalar_one()
+    assert track.artwork_url == "https://img/substance.jpg"
+
+
+@pytest.mark.asyncio
+async def test_album_track_download_still_uses_the_album_name(client, db, monkeypatch):
+    from routers import music as music_router
+
+    monkeypatch.setattr(music_router.yt, "get_album_tracks", lambda bid: {
+        "album": {"name": "Substance", "artist": "New Order", "album_artist": "New Order",
+                  "image_url": "https://img/substance.jpg", "year": 1987,
+                  "total_tracks": 1, "total_discs": None},
+        "tracks": [{"id": "vid3", "name": "Blue Monday", "artist": "New Order",
+                    "track_number": 1, "duration_ms": 1000, "album_artist": "New Order",
+                    "year": 1987}],
+    })
+
+    resp = await client.get("/api/music/album/youtube/MPREb1")
+    vals = _hx_vals(resp.text)[0]
+    assert vals["album"] == "Substance"
+    assert vals["album_artist"] == "New Order"
+    assert vals["image_url"] == "https://img/substance.jpg"

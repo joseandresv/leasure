@@ -1,11 +1,15 @@
+import hashlib
 import json
 import os
 import time
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
 from config import settings
 from services import cookies
+from services.ytdlp_opts import ensure_deno_on_path
 
 HEADER_COOKIE = (
     "SAPISID=sapi-value; __Secure-3PAPISID=secure-value; LOGIN_INFO=login-value; "
@@ -18,6 +22,13 @@ def data_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "cookie_file", None)
     return tmp_path
+
+
+def _write_meta(data_dir, source, written_at):
+    body = (data_dir / "cookies.txt").read_bytes()
+    (data_dir / "cookies.txt.meta.json").write_text(json.dumps(
+        {"source": source, "written_at": written_at.isoformat(),
+         "size": len(body), "sha256": hashlib.sha256(body).hexdigest()}))
 
 
 def _write_headers(data_dir, cookie_header=HEADER_COOKIE):
@@ -54,19 +65,77 @@ def test_status_reports_source_and_freshness(data_dir):
     assert cookies.cookie_file_status() == {"exists": False, "path": str(data_dir / "cookies.txt"),
                                             "age_hours": None, "stale": True, "source": None}
 
-    path = cookies.write_cookie_file_from_headers(_write_headers(data_dir))
+    cookies.write_cookie_file_from_headers(_write_headers(data_dir))
     fresh = cookies.cookie_file_status()
     assert fresh["exists"] and fresh["source"] == "headers" and not fresh["stale"]
 
+
+def test_status_ages_the_file_from_the_meta_timestamp_not_the_mtime(data_dir):
+    """yt-dlp rewrites the jar on every download, so a fresh mtime hides an old session."""
+    path = cookies.write_cookie_file_from_headers(_write_headers(data_dir))
+    _write_meta(data_dir, "headers", datetime.now(UTC) - timedelta(hours=20))
+    os.utime(path, None)
+
+    status = cookies.cookie_file_status()
+    assert status["stale"] and status["age_hours"] == pytest.approx(20, abs=0.2)
+
+
+def test_status_falls_back_to_the_mtime_without_a_meta_file(data_dir):
+    path = data_dir / "cookies.txt"
+    path.write_text("# Netscape HTTP Cookie File\n")
     old = time.time() - 20 * 3600
     os.utime(path, (old, old))
-    stale = cookies.cookie_file_status()
-    assert stale["stale"] and stale["age_hours"] == pytest.approx(20, abs=0.2)
+
+    status = cookies.cookie_file_status()
+    assert status["stale"] and status["age_hours"] == pytest.approx(20, abs=0.2)
 
 
 def test_status_calls_a_dropped_in_file_external(data_dir):
     (data_dir / "cookies.txt").write_text("# Netscape HTTP Cookie File\n")
     assert cookies.cookie_file_status()["source"] == "external"
+
+
+def test_the_meta_file_fingerprints_the_cookie_file_it_describes(data_dir):
+    path = cookies.write_cookie_file_from_headers(_write_headers(data_dir))
+
+    meta = json.loads((data_dir / "cookies.txt.meta.json").read_text())
+    assert meta["size"] == path.stat().st_size
+    assert meta["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_status_trusts_a_legacy_meta_that_has_no_fingerprint(data_dir):
+    """Meta files written before fingerprints existed still date the session."""
+    cookies.write_cookie_file_from_headers(_write_headers(data_dir))
+    written_at = datetime.now(UTC) - timedelta(hours=8)
+    (data_dir / "cookies.txt.meta.json").write_text(
+        json.dumps({"source": "app-window", "written_at": written_at.isoformat()}))
+
+    status = cookies.cookie_file_status()
+    assert status["source"] == "app-window"
+    assert status["age_hours"] == pytest.approx(8, abs=0.2)
+
+
+def test_status_distrusts_the_meta_of_a_hand_replaced_cookie_file(data_dir):
+    path = cookies.write_cookie_file_from_headers(_write_headers(data_dir))
+    path.write_text("# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tpasted-by-hand\n")
+    old = time.time() - 20 * 3600
+    os.utime(path, (old, old))
+
+    status = cookies.cookie_file_status()
+    assert status["source"] == "external"
+    assert status["stale"] and status["age_hours"] == pytest.approx(20, abs=0.2)
+
+
+def test_a_jar_rewrite_by_yt_dlp_keeps_the_recorded_source_and_age(data_dir):
+    """yt-dlp saves the jar back after every run; that is our own session, not a hand edit."""
+    path = cookies.write_cookie_file_from_headers(_write_headers(data_dir))
+    _write_meta(data_dir, "headers", datetime.now(UTC) - timedelta(hours=5))
+    path.write_text(path.read_text() + ".youtube.com\tTRUE\t/\tTRUE\t0\tSIDCC\trotated\n")
+
+    cookies.note_cookie_file_rewritten()
+
+    status = cookies.cookie_file_status()
+    assert status["source"] == "headers" and status["age_hours"] == pytest.approx(5, abs=0.2)
 
 
 class _FakeYDL:
@@ -151,6 +220,54 @@ def test_premium_check_explains_a_bot_check_failure(data_dir, fake_ydl):
     assert "not a bot" in result["error"] and "fresh headers" in result["error"]
 
 
+def test_premium_check_falls_back_when_the_probe_track_is_gone(data_dir, fake_ydl, monkeypatch):
+    cookies.write_cookie_file_from_headers(_write_headers(data_dir))
+    fallback = cookies.PREMIUM_CHECK_FALLBACK_IDS[0]
+    probed = []
+
+    def fake_extract(video_id, cookie_path):
+        probed.append(video_id)
+        if video_id != fallback:
+            raise Exception(f"ERROR: [youtube] {video_id}: Video unavailable")
+        return {"formats": [_audio("141", 256, "Premium")]}
+
+    monkeypatch.setattr(cookies, "_extract_info", fake_extract)
+
+    result = cookies.premium_check()
+
+    assert probed == [settings.premium_check_video_id, fallback]
+    assert result["state"] == "pass"
+    assert result["video_id"] == fallback
+
+
+def test_premium_check_does_not_fall_back_after_a_rejected_session(data_dir, fake_ydl, monkeypatch):
+    cookies.write_cookie_file_from_headers(_write_headers(data_dir))
+    probed = []
+
+    def fake_extract(video_id, cookie_path):
+        probed.append(video_id)
+        raise Exception("ERROR: unable to download video data: HTTP Error 403: Forbidden")
+
+    monkeypatch.setattr(cookies, "_extract_info", fake_extract)
+
+    result = cookies.premium_check()
+
+    assert probed == [settings.premium_check_video_id]
+    assert result["state"] == "error"
+    assert "403" in result["error"]
+
+
+def test_premium_check_blames_a_missing_js_runtime_when_there_are_no_formats(data_dir, fake_ydl):
+    cookies.write_cookie_file_from_headers(_write_headers(data_dir))
+    fake_ydl.formats = []
+
+    result = cookies.premium_check()
+
+    assert result["state"] == "error"
+    assert "deno" in result["error"]
+    assert fake_ydl.calls[0][0]["ignore_no_formats_error"] is True
+
+
 def test_premium_check_result_is_cached_for_the_status_card(data_dir, fake_ydl):
     cookies.write_cookie_file_from_headers(_write_headers(data_dir))
     fake_ydl.formats = [_audio("141", 256, "Premium")]
@@ -209,3 +326,26 @@ async def test_premium_check_run_is_a_post_that_re_runs_the_check(client, monkey
     assert ran == [None]
 
     assert (await client.get("/api/youtube/premium-check/run")).status_code == 405
+
+
+def test_ensure_deno_on_path_adds_the_bin_dir_once(tmp_path, monkeypatch):
+    deno_bin = tmp_path / ".deno" / "bin"
+    deno_bin.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setenv("PATH", "/usr/bin")
+
+    ensure_deno_on_path()
+    ensure_deno_on_path()
+
+    assert os.environ["PATH"] == f"{deno_bin}{os.pathsep}/usr/bin"
+
+
+def test_ensure_deno_on_path_recognises_an_entry_with_a_trailing_separator(tmp_path, monkeypatch):
+    deno_bin = tmp_path / ".deno" / "bin"
+    deno_bin.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setenv("PATH", f"{deno_bin}{os.sep}{os.pathsep}/usr/bin")
+
+    ensure_deno_on_path()
+
+    assert os.environ["PATH"] == f"{deno_bin}{os.sep}{os.pathsep}/usr/bin"

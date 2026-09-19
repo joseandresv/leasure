@@ -3,15 +3,11 @@
 import asyncio
 import logging
 
-import httpx
-
+from services import musicbrainz as mb
 from services import spotify_client as sp
 from services import youtube_client as yt
 
 logger = logging.getLogger(__name__)
-
-MUSICBRAINZ_API = "https://musicbrainz.org/ws/2"
-MUSICBRAINZ_HEADERS = {"User-Agent": "Leasure/0.2 (music downloader)", "Accept": "application/json"}
 
 
 def _normalize_key(title: str, artist: str) -> str:
@@ -52,7 +48,9 @@ async def search_spotify(query: str, limit: int = 20) -> dict:
             "image_url": t["album"]["images"][0]["url"] if t.get("album", {}).get("images") else None,
             "duration_ms": t.get("duration_ms", 0),
             "track_number": t.get("track_number", 0),
+            "disc_number": t.get("disc_number"),
             "isrc": (t.get("external_ids") or {}).get("isrc"),
+            **sp.album_fields(t.get("album") or {}),
             "sources": [{"provider": "spotify", "id": t["id"], "uri": t.get("uri", ""),
                          "artist_id": t["artists"][0]["id"] if t.get("artists") else ""}],
         })
@@ -106,6 +104,7 @@ async def search_youtube(query: str, limit: int = 20) -> dict:
                 "name": t.get("title", ""),
                 "artist": ", ".join(ar["name"] for ar in t.get("artists", []) if ar.get("name")),
                 "album": t.get("album", {}).get("name", "") if t.get("album") else "",
+                "album_artist": yt.first_artist(t.get("artists")),
                 "image_url": t["thumbnails"][-1]["url"] if t.get("thumbnails") else None,
                 "duration_ms": _parse_duration(t.get("duration", "")),
                 "track_number": 0,
@@ -134,27 +133,20 @@ async def search_musicbrainz(query: str, limit: int = 10) -> dict:
     """Search MusicBrainz for album metadata enrichment."""
     albums = []
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(
-                f"{MUSICBRAINZ_API}/release",
-                params={"query": query, "fmt": "json", "limit": limit},
-                headers=MUSICBRAINZ_HEADERS,
+        data = await mb.get("/release", {"query": query, "limit": limit})
+        for rel in (data or {}).get("releases", []):
+            artist = ", ".join(
+                ac.get("name", "") for ac in rel.get("artist-credit", []) if ac.get("name")
             )
-            if resp.status_code == 200:
-                data = resp.json()
-                for rel in data.get("releases", []):
-                    artist = ", ".join(
-                        ac.get("name", "") for ac in rel.get("artist-credit", []) if ac.get("name")
-                    )
-                    albums.append({
-                        "id": f"mb:{rel['id']}",
-                        "name": rel.get("title", ""),
-                        "artist": artist,
-                        "image_url": None,  # MusicBrainz doesn't serve images directly
-                        "year": rel.get("date", "")[:4] if rel.get("date") else None,
-                        "total_tracks": rel.get("track-count", 0),
-                        "sources": [{"provider": "musicbrainz", "id": rel["id"]}],
-                    })
+            albums.append({
+                "id": f"mb:{rel['id']}",
+                "name": rel.get("title", ""),
+                "artist": artist,
+                "image_url": None,  # MusicBrainz doesn't serve images directly
+                "year": rel.get("date", "")[:4] if rel.get("date") else None,
+                "total_tracks": rel.get("track-count", 0),
+                "sources": [{"provider": "musicbrainz", "id": rel["id"]}],
+            })
     except Exception as e:
         logger.warning("MusicBrainz search failed: %s", e)
 

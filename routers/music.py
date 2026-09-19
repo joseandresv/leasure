@@ -22,6 +22,7 @@ from services.music_aggregator import (
     get_unique_artists,
 )
 from services.search import search_all
+from services.tracks import optional_int, upsert_track
 from worker import download_worker
 
 logger = logging.getLogger(__name__)
@@ -285,7 +286,11 @@ async def download_track(
     title: str = Form(""),
     artist: str = Form(""),
     album: str = Form(""),
+    album_artist: str = Form(""),
     track_number: int = Form(0),
+    disc_number: str = Form(""),
+    total_tracks: str = Form(""),
+    year: str = Form(""),
     duration_ms: int = Form(0),
     image_url: str = Form(""),
     spotify_uri: str = Form(""),
@@ -333,30 +338,26 @@ async def download_track(
         if genres:
             genre = ", ".join(genres[:3])
 
-    track = existing or Track()
-    if spotify_uri:
-        track.spotify_uri = spotify_uri
-    if youtube_id:
-        track.youtube_id = youtube_id
-    if isrc:
-        track.isrc = isrc
-    track.title = title
-    track.artist = artist
-    track.album = album
-    track.genre = genre
-    track.track_number = track_number
-    track.duration_ms = duration_ms
-    track.artwork_url = image_url
-    track.format = container
-    track.quality = quality
-    track.source = source
-    track.status = "pending"
-    track.error_message = None
-
-    if not existing:
-        session.add(track)
-    await session.commit()
-    await session.refresh(track)
+    track = await upsert_track(
+        session,
+        {
+            "spotify_uri": spotify_uri,
+            "youtube_id": youtube_id,
+            "isrc": isrc,
+            "title": title,
+            "artist": artist,
+            "album": album,
+            "album_artist": album_artist or None,
+            "genre": genre,
+            "track_number": track_number,
+            "disc_number": optional_int(disc_number),
+            "total_tracks": optional_int(total_tracks),
+            "year": optional_int(year),
+            "duration_ms": duration_ms,
+            "artwork_url": image_url,
+        },
+        quality=quality, container=container, source=source, existing=existing,
+    )
 
     await download_worker.enqueue(track.id)
 
@@ -408,13 +409,8 @@ async def download_album(
         elif album_genres:
             album_genre = ", ".join(album_genres[:3])
 
-    release_date = album_data.get("release_date", "")
-    year = int(release_date[:4]) if release_date and len(release_date) >= 4 else None
-    if not year and album_data.get("year"):
-        try:
-            year = int(album_data["year"])
-        except (ValueError, TypeError):
-            pass
+    # Spotify dates the album with release_date, YouTube Music with a plain year.
+    year = sp.release_year(album_data.get("release_date")) or optional_int(album_data.get("year"))
 
     queued = []
     for t in tracks_data:
@@ -433,35 +429,27 @@ async def download_album(
             queued.append({"track_id": existing.id, "status": existing.status})
             continue
 
-        track = existing or Track()
-        if provider == "spotify":
-            track.spotify_uri = t.get("uri")
-            track.source = "spotify"
-        elif provider == "youtube":
-            track.youtube_id = t.get("id")
-            track.source = "youtube"
-
-        if t.get("isrc"):
-            track.isrc = t["isrc"]
-        track.title = t["name"]
-        track.artist = t.get("artist", "")
-        track.album = album_data["name"]
-        track.album_artist = album_data.get("artist", "")
-        track.track_number = t.get("track_number") or t.get("index")
-        track.disc_number = t.get("disc_number")
-        track.duration_ms = t.get("duration_ms", 0)
-        track.artwork_url = album_data.get("image_url", "")
-        track.year = year
-        track.genre = album_genre
-        track.format = container
-        track.quality = quality
-        track.status = "pending"
-        track.error_message = None
-
-        if not existing:
-            session.add(track)
-        await session.commit()
-        await session.refresh(track)
+        track = await upsert_track(
+            session,
+            {
+                "spotify_uri": t.get("uri") if provider == "spotify" else None,
+                "youtube_id": t.get("id") if provider == "youtube" else None,
+                "isrc": t.get("isrc"),
+                "title": t["name"],
+                "artist": t.get("artist", ""),
+                "album": album_data["name"],
+                "album_artist": album_data.get("album_artist") or album_data.get("artist") or None,
+                "genre": album_genre,
+                "track_number": t.get("track_number") or t.get("index"),
+                "disc_number": t.get("disc_number"),
+                "total_tracks": album_data.get("total_tracks"),
+                "total_discs": album_data.get("total_discs"),
+                "duration_ms": t.get("duration_ms", 0),
+                "year": year,
+                "artwork_url": album_data.get("image_url", ""),
+            },
+            quality=quality, container=container, source=provider, existing=existing,
+        )
 
         await download_worker.enqueue(track.id)
         queued.append({"track_id": track.id, "status": "queued"})
@@ -559,33 +547,26 @@ async def download_playlist(
             queued.append({"track_id": existing.id, "status": existing.status})
             continue
 
-        track = existing or Track()
-        if provider == "spotify":
-            track.spotify_uri = t.get("uri")
-            track.source = "spotify"
-        elif provider == "youtube":
-            track.youtube_id = t.get("id")
-            track.source = "youtube"
-
-        if t.get("isrc"):
-            track.isrc = t["isrc"]
-        track.title = t["name"]
-        track.artist = t.get("artist", "")
-        track.album = t.get("album", playlist_data.get("name", ""))
-        track.album_artist = t.get("album_artist", t.get("artist", ""))
-        track.track_number = t.get("track_number") or t.get("index")
-        track.disc_number = t.get("disc_number")
-        track.duration_ms = t.get("duration_ms", 0)
-        track.artwork_url = t.get("image_url") or playlist_data.get("image_url", "")
-        track.format = container
-        track.quality = quality
-        track.status = "pending"
-        track.error_message = None
-
-        if not existing:
-            session.add(track)
-        await session.commit()
-        await session.refresh(track)
+        track = await upsert_track(
+            session,
+            {
+                "spotify_uri": t.get("uri") if provider == "spotify" else None,
+                "youtube_id": t.get("id") if provider == "youtube" else None,
+                "isrc": t.get("isrc"),
+                "title": t["name"],
+                "artist": t.get("artist", ""),
+                "album": t.get("album") or playlist_data.get("name", ""),
+                "album_artist": t.get("album_artist"),
+                "track_number": t.get("track_number") or t.get("index"),
+                "disc_number": t.get("disc_number"),
+                "total_tracks": t.get("total_tracks"),
+                "duration_ms": t.get("duration_ms", 0),
+                "year": t.get("year"),
+                "artwork_url": (t.get("image_url") or t.get("album_image_url")
+                                or playlist_data.get("image_url", "")),
+            },
+            quality=quality, container=container, source=provider, existing=existing,
+        )
 
         session.add(PlaylistTrack(playlist_id=db_playlist.id, track_id=track.id, position=position))
         await download_worker.enqueue(track.id)

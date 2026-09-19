@@ -27,6 +27,8 @@ class Track(Base):
     genre: Mapped[str | None] = mapped_column(String(255), nullable=True)
     track_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     disc_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_tracks: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_discs: Mapped[int | None] = mapped_column(Integer, nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     year: Mapped[int | None] = mapped_column(Integer, nullable=True)
     format: Mapped[str] = mapped_column(String(16), default="mp3")

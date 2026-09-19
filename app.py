@@ -1,7 +1,5 @@
 import logging
-import os
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI
@@ -13,6 +11,7 @@ from starlette.responses import JSONResponse
 
 from config import settings
 from db import init_db
+from services.ytdlp_opts import ensure_deno_on_path
 from worker import download_worker
 
 logging.basicConfig(
@@ -21,13 +20,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Ensure deno is on PATH for yt-dlp Premium quality downloads
-# (deno installs to ~/.deno/bin on all platforms; os.pathsep keeps this Windows-safe).
 # yt-dlp is only imported lazily inside the download engines, so doing this after
 # the imports above is still early enough.
-_deno_bin = Path.home() / ".deno" / "bin"
-if _deno_bin.exists() and str(_deno_bin) not in os.environ.get("PATH", ""):
-    os.environ["PATH"] = f"{_deno_bin}{os.pathsep}{os.environ.get('PATH', '')}"
+ensure_deno_on_path()
 
 
 @asynccontextmanager

@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -32,14 +33,17 @@ class Settings(BaseSettings):
     cookie_browser: str = "chrome"
     # Netscape cookies.txt yt-dlp authenticates with; defaults to data_dir/cookies.txt.
     cookie_file: Path | None = None
-    # Track the Premium gate probes (yt-dlp's own "has format 141 on a YTM url" fixture).
-    premium_check_video_id: str = "XclachpHxis"
+    # Track the Premium gate probes. Must be public on music.youtube.com; when it is taken
+    # down the check falls through to cookies.PREMIUM_CHECK_FALLBACK_IDS.
+    premium_check_video_id: str = "dQw4w9WgXcQ"
     default_format: str = "mp3"  # native | mp3 | flac_lossless
     mp3_bitrate: int = 320
     # Ceiling on authenticated YouTube downloads per day (counter in data/yt_daily.json).
     yt_max_downloads_per_day: int = 50
     max_concurrent_downloads: int = 1
     artwork_size: int = 500
+    # ID3v2 minor version for MP3 tags: 3 (v2.3) is what embedded players read reliably, 4 is v2.4.
+    id3_version: int = 3
 
     # Device
     device_music_folder: str = "MUSIC"
@@ -50,6 +54,13 @@ class Settings(BaseSettings):
     port: int = 8642
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+
+    @field_validator("id3_version")
+    @classmethod
+    def _supported_id3_version(cls, value: int) -> int:
+        if value not in (3, 4):
+            raise ValueError("ID3_VERSION must be 3 (ID3v2.3) or 4 (ID3v2.4)")
+        return value
 
 
 settings = Settings()

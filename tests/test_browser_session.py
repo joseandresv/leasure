@@ -1,5 +1,4 @@
 import json
-import os
 import threading
 import time
 from datetime import UTC, datetime, timedelta
@@ -28,6 +27,15 @@ def data_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "cookie_file", None)
     monkeypatch.setattr(yt, "HEADERS_PATH", tmp_path / "youtube_headers.json")
     return tmp_path
+
+
+def _age_cookie_file(hours: float) -> None:
+    """Backdate the session in the meta file; the mtime is not what ages a cookie file."""
+    path = cookies.cookie_file_path()
+    meta = path.with_name(path.name + ".meta.json")
+    written = json.loads(meta.read_text())
+    written["written_at"] = (datetime.now(UTC) - timedelta(hours=hours)).isoformat()
+    meta.write_text(json.dumps(written))
 
 
 @pytest.fixture
@@ -90,8 +98,7 @@ def test_import_session_without_an_app_window(data_dir, monkeypatch):
 
 def test_ensure_fresh_cookies_reimports_a_stale_file_without_a_premium_check(data_dir, app_window, no_premium_check):
     cookies.write_cookie_file(SIGNED_IN_COOKIES, source="app-window")
-    stale = time.time() - 8 * 3600
-    os.utime(cookies.cookie_file_path(), (stale, stale))
+    _age_cookie_file(hours=8)
 
     assert browser_session.ensure_fresh_cookies() is True
     assert cookies.cookie_file_status()["age_hours"] < 1
@@ -263,8 +270,7 @@ def test_import_session_through_the_relay_writes_the_cookie_file(data_dir, no_pr
 
 def test_ensure_fresh_cookies_reimports_from_the_relay(data_dir, no_premium_check):
     cookies.write_cookie_file(SIGNED_IN_COOKIES, source="app-window")
-    stale = time.time() - 8 * 3600
-    os.utime(cookies.cookie_file_path(), (stale, stale))
+    _age_cookie_file(hours=8)
     write_relay()
 
     assert browser_session.ensure_fresh_cookies() is True

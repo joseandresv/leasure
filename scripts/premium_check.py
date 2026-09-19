@@ -12,6 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services import cookies  # noqa: E402
+from services.ytdlp_opts import ensure_deno_on_path  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -19,6 +20,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--video", help="YouTube video id to probe (default: PREMIUM_CHECK_VIDEO_ID)")
     args = parser.parse_args(argv)
 
+    ensure_deno_on_path()
     result = cookies.premium_check(args.video)
     cookie = result["cookie"]
 

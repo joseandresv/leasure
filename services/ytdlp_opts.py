@@ -1,11 +1,28 @@
 """Shared yt-dlp invocation for the download engine."""
 
 import logging
+import os
+from pathlib import Path
 
 from config import settings
 from services import browser_session, cookies
 
 logger = logging.getLogger(__name__)
+
+
+def ensure_deno_on_path() -> None:
+    """Put ~/.deno/bin on PATH so yt-dlp can run its JS runtime (PO tokens, signature solving).
+
+    Every entry point needs this, not just the web app: without deno the web_music client
+    returns zero formats and the failure reads like a cookie problem. Idempotent; os.pathsep
+    keeps it Windows-safe."""
+    deno_bin = Path.home() / ".deno" / "bin"
+    current = os.environ.get("PATH", "")
+    # Windows PATH entries differ in case and trailing separators from the path we build.
+    entries = {os.path.normcase(os.path.normpath(entry)) for entry in current.split(os.pathsep) if entry}
+    if deno_bin.exists() and os.path.normcase(os.path.normpath(deno_bin)) not in entries:
+        os.environ["PATH"] = f"{deno_bin}{os.pathsep}{current}"
+
 
 # The cookies are the owner's Google session, so authenticated attempts crawl:
 # jittered sleeps, a few retries, and a bandwidth ceiling instead of a burst.
@@ -64,6 +81,9 @@ def _extract(url: str, ydl_opts: dict, download: bool, label: str) -> dict:
         if _authenticated(ydl_opts) and any(marker in message for marker in _SESSION_REFUSED):
             raise CookieSessionRefused("YouTube refused the logged-in session; refresh cookies") from e
         raise
+    finally:
+        if ydl_opts.get("cookiefile"):
+            cookies.note_cookie_file_rewritten()
 
 
 def run_with_attempts(url: str, base_opts: dict, download: bool = True) -> dict:

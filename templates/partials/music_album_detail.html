@@ -69,15 +69,26 @@
     {{ badge('error') }}
     {% else %}
     {% set src = track.sources[0] if track.sources else {} %}
+    {# In a playlist the enclosing "album" is the playlist itself, so the track's own
+       album/artist credit and cover win; album tracks carry none and must fall back. #}
+    {% set dl_album = (track.album if is_playlist else none) | default(album.name | default("", true), true) %}
+    {% set dl_album_artist = track.album_artist | default("", true) if is_playlist
+                             else track.album_artist | default(album.album_artist | default(album.artist | default("", true), true), true) %}
+    {% set dl_image = (track.image_url | default(track.album_image_url, true) if is_playlist else none)
+                      | default(album.image_url | default("", true), true) %}
     <button class="outline dl-btn"
             hx-post="/api/music/download/track"
             hx-vals='{{ {
                 "title": track.name,
                 "artist": track.artist | default("", true),
-                "album": album.name | default("", true),
+                "album": dl_album,
+                "album_artist": dl_album_artist,
                 "track_number": track.track_number | default(0, true),
+                "disc_number": track.disc_number | default("", true),
+                "total_tracks": track.total_tracks | default(album.total_tracks | default("", true), true),
+                "year": track.year | default(album.year | default("", true), true),
                 "duration_ms": track.duration_ms | default(0, true),
-                "image_url": album.image_url | default("", true),
+                "image_url": dl_image,
                 "spotify_uri": src.uri | default("", true) if src.provider | default("") == "spotify" else "",
                 "spotify_artist_id": src.artist_id | default("", true) if src.provider | default("") == "spotify" else "",
                 "youtube_id": src.id | default("", true) if src.provider | default("") == "youtube" else "",

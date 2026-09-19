@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import services.device as device_mod
+from config import settings
 from services.device import build_device_path, is_system_volume, resolve_sync_target, sanitize_filename
 
 
@@ -26,6 +27,24 @@ def test_build_device_path_is_posix_and_uses_primary_artist():
     rel = build_device_path("Daft Punk, Pharrell Williams", "Random Access Memories", 8, "Get Lucky", "mp3")
     assert rel == "Daft Punk/Random Access Memories/08 - Get Lucky.mp3"
     assert "\\" not in rel
+
+
+def test_build_device_path_prefers_album_artist_over_comma_split():
+    rel = build_device_path("Earth, Wind & Fire, Ramsey Lewis", "Gratitude", 3, "Sing a Song", "mp3",
+                            album_artist="Earth, Wind & Fire")
+    assert rel == "Earth, Wind & Fire/Gratitude/03 - Sing a Song.mp3"
+
+
+def test_build_device_path_splits_a_pre_sprint2_album_artist_copied_from_the_artist():
+    """Old rows stored the whole track artist as album_artist; splitting keeps their folders."""
+    rel = build_device_path("Calvin Harris, Rihanna", "18 Months", 4, "We Found Love", "mp3",
+                            album_artist="Calvin Harris, Rihanna")
+    assert rel == "Calvin Harris/18 Months/04 - We Found Love.mp3"
+
+
+def test_build_device_path_falls_back_to_comma_split_without_album_artist():
+    rel = build_device_path("Earth, Wind & Fire", "Gratitude", 3, "Sing a Song", "mp3")
+    assert rel == "Earth/Gratitude/03 - Sing a Song.mp3"
 
 
 def test_build_device_path_without_track_number():
@@ -66,3 +85,14 @@ def test_resolve_sync_target_only_accepts_detected_non_system_volumes(tmp_path, 
     assert resolve_sync_target(str(tmp_path / "elsewhere")) is None
     assert resolve_sync_target("") is None
     assert resolve_sync_target(str(Path.home())) is None
+
+
+def test_library_stem_matches_the_device_path_for_the_same_row(monkeypatch, tmp_path):
+    from services.yt_engine import _library_stem
+
+    monkeypatch.setattr(settings, "library_dir", tmp_path)
+    row = ("Calvin Harris, Rihanna", "18 Months", "We Found Love", 4)
+    for album_artist in (None, "Calvin Harris, Rihanna", "Calvin Harris"):
+        stem = _library_stem(*row, album_artist)
+        rel = build_device_path(row[0], row[1], row[3], row[2], "mp3", album_artist)
+        assert f"{stem.relative_to(tmp_path).as_posix()}.mp3" == rel

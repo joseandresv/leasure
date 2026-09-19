@@ -15,7 +15,7 @@ from pathlib import Path
 from config import settings
 from db import async_session
 from models import Track
-from services.device import sanitize_filename
+from services.device import artist_folder, sanitize_filename
 from services.ytdlp_opts import CookieSessionRefused, run_with_attempts
 
 logger = logging.getLogger(__name__)
@@ -186,9 +186,12 @@ def record_daily_download() -> int:
     return count
 
 
-def _library_stem(artist: str, album: str, title: str, track_number: int | None) -> Path:
+def _library_stem(artist: str, album: str, title: str, track_number: int | None,
+                  album_artist: str | None = None) -> Path:
+    """Library layout mirrors the card layout (same artist folder rule), so a synced
+    file lands at the same relative path it has locally."""
     prefix = f"{track_number:02d} - " if track_number else ""
-    return (settings.library_dir / sanitize_filename(artist) / sanitize_filename(album)
+    return (settings.library_dir / artist_folder(artist, album_artist) / sanitize_filename(album)
             / sanitize_filename(f"{prefix}{title}"))
 
 
@@ -348,6 +351,7 @@ async def download(track_id: int) -> Path:
         title = track.title or "Unknown"
         artist = track.artist or "Unknown"
         album = track.album or "Unknown"
+        album_artist = track.album_artist
         track_number = track.track_number
         duration_ms = track.duration_ms or 0
 
@@ -362,7 +366,7 @@ async def download(track_id: int) -> Path:
         _download_to_library,
         f"https://music.youtube.com/watch?v={video_id}",
         settings.download_dir / str(track_id),
-        _library_stem(artist, album, title, track_number),
+        _library_stem(artist, album, title, track_number, album_artist),
         quality != "native",
         duration_ms,
     )

@@ -77,6 +77,26 @@ def _isrc(t: dict) -> str | None:
     return (t.get("external_ids") or {}).get("isrc")
 
 
+def release_year(release_date: str | None) -> int | None:
+    """Year from a Spotify release_date, which may be 'YYYY', 'YYYY-MM' or 'YYYY-MM-DD'."""
+    if not release_date or len(release_date) < 4:
+        return None
+    try:
+        return int(release_date[:4])
+    except ValueError:
+        return None
+
+
+def album_fields(album: dict) -> dict:
+    """The album-level credit a track carries into tagging: the album's own artists,
+    not the track's, so "Earth, Wind & Fire" survives as one name."""
+    return {
+        "album_artist": ", ".join(a["name"] for a in album.get("artists", [])) or None,
+        "year": release_year(album.get("release_date")),
+        "total_tracks": album.get("total_tracks"),
+    }
+
+
 def _fetch_isrcs(sp: spotipy.Spotify, track_ids: list[str]) -> dict[str, str]:
     """ISRC per track id. The album-tracks payload is a simplified object with no
     external_ids, so the full track objects have to be fetched (50 per request)."""
@@ -125,6 +145,7 @@ def get_album_tracks(album_id: str) -> dict | None:
         return None
     album = sp.album(album_id)
     isrcs = _fetch_isrcs(sp, [t["id"] for t in album["tracks"]["items"] if t.get("id")])
+    credit = album_fields(album)
     tracks = []
     for t in album["tracks"]["items"]:
         tracks.append({
@@ -137,7 +158,9 @@ def get_album_tracks(album_id: str) -> dict | None:
             "duration_ms": t["duration_ms"],
             "uri": t["uri"],
             "isrc": isrcs.get(t["id"]),
+            **credit,
         })
+    discs = [t["disc_number"] for t in tracks if t.get("disc_number")]
     return {
         "album": {
             "id": album["id"],
@@ -147,6 +170,9 @@ def get_album_tracks(album_id: str) -> dict | None:
             "release_date": album.get("release_date", ""),
             "uri": album["uri"],
             "genres": album.get("genres", []),
+            "album_artist": credit["album_artist"],
+            "total_tracks": credit["total_tracks"] or len(tracks),
+            "total_discs": max(discs) if discs else None,
         },
         "tracks": tracks,
     }
@@ -253,6 +279,7 @@ def _parse_track(t: dict) -> dict:
         "duration_ms": t.get("duration_ms", 0),
         "uri": t.get("uri", ""),
         "isrc": _isrc(t),
+        **album_fields(t.get("album") or {}),
     }
 
 
@@ -276,10 +303,12 @@ def get_currently_playing() -> dict | None:
             "album": t["album"]["name"] if t.get("album") else None,
             "album_image_url": t["album"]["images"][0]["url"] if t.get("album", {}).get("images") else None,
             "track_number": t.get("track_number"),
+            "disc_number": t.get("disc_number"),
             "duration_ms": t["duration_ms"],
             "progress_ms": result.get("progress_ms", 0),
             "uri": t["uri"],
             "isrc": _isrc(t),
+            **album_fields(t.get("album") or {}),
         }
     except Exception as e:
         logger.debug("Failed to get currently playing: %s", e)
@@ -311,9 +340,11 @@ def get_recently_played(limit: int = 50) -> list[dict] | None:
                 "album_id": t["album"]["id"] if t.get("album") else None,
                 "album_image_url": t["album"]["images"][0]["url"] if t.get("album", {}).get("images") else None,
                 "track_number": t.get("track_number"),
+                "disc_number": t.get("disc_number"),
                 "duration_ms": t["duration_ms"],
                 "uri": t["uri"],
                 "isrc": _isrc(t),
+                **album_fields(t.get("album") or {}),
                 "played_at": item.get("played_at", ""),
                 "context_type": ctx.get("type"),
                 "context_uri": ctx.get("uri"),
@@ -339,9 +370,11 @@ def get_liked_songs(limit: int = 50, offset: int = 0) -> dict | None:
             "album": t["album"]["name"] if t.get("album") else None,
             "album_image_url": t["album"]["images"][0]["url"] if t.get("album", {}).get("images") else None,
             "track_number": t.get("track_number"),
+            "disc_number": t.get("disc_number"),
             "duration_ms": t["duration_ms"],
             "uri": t["uri"],
             "isrc": _isrc(t),
+            **album_fields(t.get("album") or {}),
         })
     return {
         "tracks": tracks,

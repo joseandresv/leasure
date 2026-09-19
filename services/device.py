@@ -214,11 +214,27 @@ def resolve_sync_target(device_path: str) -> str | None:
     return None
 
 
-def build_device_path(artist: str, album: str, track_number: int | None, title: str, ext: str) -> str:
-    # Use primary artist only for folder (keeps album tracks together)
-    # Full artist list is preserved in ID3 tags for the H2's Category browser
-    primary_artist = (artist or "Unknown Artist").split(",")[0].strip()
-    artist_dir = sanitize_filename(primary_artist)
+def artist_folder(artist: str | None, album_artist: str | None = None) -> str:
+    """Folder name for a track: the album credit when the provider gave a real one, else the
+    first artist before a comma. The comma split is a last resort — it mangles names
+    like "Earth, Wind & Fire" — but it keeps a featured-artist track in the album folder.
+    The full artist list is preserved in the tags (TPE2 always carries the whole album
+    artist) for the H2's Category browser.
+
+    Rows written before Sprint 2 stored the full track artist as album_artist, so a
+    comma-joined album credit identical to the artist is not an album credit at all: it is
+    split like a bare artist, which keeps those cards' existing folders stable instead of
+    re-copying every featured-artist track under a new name."""
+    credit = (album_artist or "").strip()
+    track_artist = (artist or "").strip()
+    if not credit or (credit == track_artist and "," in credit):
+        credit = (track_artist or "Unknown Artist").split(",")[0].strip()
+    return sanitize_filename(credit or "Unknown Artist")
+
+
+def build_device_path(artist: str, album: str, track_number: int | None, title: str, ext: str,
+                      album_artist: str | None = None) -> str:
+    artist_dir = artist_folder(artist, album_artist)
     album_dir = sanitize_filename(album or "Unknown Album")
     num_prefix = f"{track_number:02d} - " if track_number else ""
     filename = sanitize_filename(f"{num_prefix}{title}")
