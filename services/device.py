@@ -108,20 +108,23 @@ REMOVABLE_FS_TYPES = ("vfat", "exfat", "fuseblk", "drvfs", "9p", "ntfs", "ntfs3"
 
 def _detect_wsl2() -> list[dict]:
     """Scan /mnt/<letter> drvfs/9p mounts (Windows drives bridged into WSL2)."""
-    mounted = {}
-    for mount_point, fs_type in _read_proc_mounts():
-        if mount_point.startswith("/mnt/") and len(mount_point) == 6 and fs_type in REMOVABLE_FS_TYPES:
-            mounted[mount_point[-1]] = fs_type
+    from services import wsl_mount
 
     candidates = []
-    for letter in mounted:
-        path = f"/mnt/{letter}"
-        if not os.path.isdir(path):
+    for letter, state in wsl_mount.mounted_letters().items():
+        if state != "ok":
             continue
-        device = _classify(path, f"{letter.upper()}:", letter.upper(), removable_hint=True)
+        device = _classify(f"/mnt/{letter}", f"{letter.upper()}:", letter.upper(), removable_hint=True)
         if device:
             candidates.append(device)
     return candidates
+
+
+def detect_stale_wsl2() -> list[str]:
+    """Letters still in the mount table whose card was pulled; never sync targets."""
+    from services import wsl_mount
+
+    return [letter for letter, state in wsl_mount.mounted_letters().items() if state == "stale"]
 
 
 def _detect_linux() -> list[dict]:
@@ -232,12 +235,21 @@ def artist_folder(artist: str | None, album_artist: str | None = None) -> str:
     return sanitize_filename(credit or "Unknown Artist")
 
 
+def track_prefix(track_number: int | None, disc_number: int | None = None, total_discs: int | None = None) -> str:
+    """"NN - " for a single disc, "D-NN - " on a multi-disc album, "" without a number."""
+    if not track_number:
+        return ""
+    if (total_discs or 0) > 1 or (disc_number or 1) > 1:
+        return f"{disc_number or 1}-{track_number:02d} - "
+    return f"{track_number:02d} - "
+
+
 def build_device_path(artist: str, album: str, track_number: int | None, title: str, ext: str,
-                      album_artist: str | None = None) -> str:
+                      album_artist: str | None = None, disc_number: int | None = None,
+                      total_discs: int | None = None) -> str:
     artist_dir = artist_folder(artist, album_artist)
     album_dir = sanitize_filename(album or "Unknown Album")
-    num_prefix = f"{track_number:02d} - " if track_number else ""
-    filename = sanitize_filename(f"{num_prefix}{title}")
+    filename = sanitize_filename(f"{track_prefix(track_number, disc_number, total_discs)}{title}")
     # No MUSIC/ prefix — put artist folders directly on the SD card root
     # The H2 scans the entire card and reads ID3 tags for Category browsing
     return f"{artist_dir}/{album_dir}/{filename}.{ext}"

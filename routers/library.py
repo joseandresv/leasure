@@ -42,7 +42,13 @@ async def _query_tracks(q: str, limit: int, offset: int, session: AsyncSession):
             | (Track.artist.ilike(pattern))
             | (Track.album.ilike(pattern))
         )
-    stmt = stmt.order_by(Track.artist, Track.album, Track.track_number).limit(limit).offset(offset)
+    stmt = stmt.order_by(
+        func.coalesce(Track.album_artist, Track.artist),
+        Track.album,
+        func.coalesce(Track.disc_number, 1),
+        func.coalesce(Track.track_number, 999999),
+        Track.title,
+    ).limit(limit).offset(offset)
     result = await session.execute(stmt)
     return result.scalars().all()
 

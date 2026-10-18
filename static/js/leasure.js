@@ -136,6 +136,15 @@ document.addEventListener('DOMContentLoaded', function() {
 
 /* ── Device Sync SSE Handler ── */
 
+// Loose comparison (trailing separator, drive-letter case) so a path the server
+// would accept is never blocked here.
+function isDetectedDrive(candidate) {
+    var wanted = String(candidate).replace(/[\\/]+$/, '').toLowerCase();
+    return (window.leasureDrives || []).some(function(p) {
+        return String(p).replace(/[\\/]+$/, '').toLowerCase() === wanted;
+    });
+}
+
 function startSync(e) {
     e.preventDefault();
     var path = document.getElementById('device-path').value;
@@ -170,15 +179,6 @@ function startSync(e) {
     }
     function showError(message) {
         showNotice(message, 'error');
-    }
-
-    // Loose comparison (trailing separator, drive-letter case) so a path the server
-    // would accept is never blocked here.
-    function isDetectedDrive(candidate) {
-        var wanted = String(candidate).replace(/[\\/]+$/, '').toLowerCase();
-        return window.leasureDrives.some(function(p) {
-            return String(p).replace(/[\\/]+$/, '').toLowerCase() === wanted;
-        });
     }
 
     // The server is the source of truth and answers an unknown target with 400;
@@ -308,6 +308,81 @@ function selectDrive(path) {
     htmx.ajax('GET', '/api/device/files/html?device_path=' + enc, '#device-files');
     htmx.ajax('GET', '/api/device/diff/html?device_path=' + enc, '#sync-diff');
 }
+
+// After an eject /mnt/<letter> is an empty folder; a sync target still pointing
+// there must not survive.
+document.addEventListener('htmx:afterSwap', function(event) {
+    var detail = event.detail;
+    if (!detail.pathInfo || detail.pathInfo.requestPath !== '/api/device/eject') return;
+    var result = detail.target && detail.target.querySelector('[data-mount-status]');
+    if (!result || result.dataset.mountStatus !== 'unmounted') return;
+    var letter = String(detail.requestConfig.formData.get('letter') || '').trim().toLowerCase();
+    var input = document.getElementById('device-path');
+    if (!letter || !input) return;
+    if (input.value.trim().replace(/\/+$/, '').toLowerCase() === '/mnt/' + letter) clearSyncTarget();
+});
+
+function clearSyncTarget() {
+    document.getElementById('device-path').value = '';
+    showDevicePlaceholder('sync-diff', 'Select a drive to see what will be synced');
+    showDevicePlaceholder('device-files', 'Select a drive above to browse music on device');
+}
+
+// A rescan settles what the last eject said: a card that shows up mounted again (by
+// hand, from PowerShell) loses its "safe to remove" note, which also lets automount
+// run again, and a target the scan no longer lists is dropped as after an eject.
+document.addEventListener('htmx:afterSettle', function(event) {
+    var id = event.detail.target && event.detail.target.id;
+    if (id === 'device-list') {
+        var input = document.getElementById('device-path');
+        if (input && input.value.trim() && window.leasureDrives && !isDetectedDrive(input.value.trim())) clearSyncTarget();
+        clearEjectNoteIf(function(letter) { return isDetectedDrive('/mnt/' + letter); });
+    } else if (id === 'removable-list') {
+        clearEjectNoteIf(function(letter) {
+            return !!document.querySelector('#removable-list .drive-row[data-state="mounted"][data-letter="' + letter + '"]');
+        });
+    }
+});
+
+function clearEjectNoteIf(isMounted) {
+    var note = document.querySelector('#mount-result [data-mount-status="unmounted"][data-mount-letter]');
+    var letter = note && note.dataset.mountLetter;
+    if (letter && /^[a-z]$/.test(letter) && isMounted(letter)) document.getElementById('mount-result').replaceChildren();
+}
+
+function showDevicePlaceholder(id, text) {
+    var box = document.getElementById(id);
+    if (!box) return;
+    var note = document.createElement('small');
+    note.style.color = 'var(--text-muted)';
+    note.textContent = text;
+    var p = document.createElement('p');
+    p.appendChild(note);
+    box.replaceChildren(p);
+}
+
+// A diff or file list requested for a drive that is no longer the target (ejected
+// meanwhile) must not repaint the views the eject just cleared.
+document.addEventListener('htmx:beforeSwap', function(event) {
+    var path = event.detail.pathInfo && event.detail.pathInfo.requestPath;
+    if (!path || !/^\/api\/device\/(diff|files)\/html\?/.test(path)) return;
+    var input = document.getElementById('device-path');
+    var wanted = new URL(path, window.location.href).searchParams.get('device_path');
+    if (input && wanted !== input.value) event.detail.shouldSwap = false;
+});
+
+// Eject only unmounts inside WSL, so Windows still reports the card: automount would
+// mount it straight back. While the eject message is showing, rescans do not mount.
+function leasureJustEjected() {
+    return !!document.querySelector('#mount-result [data-mount-status="unmounted"]');
+}
+
+// A rescan mounts or finds the card again, so the last mount/eject outcome is stale.
+document.addEventListener('htmx:beforeRequest', function(event) {
+    if (!event.detail.elt.hasAttribute('data-automount')) return;
+    var result = document.getElementById('mount-result');
+    if (result) result.replaceChildren();
+});
 
 /* ── Genre Graph (Sigma.js) ── */
 

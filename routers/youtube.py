@@ -434,6 +434,8 @@ async def download_playlist(
                 "artist": t.get("artist", ""),
                 "album": t.get("album", ""),
                 "album_artist": t.get("album_artist"),
+                "track_number": t.get("track_number"),
+                "total_tracks": t.get("total_tracks"),
                 "duration_ms": t.get("duration_ms", 0),
                 "year": t.get("year"),
                 "artwork_url": t.get("image_url", ""),

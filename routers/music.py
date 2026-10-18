@@ -22,7 +22,7 @@ from services.music_aggregator import (
     get_unique_artists,
 )
 from services.search import search_all
-from services.tracks import optional_int, upsert_track
+from services.tracks import optional_int, refresh_album_track, upsert_track
 from worker import download_worker
 
 logger = logging.getLogger(__name__)
@@ -290,6 +290,7 @@ async def download_track(
     track_number: int = Form(0),
     disc_number: str = Form(""),
     total_tracks: str = Form(""),
+    total_discs: str = Form(""),
     year: str = Form(""),
     duration_ms: int = Form(0),
     image_url: str = Form(""),
@@ -352,6 +353,7 @@ async def download_track(
             "track_number": track_number,
             "disc_number": optional_int(disc_number),
             "total_tracks": optional_int(total_tracks),
+            "total_discs": optional_int(total_discs),
             "year": optional_int(year),
             "duration_ms": duration_ms,
             "artwork_url": image_url,
@@ -425,31 +427,30 @@ async def download_album(
             result = await session.execute(stmt)
             existing = result.scalar_one_or_none()
 
+        data = {
+            "spotify_uri": t.get("uri") if provider == "spotify" else None,
+            "youtube_id": t.get("id") if provider == "youtube" else None,
+            "isrc": t.get("isrc"),
+            "title": t["name"],
+            "artist": t.get("artist", ""),
+            "album": album_data["name"],
+            "album_artist": album_data.get("album_artist") or album_data.get("artist") or None,
+            "genre": album_genre,
+            "track_number": t.get("track_number"),
+            "disc_number": t.get("disc_number"),
+            "total_tracks": album_data.get("total_tracks"),
+            "total_discs": album_data.get("total_discs"),
+            "duration_ms": t.get("duration_ms", 0),
+            "year": year,
+            "artwork_url": album_data.get("image_url", ""),
+        }
         if existing and existing.status in ("done", "pending", "downloading"):
-            queued.append({"track_id": existing.id, "status": existing.status})
+            stale = await refresh_album_track(session, existing, data)
+            queued.append({"track_id": existing.id, "status": existing.status, "stale_device_path": stale})
             continue
 
-        track = await upsert_track(
-            session,
-            {
-                "spotify_uri": t.get("uri") if provider == "spotify" else None,
-                "youtube_id": t.get("id") if provider == "youtube" else None,
-                "isrc": t.get("isrc"),
-                "title": t["name"],
-                "artist": t.get("artist", ""),
-                "album": album_data["name"],
-                "album_artist": album_data.get("album_artist") or album_data.get("artist") or None,
-                "genre": album_genre,
-                "track_number": t.get("track_number") or t.get("index"),
-                "disc_number": t.get("disc_number"),
-                "total_tracks": album_data.get("total_tracks"),
-                "total_discs": album_data.get("total_discs"),
-                "duration_ms": t.get("duration_ms", 0),
-                "year": year,
-                "artwork_url": album_data.get("image_url", ""),
-            },
-            quality=quality, container=container, source=provider, existing=existing,
-        )
+        track = await upsert_track(session, data, quality=quality, container=container, source=provider,
+                                   existing=existing)
 
         await download_worker.enqueue(track.id)
         queued.append({"track_id": track.id, "status": "queued"})
@@ -557,7 +558,7 @@ async def download_playlist(
                 "artist": t.get("artist", ""),
                 "album": t.get("album") or playlist_data.get("name", ""),
                 "album_artist": t.get("album_artist"),
-                "track_number": t.get("track_number") or t.get("index"),
+                "track_number": t.get("track_number"),
                 "disc_number": t.get("disc_number"),
                 "total_tracks": t.get("total_tracks"),
                 "duration_ms": t.get("duration_ms", 0),

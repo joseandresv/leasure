@@ -186,7 +186,8 @@ img { max-width: 100%; height: auto; }
    #scene-container, so it is unaffected. */
 body > canvas { display: none !important; }
 
-/* WebGL canvas for device model — centered at bottom, behind panels */
+/* WebGL canvas for the device model — hidden until scene.js docks it into the
+   active menu's bezel */
 #device-canvas {
     position: absolute;
     bottom: 30px;
@@ -196,7 +197,7 @@ body > canvas { display: none !important; }
     height: 200px;
     z-index: 1;
     pointer-events: none;
-    opacity: 0.7;
+    opacity: 0;
 }
 
 /* CSS 3D Carousel */
@@ -493,6 +494,11 @@ article > header, details > summary {
     align-items: center;
     justify-content: space-between;
 }
+
+
+/* A header that carries a button wraps its title rather than running into the button. */
+article > header > .header-title { min-width: 0; white-space: normal; }
+article > header > button { flex: none; margin-left: var(--space-sm); }
 
 
 /* --- 7. Buttons --- */
@@ -1355,6 +1361,49 @@ dialog header button:hover { color: var(--text-primary); }
     text-shadow: 0 0 6px var(--text-led-glow);
 }
 
+/* Card Reader slots (WSL2): the LED and state line follow data-state. */
+.slot-list { list-style: none; margin: 0 0 var(--space-sm); padding: 0; display: grid; gap: var(--space-xs); }
+
+.drive-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-xs) var(--space-sm);
+    background: #222;
+    border: 1px solid #333;
+    box-shadow: var(--shadow-inset);
+    border-radius: var(--radius-sm);
+}
+
+.drive-row-info { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.drive-row-name { overflow-wrap: anywhere; }
+.drive-row-state { color: var(--text-secondary); }
+
+.slot-led { flex: none; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--text-muted); }
+.drive-row[data-state="unmounted"] .slot-led { background: var(--accent-blue); }
+.drive-row[data-state="mounted"] .slot-led { background: var(--color-success); box-shadow: 0 0 6px var(--color-success); }
+.drive-row[data-state="stale"] .slot-led { background: var(--color-warning); }
+.drive-row[data-state="mounted"] .drive-row-state { color: var(--color-success); }
+.drive-row[data-state="stale"] .drive-row-state { color: var(--color-warning); }
+
+.slot-note { color: var(--text-secondary); }
+.slot-picker { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm); margin-bottom: var(--space-sm); }
+.slot-picker select { width: auto; }
+
+/* The summary is a nowrap flex row: the name shrinks behind an ellipsis, the count never does. */
+.device-artist { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.device-artist-count { flex: none; margin-left: var(--space-sm); }
+.device-playlist { max-width: 100%; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; margin: 0 0.3rem 0.3rem 0; }
+
+#mount-result:not(:empty) { margin-top: var(--space-sm); }
+.mount-message { margin: 0 0 var(--space-xs); }
+.manual-mount { display: grid; gap: var(--space-xs); }
+.manual-cmd {
+    padding: var(--space-xs) var(--space-sm);
+    background: rgba(0, 0, 0, 0.35);
+    border-radius: var(--radius-sm);
+}
+
 
 /* --- 25. Footer --- */
 
@@ -1524,6 +1573,7 @@ dialog header button:hover { color: var(--text-primary); }
     filter: saturate(1.08) contrast(1.04);
     animation: deck-screen-in 420ms ease;
 }
+.deck-screen-img:not([src]) { display: none; }
 
 /* When the real 3D HiFi Walker is docked over the slot, the flat cover becomes a
    blurred ambient backdrop that floods the bezel with the album's color — the
@@ -1892,6 +1942,12 @@ dialog header button:hover { color: var(--text-primary); }
     position: sticky; top: 10px;
     display: flex; flex-direction: column; gap: 12px;
 }
+/* Start where the sticky offset holds it: a stage whose row is no taller than
+   itself (Music with a short list) has no room to be pushed down, and would sit
+   10px higher than on the other menus. Below 1101px the stage is not sticky. */
+@media (min-width: 1101px) {
+    .menu-stage { margin-top: 10px; }
+}
 /* The bezel reuses .deck-display-bezel; here we just make it portrait to fit
    the upright Walker, and label it. */
 .menu-stage .deck-display-bezel {
@@ -1932,8 +1988,8 @@ dialog header button:hover { color: var(--text-primary); }
 .rhythm-deck.device-mounted .menu-stage-fallback { opacity: 0; }
 
 /* On narrow viewports the two columns no longer fit: the Walker shrinks and
-   rides above the content. It is never hidden — with no bezel to dock into,
-   scene.js falls back to the corner dock and floats the canvas over the menu. */
+   rides above the content at the left edge, where the Music rail puts it, so
+   every menu docks it at one rect. */
 @media (max-width: 1100px) {
     .menu-deck { grid-template-columns: 1fr; gap: 14px; }
     /* Card rows collapse with the deck: a half-width card in a single-column
@@ -1945,7 +2001,8 @@ dialog header button:hover { color: var(--text-primary); }
        the viewport minus ~237px of fixed chrome, and the 3/4 bezel would eat
        two thirds of it at 800x600. 22vh - 52px of width holds it near 30%. */
     .menu-stage .deck-display-bezel,
-    .menu-stage .deck-display-led { width: min(176px, 100%, 22vh - 52px); align-self: center; }
+    .menu-stage .deck-display-led { width: min(176px, 100%, 22vh - 52px); align-self: flex-start; }
+    .menu-stage-cap { text-align: left; }
 }
 
 /* Short windows: the scrolling body is barely 360px tall, so the VU strip and the
@@ -1973,10 +2030,11 @@ dialog header button:hover { color: var(--text-primary); }
 
 /* Two columns: the Walker is sized from the window height, not from the rail's
    width, so the readout under it — format choice and download action included —
-   ends inside the panel body in a 900px window with a three-line title. */
+   ends inside the panel body in a 900px window with a three-line title. Every
+   stage shares this size so the Walker never changes size between menus. */
 @media (min-width: 1101px) {
-    .deck-rail .deck-display-bezel,
-    .deck-rail .deck-display-led { width: min(100%, 24vh); align-self: center; }
+    .menu-stage .deck-display-bezel,
+    .menu-stage .deck-display-led { width: min(100%, 24vh); align-self: center; }
 }
 
 /* One column: the rail's Walker and readout sit side by side instead of stacked,
@@ -1991,10 +2049,12 @@ dialog header button:hover { color: var(--text-primary); }
         column-gap: 16px;
     }
     .music-cabinet .deck-rail .deck-readout { grid-column: 2; grid-row: 1 / -1; }
+    .music-cabinet .deck-rail .deck-display-bezel { align-self: start; }
 }
 
 /* Vertical roulette — a DDR song-list column */
 .deck-wheel-v {
+    position: relative;
     display: flex; flex-direction: column; gap: 9px;
     max-height: 648px; overflow-y: auto; overflow-x: hidden;
     scroll-snap-type: y proximity;
@@ -2003,6 +2063,16 @@ dialog header button:hover { color: var(--text-primary); }
 }
 .deck-wheel-v::-webkit-scrollbar { width: 6px; }
 .deck-wheel-v::-webkit-scrollbar-thumb { background: #2a3b5a; border-radius: 3px; }
+
+/* A sub-tab swap rolls the new list in vertically, like the menu drum. */
+#music-results { perspective: 1200px; }
+#music-results.roll-in-up > * { animation: results-roll-up 340ms var(--ease-relay) both; }
+#music-results.roll-in-down > * { animation: results-roll-down 340ms var(--ease-relay) both; }
+@keyframes results-roll-up { from { opacity: 0; transform: translateY(56px) rotateX(-22deg); } }
+@keyframes results-roll-down { from { opacity: 0; transform: translateY(-56px) rotateX(22deg); } }
+@media (prefers-reduced-motion: reduce) {
+    #music-results.roll-in-up > *, #music-results.roll-in-down > * { animation: none; }
+}
 
 /* Banner rows — art on the left, title/artist on the right (DDR list row) */
 .deck-banner-row {

@@ -57,3 +57,19 @@ async def test_graph_keeps_same_titled_albums_of_different_artists_apart(db, cli
     nodes = (await client.get("/api/library/graph")).json()["nodes"]
 
     assert sorted(n["artist"] for n in nodes) == ["Aphex Twin", "Queen"]
+
+
+@pytest.mark.asyncio
+async def test_tracks_list_in_album_artist_album_disc_track_order(db, client):
+    rows = [("B", "Zeta", 1, 1, "b1"), ("A", "RAM", 2, 1, "d2t1"), ("A", "RAM", 1, None, "unnumbered"),
+            ("A", "RAM", 1, 2, "d1t2"), ("A", "RAM", None, 1, "d1t1")]
+    async with db() as session:
+        for album_artist, album, disc, number, title in rows:
+            # The track artist sorts the other way round, so only album_artist can give this order.
+            session.add(Track(title=title, artist="Z" if album_artist == "A" else "A", album_artist=album_artist,
+                              album=album, disc_number=disc, track_number=number, status="done"))
+        await session.commit()
+
+    titles = [t["title"] for t in (await client.get("/api/library/tracks")).json()]
+
+    assert titles == ["d1t1", "d1t2", "unnumbered", "d2t1", "b1"]

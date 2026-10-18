@@ -18,9 +18,10 @@ HEADER_COOKIE = (
 
 
 @pytest.fixture
-def data_dir(tmp_path, monkeypatch):
+def data_dir(tmp_path, monkeypatch, isolated_paths):
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "cookie_file", None)
+    isolated_paths()
     return tmp_path
 
 

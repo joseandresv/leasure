@@ -22,9 +22,10 @@ SIGNED_OUT_COOKIES = [c for c in SIGNED_IN_COOKIES if c["name"] not in browser_s
 
 
 @pytest.fixture
-def data_dir(tmp_path, monkeypatch):
+def data_dir(tmp_path, monkeypatch, isolated_paths):
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "cookie_file", None)
+    isolated_paths()
     monkeypatch.setattr(yt, "HEADERS_PATH", tmp_path / "youtube_headers.json")
     return tmp_path
 

@@ -241,3 +241,72 @@ def test_a_missing_daily_counter_counts_as_no_downloads(tmp_path, monkeypatch):
     monkeypatch.setattr(yt_engine, "DAILY_COUNTER_FILE", tmp_path / "yt_daily.json")
 
     assert yt_engine.downloads_today() == 0
+
+
+async def test_a_dotted_title_keeps_its_whole_name(db, fake_ytdlp):
+    track_id = await _seed_track(db, title="Mr. Brightside", artist="The Killers", album="Hot Fuss", track_number=2)
+
+    path = await yt_engine.download(track_id)
+
+    assert path.name == "02 - Mr. Brightside.m4a"
+
+
+async def test_parts_with_dotted_titles_get_separate_files(db, fake_ytdlp):
+    first = await _seed_track(db, title="Suite Pt. 1", album="Parts", track_number=None, youtube_id="p1")
+    second = await _seed_track(db, title="Suite Pt. 2", album="Parts", track_number=None, youtube_id="p2")
+
+    paths = [await yt_engine.download(first), await yt_engine.download(second)]
+
+    assert [p.name for p in paths] == ["Suite Pt. 1.m4a", "Suite Pt. 2.m4a"]
+    assert all(p.exists() for p in paths)
+
+
+async def test_a_file_another_track_owns_is_never_overwritten(db, fake_ytdlp):
+    owner = await _seed_track(db, album="Clash", youtube_id="v1")
+    owned = await yt_engine.download(owner)
+    owned.write_bytes(b"the first download")
+    async with db() as session:
+        (await session.get(Track, owner)).file_path = str(owned)
+        await session.commit()
+    intruder = await _seed_track(db, album="Clash", youtube_id="v2")
+
+    with pytest.raises(yt_engine.DownloadFailed, match="already saved as '03 - Blue Monday.m4a'"):
+        await yt_engine.download(intruder)
+
+    assert owned.read_bytes() == b"the first download"
+
+
+async def test_an_album_refresh_during_the_download_files_it_under_the_new_number(db, fake_ytdlp, monkeypatch):
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+    track_id = await _seed_track(db, album="Refresh", track_number=None)
+    real_run = yt_engine.run_with_attempts
+
+    async def album_download_numbers_it():
+        async with db() as session:
+            (await session.get(Track, track_id)).track_number = 4
+            await session.commit()
+
+    def run_then_refresh(url, opts):
+        info = real_run(url, opts)
+        asyncio.run_coroutine_threadsafe(album_download_numbers_it(), loop).result(5)
+        return info
+
+    monkeypatch.setattr(yt_engine, "run_with_attempts", run_then_refresh)
+
+    path = await yt_engine.download(track_id)
+
+    assert path.name == "04 - Blue Monday.m4a" and path.exists()
+    assert not (path.parent / "Blue Monday.m4a").exists()
+
+
+async def test_recovery_requeues_pending_tracks_in_id_order(db):
+    from worker import DownloadWorker
+
+    ids = [await _seed_track(db, status="pending", youtube_id=f"r{i}") for i in range(4)]
+    worker = DownloadWorker()
+
+    await worker._recover_orphaned()
+
+    assert [worker.queue.get_nowait() for _ in ids] == ids

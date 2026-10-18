@@ -23,14 +23,45 @@ from httpx import ASGITransport, AsyncClient  # noqa: E402
 from sqlalchemy import delete  # noqa: E402
 
 
+def _inside(path: Path, root: Path) -> bool:
+    return Path(path).resolve().is_relative_to(root.resolve())
+
+
+def assert_isolated_paths(db_file: Path | None = None) -> None:
+    """Stop the run unless the settings dirs (and the database file) are temp paths outside the repo."""
+    from config import settings
+
+    temp = Path(tempfile.gettempdir())
+    paths = {name: getattr(settings, name) for name in ("data_dir", "library_dir", "download_dir")}
+    if db_file is not None:
+        paths["database"] = db_file
+    for name, path in paths.items():
+        allowed = _TMP if name == "database" else temp
+        if not _inside(path, allowed) or _inside(path, ROOT):
+            pytest.exit(f"Refusing to run: {name} is {Path(path).resolve()}, outside the test temp dir {allowed}. "
+                        "Tests empty the database and write under these dirs; run pytest from the repo root so "
+                        "tests/conftest.py sets DATA_DIR/LIBRARY_DIR/DOWNLOAD_DIR before config is imported.",
+                        returncode=2)
+
+
+@pytest.fixture(autouse=True)
+def isolated_paths():
+    """Checks every test's paths; fixtures that repoint settings call the returned guard again."""
+    assert_isolated_paths()
+    return assert_isolated_paths
+
+
 @pytest_asyncio.fixture
 async def db():
     """Fresh schema; tables are emptied after each test."""
-    from db import async_session, init_db
+    from db import async_session, engine, init_db
     from models import Playlist, PlaylistTrack, SyncHistory, Track
 
+    db_file = Path(engine.url.database)
+    assert_isolated_paths(db_file)
     await init_db()
     yield async_session
+    assert_isolated_paths(db_file)
     async with async_session() as session:
         for model in (PlaylistTrack, Playlist, SyncHistory, Track):
             await session.execute(delete(model))

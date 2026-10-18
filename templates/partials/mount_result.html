@@ -1,0 +1,4 @@
+{# POST /api/device/mount and /api/device/eject. Context: status, message, letter, manual ({powershell, terminal} or None). #}
+{% from "macros/components.html" import mount_message, manual_mount %}
+{{ mount_message(status, message, letter) }}
+{% if manual %}{{ manual_mount(manual) }}{% endif %}

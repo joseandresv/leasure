@@ -177,8 +177,11 @@ def get_playlist_tracks(playlist_id: str, limit: int = 500) -> dict | None:
         return None
     try:
         playlist = yt.get_playlist(playlist_id, limit=limit)
+        entries = playlist.get("tracks", [])
+        # OLAK5uy_ playlists are YouTube Music's album playlists: position is the track number.
+        is_album = playlist_id.startswith("OLAK5uy_")
         tracks = []
-        for t in playlist.get("tracks", []):
+        for position, t in enumerate(entries, 1):
             if not t.get("videoId"):
                 continue
             tracks.append({
@@ -186,9 +189,12 @@ def get_playlist_tracks(playlist_id: str, limit: int = 500) -> dict | None:
                 "name": t["title"],
                 "artist": ", ".join(a["name"] for a in t.get("artists", []) if a.get("name")),
                 "album": t.get("album", {}).get("name") if t.get("album") else None,
+                "album_id": (t.get("album") or {}).get("id"),
                 "album_artist": first_artist(t.get("artists")),
                 "duration_ms": _parse_duration(t.get("duration", "")),
                 "image_url": t["thumbnails"][-1]["url"] if t.get("thumbnails") else None,
+                "track_number": position if is_album else None,
+                "total_tracks": len(entries) if is_album else None,
             })
         return {
             "playlist": {
@@ -482,8 +488,9 @@ def get_library_albums(limit: int = 50) -> list[dict] | None:
         return None
 
 
-def get_album_tracks(browse_id: str) -> dict | None:
-    yt = get_client()
+def get_album_tracks(browse_id: str, client=None) -> dict | None:
+    """`client` lets a caller without saved headers browse with an anonymous YTMusic()."""
+    yt = client or get_client()
     if not yt:
         return None
     try:
@@ -491,12 +498,12 @@ def get_album_tracks(browse_id: str) -> dict | None:
         album_artist = ", ".join(a["name"] for a in album.get("artists") or [] if a.get("name"))
         year = _year(album.get("year"))
         tracks = []
-        for t in album.get("tracks", []):
+        for position, t in enumerate(album.get("tracks", []), 1):
             tracks.append({
                 "id": t.get("videoId"),
                 "name": t["title"],
                 "artist": ", ".join(a["name"] for a in t.get("artists", []) if a.get("name")),
-                "track_number": t.get("trackNumber") or t.get("index"),
+                "track_number": t.get("trackNumber") or position,
                 "duration_ms": _parse_duration(t.get("duration", "")),
                 "album_artist": album_artist or first_artist(t.get("artists")),
                 "year": year,

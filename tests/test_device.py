@@ -1,8 +1,10 @@
 from pathlib import Path
 
+import pytest
+
 import services.device as device_mod
 from config import settings
-from services.device import build_device_path, is_system_volume, resolve_sync_target, sanitize_filename
+from services.device import build_device_path, is_system_volume, resolve_sync_target, sanitize_filename, track_prefix
 
 
 def test_sanitize_strips_fat32_forbidden_and_control_chars():
@@ -93,6 +95,30 @@ def test_library_stem_matches_the_device_path_for_the_same_row(monkeypatch, tmp_
     monkeypatch.setattr(settings, "library_dir", tmp_path)
     row = ("Calvin Harris, Rihanna", "18 Months", "We Found Love", 4)
     for album_artist in (None, "Calvin Harris, Rihanna", "Calvin Harris"):
-        stem = _library_stem(*row, album_artist)
-        rel = build_device_path(row[0], row[1], row[3], row[2], "mp3", album_artist)
-        assert f"{stem.relative_to(tmp_path).as_posix()}.mp3" == rel
+        for disc_number, total_discs in ((None, None), (1, 1), (2, 2), (1, 2)):
+            stem = _library_stem(*row, album_artist, disc_number, total_discs)
+            rel = build_device_path(row[0], row[1], row[3], row[2], "mp3", album_artist, disc_number, total_discs)
+            assert f"{stem.relative_to(tmp_path).as_posix()}.mp3" == rel
+
+
+@pytest.mark.parametrize(("args", "prefix"), [
+    ((None,), ""),
+    ((3,), "03 - "),
+    ((3, 1, 1), "03 - "),
+    ((3, 1, 2), "1-03 - "),
+    ((1, 2, 2), "2-01 - "),
+    ((1, 2, None), "2-01 - "),
+])
+def test_track_prefix(args, prefix):
+    assert track_prefix(*args) == prefix
+
+
+def test_a_two_disc_album_sorts_disc_one_before_disc_two():
+    tracks = [(2, 1), (1, 3), (2, 2), (1, 1), (1, 2)]
+    paths = [build_device_path("Daft Punk", "RAM", n, f"Song {d}{n}", "mp3", disc_number=d, total_discs=2)
+             for d, n in tracks]
+
+    names = [p.rsplit("/", 1)[1] for p in sorted(paths)]
+
+    assert names == ["1-01 - Song 11.mp3", "1-02 - Song 12.mp3", "1-03 - Song 13.mp3",
+                     "2-01 - Song 21.mp3", "2-02 - Song 22.mp3"]

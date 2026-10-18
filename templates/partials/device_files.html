@@ -1,20 +1,20 @@
 {% if playlists %}
 <div style="margin-bottom: var(--space-md);">
-    <strong>{{ playlists | length }}</strong> playlists on device
+    <strong>{{ playlists | length }}</strong> playlist{{ "s" if playlists | length != 1 }} on device
 </div>
 {% for pl in playlists %}
-<span class="badge badge-mp3" style="margin-right: 0.3rem; margin-bottom: 0.3rem;">{{ pl }}</span>
+<span class="badge badge-mp3 device-playlist" title="{{ pl }}">{{ pl }}</span>
 {% endfor %}
 <hr>
 {% endif %}
 
 {% if artists %}
 <div style="margin-bottom: var(--space-md);">
-    <strong>{{ total_tracks }}</strong> tracks &middot; <strong>{{ artists | length }}</strong> artists
+    <strong>{{ total_tracks }}</strong> track{{ "s" if total_tracks != 1 }} &middot; <strong>{{ artists | length }}</strong> artist{{ "s" if artists | length != 1 }}
 </div>
 {% for artist_name, albums in artists.items() %}
 <details{% if loop.index <= 3 %} open{% endif %}>
-    <summary><strong>{{ artist_name }}</strong> ({{ albums | sum(attribute='tracks') }} tracks)</summary>
+    <summary><strong class="device-artist" title="{{ artist_name }}">{{ artist_name }}</strong> {% set n = albums | sum(attribute='tracks') %}<span class="device-artist-count">({{ n }} track{{ "s" if n != 1 }})</span></summary>
     {% for album in albums %}
     <div style="margin-left: var(--space-md); margin-bottom: var(--space-sm);">
         <strong>{{ album.name }}</strong>

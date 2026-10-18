@@ -37,6 +37,8 @@ def generate_m3u(playlist_name: str, tracks: list[dict], device_root: Path) -> P
             track["title"],
             ext,
             album_artist=track.get("album_artist"),
+            disc_number=track.get("disc_number"),
+            total_discs=track.get("total_discs"),
         )
         lines.append(rel_path)
 

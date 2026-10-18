@@ -18,15 +18,15 @@
     const THREE = window.THREE;
     let scene, camera, glRenderer, device, screenMat, keyLight;
 
+    // A drum, not a ring: faces 30deg apart on R=900 (chord 2*900*sin15 = 466px >= 420px
+    // per scaled face), so menus roll in rail order and never wrap.
     const RADIUS = 900;
-    const ANGLE_STEP = 360 / PANEL_NAMES.length;
+    const ANGLE_STEP = 30;
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const faceTransform = i => `rotateX(${-ANGLE_STEP * i}deg) translateZ(${RADIUS}px) scale(0.5)`;
 
-    // The HiFi Walker is a persistent hero: it lives in the Deck's album-cover slot
-    // while Music is active, and docks to the top-left corner on every other tab.
-    // Each tab rotates it to a distinct face so its pose reflects where you are.
-    // The Walker is now a centerpiece on every menu, so it always faces forward
-    // enough to keep its screen visible — each tab just gets a distinct lean so
-    // its pose still reflects where you are.
+    // The Walker holds one dock on every menu; each tab only gives it a distinct
+    // lean, kept small enough that its screen stays visible.
     const PANEL_FACE = {
         home:      { ry: 0.00,  rx: 0.00 },
         music:     { ry: -0.30, rx: 0.05 },
@@ -77,8 +77,7 @@
             panel.inert = true;
             panel.appendChild(template.content.cloneNode(true));
 
-            const angle = ANGLE_STEP * i;
-            panel.style.transform = `rotateY(${angle}deg) translateZ(${RADIUS}px) scale(0.5)`;
+            panel.style.transform = faceTransform(i);
 
             ring.appendChild(panel);
         });
@@ -125,6 +124,7 @@
 
         // Re-process HTMX
         if (window.htmx) htmx.process(panel);
+        document.body.dispatchEvent(new CustomEvent('leasure:panel-shown', { detail: { name } }));
 
         // Now that the panel is in its final 2D position, anchor the device to its slot
         placeDevice();
@@ -145,14 +145,12 @@
         // Move panel back to 3D ring
         ring.appendChild(panel);
 
-        // Restore 3D transform
-        const angle = ANGLE_STEP * idx;
         panel.style.position = 'absolute';
         // Clear the pop-out centering so the stylesheet's --panel-w/--panel-h
         // offsets take over again — the panel size is viewport-relative.
         panel.style.left = '';
         panel.style.top = '';
-        panel.style.transform = `rotateY(${angle}deg) translateZ(${RADIUS}px) scale(0.5)`;
+        panel.style.transform = faceTransform(idx);
         panel.style.pointerEvents = 'none';
     }
 
@@ -168,7 +166,12 @@
         camera.position.set(0, 6, 200);
         camera.lookAt(0, 6, 0);  // favor the enlarged album screen
 
-        glRenderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+        try {
+            glRenderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+        } catch (e) {
+            // No WebGL (no GPU, remote desktop): the bezels keep their flat fallback.
+            return;
+        }
         glRenderer.setSize(canvas.clientWidth, canvas.clientHeight);
         glRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
         glRenderer.setClearColor(0x000000, 0);
@@ -210,10 +213,10 @@
         led.position.set(25, 47, 7.4); device.add(led);
         scene.add(device);
 
-        window.addEventListener('resize', () => { placeDevice(); resizeRenderer(); });
+        window.addEventListener('resize', () => { placeDevice(true); resizeRenderer(); });
     }
 
-    /* ─── Device placement: Deck hero ⇄ corner dock ─── */
+    /* ─── Device placement: dock into the active bezel ─── */
 
     function resizeRenderer() {
         const canvas = document.getElementById('device-canvas');
@@ -273,70 +276,39 @@
         canvas.style.webkitMaskImage = fade;
     }
 
+    const near = (a, b) => a && b &&
+        Math.abs(a.left - b.left) < 1 && Math.abs(a.top - b.top) < 1 &&
+        Math.abs(a.width - b.width) < 1 && Math.abs(a.height - b.height) < 1;
+
+    // The Walker docks into the active panel's .device-dock. Mid-roll, or with no
+    // measurable bezel, it holds its last dock: there is no fallback position.
     function placeDevice(instant) {
         const canvas = document.getElementById('device-canvas');
-        if (!canvas) return;
+        if (!canvas || !glRenderer || !panelPopped) return;
+        const panel = document.getElementById('panel-' + activePanel);
+        const slotEl = panel && panel.querySelector('.device-dock');
+        const r = slotEl && slotEl.getBoundingClientRect();
+        if (!r || r.width <= 20 || r.height <= 20) return;
 
-        // The Walker docks into the ACTIVE panel's stage bezel (.device-dock) — the
-        // Deck's album slot on Music, the menu-stage bezel on every other menu.
-        let slotRect = null, slotEl = null;
-        if (panelPopped) {
-            const panel = document.getElementById('panel-' + activePanel);
-            if (panel) {
-                slotEl = panel.querySelector('.device-dock');
-                if (slotEl) {
-                    const r = slotEl.getBoundingClientRect();
-                    if (r.width > 20 && r.height > 20) slotRect = r;
-                }
-            }
-        }
-
-        // The stage bezel sits at the same screen position on every menu, so when
-        // the new dock rect matches the last one we skip the glide entirely — the
-        // Walker simply stays put as you move between menus.
-        const near = (a, b) => a && b &&
-            Math.abs(a.left - b.left) < 2 && Math.abs(a.top - b.top) < 2 &&
-            Math.abs(a.width - b.width) < 2 && Math.abs(a.height - b.height) < 2;
-        const still = slotRect && near(slotRect, lastDock);
-        canvas.style.transition = (still || instant) ? 'none'
-            : 'top 500ms cubic-bezier(.2,.7,.3,1), left 500ms cubic-bezier(.2,.7,.3,1), width 500ms cubic-bezier(.2,.7,.3,1), height 500ms cubic-bezier(.2,.7,.3,1), opacity 500ms ease';
+        const glide = !instant && !reducedMotion.matches && lastDock && !near(r, lastDock);
+        const t = '200ms var(--ease-relay)';
+        canvas.style.transition = glide ? `top ${t}, left ${t}, width ${t}, height ${t}` : 'none';
         canvas.style.bottom = 'auto';
         canvas.style.transform = 'none';
         canvas.style.zIndex = '15';  // in front of panels (overlay is z-index 10)
-
-        // Clear any previous mounted host (deck or menu-stage)
-        document.querySelectorAll('.device-mounted').forEach(e => e.classList.remove('device-mounted'));
-
-        if (slotRect) {
-            // Dock into the stage bezel — fill it and flag the host as mounted so
-            // the flat backdrop/fallback gives way to the floating 3D Walker.
-            canvas.style.left = slotRect.left + 'px';
-            canvas.style.top = slotRect.top + 'px';
-            canvas.style.width = slotRect.width + 'px';
-            canvas.style.height = slotRect.height + 'px';
-            canvas.style.opacity = '1';
-            lastDock = { left: slotRect.left, top: slotRect.top, width: slotRect.width, height: slotRect.height };
-            clipToScroller(canvas, slotRect, slotEl);
-            const host = slotEl.closest('.rhythm-deck') || slotEl.closest('.menu-stage') || slotEl;
+        canvas.style.left = r.left + 'px';
+        canvas.style.top = r.top + 'px';
+        canvas.style.width = r.width + 'px';
+        canvas.style.height = r.height + 'px';
+        canvas.style.opacity = '1';
+        lastDock = { left: r.left, top: r.top, width: r.width, height: r.height };
+        clipToScroller(canvas, r, slotEl);
+        // Every bezel shows mounted glass, so faces rolling past the fixed Walker
+        // never flash the flat fallback.
+        document.querySelectorAll('.device-dock').forEach(d => {
+            const host = d.closest('.rhythm-deck') || d.closest('.menu-stage');
             if (host) host.classList.add('device-mounted');
-        } else if (activePanel === 'music') {
-            unclipDevice(canvas);
-            // Music sub-tabs (Albums/Playlists/Artists) have no bezel — big hero dock.
-            const h = 300, w = 216;
-            canvas.style.left = '32px';
-            canvas.style.top = Math.max(72, Math.round(window.innerHeight / 2 - h / 2)) + 'px';
-            canvas.style.width = w + 'px';
-            canvas.style.height = h + 'px';
-            canvas.style.opacity = '1';
-        } else {
-            unclipDevice(canvas);
-            // Fallback corner dock (e.g. before a panel's stage has laid out)
-            canvas.style.left = '28px';
-            canvas.style.top = '28px';
-            canvas.style.width = '168px';
-            canvas.style.height = '232px';
-            canvas.style.opacity = '0.96';
-        }
+        });
         resizeRenderer();
     }
 
@@ -355,48 +327,36 @@
         const idx = PANEL_NAMES.indexOf(name);
         if (idx < 0) return;
 
-        // Pop current active panel back into 3D ring
+        // Every menu leaves at its top, so every face of the drum carries its bezel
+        // at the one dock rect and the Walker holds still for the whole roll.
         if (panelPopped) {
+            const body = document.querySelector(`#panel-${activePanel} > .menu-deck, #panel-${activePanel} > .rhythm-deck`);
+            if (body && body.scrollTop) { body.scrollTop = 0; placeDevice(true); }
             popInPanel(activePanel);
         }
 
         activePanel = name;
         isRotating = true;
-        targetAngle = -ANGLE_STEP * idx;
+        targetAngle = ANGLE_STEP * idx;
 
-        // Rotate the device to this tab's face, and start it flying to its new home
         const face = PANEL_FACE[name] || PANEL_FACE.home;
         targetRY = face.ry;
         targetRX = face.rx;
-        placeDevice();
 
         // Update nav buttons
         document.querySelectorAll('.nav-sphere-btn').forEach(btn => {
             btn.classList.toggle('active', btn.dataset.panel === name);
         });
 
-        // Show the active panel; neighbours flank it faintly for the carousel depth.
-        PANEL_NAMES.forEach((n, i) => {
+        PANEL_NAMES.forEach(n => {
             const el = document.getElementById('panel-' + n);
             if (!el) return;
             el.style.pointerEvents = 'none';
             el.inert = n !== name;
-            if (n === name) {
-                el.style.opacity = '1';
-                el.style.visibility = 'visible';
-            } else {
-                const dist = Math.min(Math.abs(i - idx), PANEL_NAMES.length - Math.abs(i - idx));
-                if (dist === 1) {
-                    el.style.opacity = '0.12';
-                    el.style.visibility = 'visible';
-                } else {
-                    el.style.opacity = '0';
-                    el.style.visibility = 'hidden';
-                }
-            }
         });
 
-        if (instant) {
+        if (instant || reducedMotion.matches) {
+            angleVel = 0;
             currentAngle = targetAngle;
             applyRotation();
             isRotating = false;
@@ -406,7 +366,17 @@
 
     function applyRotation() {
         const ring = document.getElementById('carousel-ring');
-        if (ring) ring.style.transform = `rotateY(${currentAngle}deg)`;
+        if (!ring) return;
+        ring.style.transform = `rotateX(${currentAngle}deg)`;
+        // The arriving face brightens as it rolls to the front; neighbours keep a faint ghost.
+        PANEL_NAMES.forEach((n, i) => {
+            const el = document.getElementById('panel-' + n);
+            if (!el || el.parentElement !== ring) return;
+            const d = Math.abs(currentAngle - ANGLE_STEP * i) / ANGLE_STEP;
+            const o = d < 1 ? 1 - 0.88 * d : Math.max(0, 0.12 * (2 - d));
+            el.style.opacity = o.toFixed(3);
+            el.style.visibility = o > 0 ? 'visible' : 'hidden';
+        });
     }
 
     /* ─── Animation Loop ─── */
@@ -437,9 +407,11 @@
         if (device) {
             tick++;
             // Ease toward the current tab's face, plus a gentle idle drift so it feels alive
-            const idle = Math.sin(tick * 0.012) * 0.06;
-            device.rotation.y += ((targetRY + idle) - device.rotation.y) * 0.08;
-            device.rotation.x += (targetRX - device.rotation.x) * 0.08;
+            const still = reducedMotion.matches;
+            const idle = still ? 0 : Math.sin(tick * 0.012) * 0.06;
+            const ease = still ? 1 : 0.08;
+            device.rotation.y += ((targetRY + idle) - device.rotation.y) * ease;
+            device.rotation.x += (targetRX - device.rotation.x) * ease;
         }
 
         // Keep the WebGL buffer matched to the canvas as it flies/resizes between slots

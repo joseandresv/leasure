@@ -344,3 +344,23 @@
 {%- set parts = path.split('/') -%}
 <code class="code-uri">{{ head }}{{ sep }}{{ parts[0] }}{%- for seg in parts[1:] %}<wbr>/{{ seg }}{% endfor -%}</code>
 {%- endmacro %}
+
+{# One mount/eject outcome. data-mount-status is what leasure.js reads after an eject. #}
+{% macro mount_message(status, message, letter="") %}
+{%- set colors = {"mounted": "--color-success", "already": "--color-success", "unmounted": "--color-success",
+                  "no_media": "--color-warning", "no_drive": "--color-warning", "needs_manual": "--color-warning",
+                  "busy": "--color-warning", "busy_sync": "--color-warning", "stale": "--color-warning",
+                  "not_mounted": "--color-warning",
+                  "error": "--color-error", "refused": "--color-error"} -%}
+<p class="mount-message" data-mount-status="{{ status }}"{% if letter %} data-mount-letter="{{ letter }}"{% endif %} style="color:var({{ colors.get(status, '--text-secondary') }});">{{ message }}</p>
+{%- endmacro %}
+
+{# The two commands that mount the card when Leasure cannot get root itself. #}
+{% macro manual_mount(manual) %}
+<div class="manual-mount">
+    <small>In Windows PowerShell:</small>
+    <code class="manual-cmd" style="display:block;user-select:all">{{ manual.powershell }}</code>
+    <small>Or in a WSL terminal (asks for your password):</small>
+    <code class="manual-cmd" style="display:block;user-select:all">{{ manual.terminal }}</code>
+</div>
+{%- endmacro %}

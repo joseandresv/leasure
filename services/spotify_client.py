@@ -139,8 +139,9 @@ def get_saved_albums(limit: int = 20, offset: int = 0) -> dict | None:
     }
 
 
-def get_album_tracks(album_id: str) -> dict | None:
-    sp = get_client()
+def get_album_tracks(album_id: str, client: spotipy.Spotify | None = None) -> dict | None:
+    """`client` lets a caller use a session with its own retry policy."""
+    sp = client or get_client()
     if not sp:
         return None
     album = sp.album(album_id)

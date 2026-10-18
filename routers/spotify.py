@@ -14,7 +14,7 @@ from models import Playlist, PlaylistTrack, Track
 from services import oauth_state
 from services import spotify_client as sp
 from services.formats import resolve_format
-from services.tracks import optional_int, upsert_track
+from services.tracks import optional_int, refresh_album_track, upsert_track
 from worker import download_worker
 
 logger = logging.getLogger(__name__)
@@ -382,30 +382,29 @@ async def download_album(
         result = await session.execute(stmt)
         existing = result.scalar_one_or_none()
 
+        data = {
+            "spotify_uri": t["uri"],
+            "isrc": t.get("isrc"),
+            "title": t["name"],
+            "artist": t["artist"],
+            "album": album["name"],
+            "album_artist": album.get("album_artist") or album["artist"],
+            "genre": album_genre,
+            "track_number": t["track_number"],
+            "disc_number": t.get("disc_number"),
+            "total_tracks": album.get("total_tracks"),
+            "total_discs": album.get("total_discs"),
+            "duration_ms": t["duration_ms"],
+            "year": sp.release_year(album.get("release_date")),
+            "artwork_url": album["image_url"],
+        }
         if existing and existing.status in ("done", "pending", "downloading"):
-            queued.append({"track_id": existing.id, "status": existing.status})
+            stale = await refresh_album_track(session, existing, data)
+            queued.append({"track_id": existing.id, "status": existing.status, "stale_device_path": stale})
             continue
 
-        track = await upsert_track(
-            session,
-            {
-                "spotify_uri": t["uri"],
-                "isrc": t.get("isrc"),
-                "title": t["name"],
-                "artist": t["artist"],
-                "album": album["name"],
-                "album_artist": album.get("album_artist") or album["artist"],
-                "genre": album_genre,
-                "track_number": t["track_number"],
-                "disc_number": t.get("disc_number"),
-                "total_tracks": album.get("total_tracks"),
-                "total_discs": album.get("total_discs"),
-                "duration_ms": t["duration_ms"],
-                "year": sp.release_year(album.get("release_date")),
-                "artwork_url": album["image_url"],
-            },
-            quality=quality, container=container, source="spotify", existing=existing,
-        )
+        track = await upsert_track(session, data, quality=quality, container=container, source="spotify",
+                                   existing=existing)
 
         await download_worker.enqueue(track.id)
         queued.append({"track_id": track.id, "status": "queued"})

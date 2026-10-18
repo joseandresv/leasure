@@ -11,6 +11,34 @@
 (function () {
     'use strict';
 
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const REVEAL_MARGIN = 12;
+
+    // Scroll the wheel only: scrollIntoView also scrolls the panel body and drags
+    // the docked Walker with it.
+    function centerInWheel(wheel, banner, smooth) {
+        wheel.scrollTo({
+            top: banner.offsetTop - (wheel.clientHeight - banner.offsetHeight) / 2,
+            behavior: smooth && !reducedMotion.matches ? 'smooth' : 'auto',
+        });
+    }
+
+    // The wheel can be taller than the visible part of the deck, and near either end
+    // it cannot centre the selection, so scroll the deck just enough to show it.
+    function revealInDeck(deck, wheel, banner) {
+        const maxTop = wheel.scrollHeight - wheel.clientHeight;
+        const wheelTop = Math.max(0, Math.min(maxTop, banner.offsetTop - (wheel.clientHeight - banner.offsetHeight) / 2));
+        const top = wheel.getBoundingClientRect().top + banner.offsetTop - wheelTop;
+        const bottom = top + banner.offsetHeight;
+        const view = deck.getBoundingClientRect();
+        const viewTop = Math.max(view.top, 0) + REVEAL_MARGIN;
+        const viewBottom = Math.min(view.bottom, window.innerHeight) - REVEAL_MARGIN;
+        let delta = 0;
+        if (bottom > viewBottom) delta = bottom - viewBottom;
+        else if (top < viewTop) delta = top - viewTop;
+        if (delta) deck.scrollBy({ top: delta, behavior: reducedMotion.matches ? 'auto' : 'smooth' });
+    }
+
     function setText(deck, sel, txt) {
         const val = (txt && txt.length) ? txt : '—';
         deck.querySelectorAll(sel).forEach((el) => { el.textContent = val; });
@@ -86,6 +114,18 @@
         }
     }
 
+    // The deck outlives every wheel swapped into it, so it gets one key listener that
+    // steps whichever wheel bound last.
+    function bindDeckKeys(deck) {
+        if (deck.dataset.deckKeysBound) return;
+        deck.dataset.deckKeysBound = '1';
+        deck.addEventListener('keydown', (e) => {
+            if (!deck.deckStep) return;
+            if (e.key === 'ArrowDown' || e.key === 'ArrowRight') { deck.deckStep(1); e.preventDefault(); }
+            else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') { deck.deckStep(-1); e.preventDefault(); }
+        });
+    }
+
     function bindWheel(wheel) {
         if (!wheel || wheel.dataset.deckBound) return;
         const deck = wheel.closest('.rhythm-deck');
@@ -100,9 +140,12 @@
             i = Math.max(0, Math.min(banners.length - 1, i));
             if (i === current) return;
             current = i;
-            banners.forEach((b, j) => b.classList.toggle('is-center', j === i));
+            banners.forEach((b, j) => {
+                b.classList.toggle('is-center', j === i);
+                b.setAttribute('aria-selected', j === i ? 'true' : 'false');
+            });
             updateDisplay(deck, banners[i]);
-            if (scroll) banners[i].scrollIntoView({ behavior: 'smooth', block: 'center' });
+            if (scroll) centerInWheel(wheel, banners[i], true);
         }
 
         function nearestToCenter() {
@@ -129,13 +172,19 @@
             select(j, true);
         }));
 
-        deck.addEventListener('keydown', (e) => {
-            if (e.key === 'ArrowDown' || e.key === 'ArrowRight') { select(current + 1, true); e.preventDefault(); }
-            else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') { select(current - 1, true); e.preventDefault(); }
-        });
+        // Focus follows the selection so the ring never stays on a banner left behind;
+        // the wheel does its own scrolling, so focusing must not scroll the panel.
+        deck.deckStep = (delta) => {
+            if (!wheel.isConnected) return;
+            const hadFocus = banners.includes(document.activeElement);
+            select(current + delta, true);
+            revealInDeck(deck, wheel, banners[current]);
+            if (hadFocus) banners[current].focus({ preventScroll: true });
+        };
+        bindDeckKeys(deck);
 
         select(0, false);
-        requestAnimationFrame(() => { if (banners[0]) banners[0].scrollIntoView({ block: 'center' }); });
+        requestAnimationFrame(() => centerInWheel(wheel, banners[0], false));
     }
 
     function initDeck(root) {
@@ -143,6 +192,27 @@
         if (root && root.classList && root.classList.contains('deck-wheel')) bindWheel(root);
         scope.querySelectorAll('.deck-wheel').forEach(bindWheel);
     }
+
+    // A sub-tab swap rolls the new list in: a tab to the right enters from below,
+    // one to the left from above.
+    let lastTabIndex = 0;
+    document.addEventListener('htmx:afterSwap', (e) => {
+        const target = e.detail.target;
+        const elt = e.detail.requestConfig && e.detail.requestConfig.elt;
+        const nav = elt && elt.closest && elt.closest('.tab-nav');
+        if (!target || target.id !== 'music-results' || !nav) return;
+        const i = Array.from(nav.querySelectorAll('button')).indexOf(elt);
+        const dir = i >= lastTabIndex ? 'up' : 'down';
+        lastTabIndex = i;
+        if (reducedMotion.matches) return;
+        target.classList.remove('roll-in-up', 'roll-in-down');
+        void target.offsetWidth;  // restart the animation on a repeat click
+        target.classList.add('roll-in-' + dir);
+    });
+    document.addEventListener('animationend', (e) => {
+        const p = e.target.parentElement;
+        if (p && p.id === 'music-results') p.classList.remove('roll-in-up', 'roll-in-down');
+    });
 
     document.addEventListener('htmx:afterSettle', (e) => initDeck(e.detail.target));
     document.addEventListener('DOMContentLoaded', () => initDeck());

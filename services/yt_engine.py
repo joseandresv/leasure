@@ -7,15 +7,17 @@ import logging
 import os
 import re
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from difflib import SequenceMatcher
 from pathlib import Path
 
+from sqlalchemy import select
+
 from config import settings
 from db import async_session
 from models import Track
-from services.device import artist_folder, sanitize_filename
+from services.device import artist_folder, sanitize_filename, track_prefix
 from services.ytdlp_opts import CookieSessionRefused, run_with_attempts
 
 logger = logging.getLogger(__name__)
@@ -187,12 +189,24 @@ def record_daily_download() -> int:
 
 
 def _library_stem(artist: str, album: str, title: str, track_number: int | None,
-                  album_artist: str | None = None) -> Path:
+                  album_artist: str | None = None, disc_number: int | None = None,
+                  total_discs: int | None = None) -> Path:
     """Library layout mirrors the card layout (same artist folder rule), so a synced
     file lands at the same relative path it has locally."""
-    prefix = f"{track_number:02d} - " if track_number else ""
+    prefix = track_prefix(track_number, disc_number, total_discs)
     return (settings.library_dir / artist_folder(artist, album_artist) / sanitize_filename(album)
             / sanitize_filename(f"{prefix}{title}"))
+
+
+def _track_stem(track: Track) -> Path:
+    return _library_stem(track.artist or "Unknown", track.album or "Unknown", track.title or "Unknown",
+                         track.track_number, track.album_artist, track.disc_number, track.total_discs)
+
+
+def with_audio_suffix(stem: Path, suffix: str) -> Path:
+    """`stem` plus an extension. Not with_suffix(): titles like "Mr. Brightside" have a dot
+    that with_suffix() would treat as the extension and cut off."""
+    return stem.parent / f"{stem.name}{suffix}"
 
 
 def _build_opts(staging_dir: Path, to_mp3: bool) -> dict:
@@ -265,7 +279,8 @@ def _move_into_library(staged: Path, dest: Path) -> None:
             os.fsync(handle.fileno())
 
 
-def _download_to_library(url: str, staging_dir: Path, stem: Path, to_mp3: bool, duration_ms: int) -> DownloadResult:
+def _download_to_library(url: str, staging_dir: Path, stem: Path, to_mp3: bool, duration_ms: int,
+                         taken: frozenset[str] = frozenset()) -> DownloadResult:
     staging_dir.mkdir(parents=True, exist_ok=True)
     try:
         try:
@@ -284,7 +299,10 @@ def _download_to_library(url: str, staging_dir: Path, stem: Path, to_mp3: bool, 
         abr = _field(chosen, info, "abr")
         note = _field(chosen, info, "format_note") or ""
         bitrate = int(_bitrate_tier(abr)) if abr else None
-        dest = stem.with_suffix(staged.suffix)
+        dest = with_audio_suffix(stem, staged.suffix)
+        if str(dest) in taken and dest.exists():
+            raise DownloadFailed(f"Another track in the library is already saved as '{dest.name}' in "
+                                 f"'{dest.parent.name}'. Remove the duplicate, then retry.")
         _move_into_library(staged, dest)
         return DownloadResult(
             path=dest,
@@ -340,6 +358,30 @@ async def _record_provenance(track_id: int, result: DownloadResult, engine: str,
         await session.commit()
 
 
+async def _files_of_other_tracks(track_id: int, stem: Path) -> frozenset[str]:
+    """Library files other rows own at `stem` plus any extension."""
+    async with async_session() as session:
+        paths = await session.scalars(
+            select(Track.file_path).where(Track.id != track_id,
+                                          Track.file_path.startswith(f"{stem}.", autoescape=True)))
+        return frozenset(paths)
+
+
+async def _follow_album_refresh(track_id: int, stem: Path, result: DownloadResult) -> DownloadResult:
+    """An album download may have renumbered the row while it was downloading: file the
+    audio under the stem the row has now (before tagging writes the sidecars)."""
+    async with async_session() as session:
+        track = await session.get(Track, track_id)
+        current = _track_stem(track) if track else stem
+    if current == stem:
+        return result
+    from services.tracks import relocate_library_file
+
+    moved = await asyncio.to_thread(relocate_library_file, result.path, current,
+                                    await _files_of_other_tracks(track_id, current))
+    return replace(result, path=moved or result.path)
+
+
 async def download(track_id: int) -> Path:
     """Download a track from YouTube Music, tag it, and record what was actually fetched."""
     async with async_session() as session:
@@ -350,10 +392,8 @@ async def download(track_id: int) -> Path:
         quality = track.quality or "mp3_320"
         title = track.title or "Unknown"
         artist = track.artist or "Unknown"
-        album = track.album or "Unknown"
-        album_artist = track.album_artist
-        track_number = track.track_number
         duration_ms = track.duration_ms or 0
+        stem = _track_stem(track)
 
     match: tuple[Candidate, float] | None = None
     if youtube_id:
@@ -366,10 +406,12 @@ async def download(track_id: int) -> Path:
         _download_to_library,
         f"https://music.youtube.com/watch?v={video_id}",
         settings.download_dir / str(track_id),
-        _library_stem(artist, album, title, track_number, album_artist),
+        stem,
         quality != "native",
         duration_ms,
+        await _files_of_other_tracks(track_id, stem),
     )
+    result = await _follow_album_refresh(track_id, stem, result)
 
     from services.tagger import apply_full_metadata
 

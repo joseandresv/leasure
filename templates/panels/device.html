@@ -10,41 +10,53 @@
 <div class="grid">
     <article>
         <header>
-            Detected Drives
+            <span class="header-title">Detected Drives</span>
+            {% if platform == "wsl2" %}
+            <button class="outline" id="device-scan" data-automount
+                    hx-post="/api/device/automount" hx-trigger="click[!leasureJustEjected()]"
+                    hx-target="#device-list" hx-swap="innerHTML">
+                Scan
+            </button>
+            {% else %}
             <button class="outline"
                     hx-get="/api/device/detect/html" hx-target="#device-list" hx-swap="innerHTML">
                 Scan
             </button>
+            {% endif %}
         </header>
+        {% if platform == "wsl2" %}
+        {# Automount is a root mount, so it waits until the Device page is actually opened. #}
+        <div hx-post="/api/device/automount" hx-trigger="leasure:panel-shown[detail.name=='device' && !leasureJustEjected()] from:body"
+             hx-swap="innerHTML" id="device-list" data-automount>
+            <p style="color: var(--text-muted);">Looking for the card...</p>
+        </div>
+        {# Mount and eject announce leasure:drives-changed; rescan without mounting again.
+           Automount's own announcement is skipped: its response already is the new list.
+           After an eject, opening the page or Scan rescans here instead of mounting the card again. #}
+        <div hidden hx-get="/api/device/detect/html" hx-target="#device-list" hx-swap="innerHTML"
+             hx-trigger="leasure:drives-changed[!target.hasAttribute('data-automount')] from:body,
+                         leasure:panel-shown[detail.name=='device' && leasureJustEjected()] from:body,
+                         click[leasureJustEjected()] from:#device-scan"></div>
+        {% else %}
         <div hx-get="/api/device/detect/html" hx-trigger="load" hx-swap="innerHTML" id="device-list">
             <p style="color: var(--text-muted);">Scanning for devices...</p>
         </div>
+        {% endif %}
     </article>
 
     {% if platform == "wsl2" %}
     <article>
-        <header>Mount Drive</header>
-        <p style="color: var(--text-secondary); margin-bottom: var(--space-sm);">WSL2 doesn't auto-mount removable drives. Select a drive letter to mount.</p>
-        <div style="display: flex; gap: var(--space-sm); align-items: flex-end;">
-            <div style="flex: 1;">
-                <label for="mount-letter">Drive Letter</label>
-                <select id="mount-letter" name="letter">
-                    <option value="d">D:</option>
-                    <option value="e" selected>E:</option>
-                    <option value="f">F:</option>
-                    <option value="g">G:</option>
-                    <option value="h">H:</option>
-                    <option value="i">I:</option>
-                </select>
-            </div>
-            <button hx-post="/api/device/mount"
-                    hx-include="#mount-letter"
-                    hx-target="#mount-result"
-                    hx-swap="innerHTML">
-                Mount
-            </button>
+        <header>Card Reader</header>
+        <p style="color: var(--text-secondary); margin-bottom: var(--space-sm);">Insert the H2's card. Leasure mounts it when you open this page or press Scan. Press Eject before pulling it out; after that, press Mount to use it again.</p>
+        {# Refresh once automount has finished, so the list never shows the pre-mount state. #}
+        <div id="removable-list" hx-get="/api/device/removable/html" hx-include="this" hx-swap="innerHTML"
+             hx-trigger="leasure:drives-changed[!target.hasAttribute('data-automount')] from:body,
+                         htmx:afterRequest[target.hasAttribute('data-automount')] from:body,
+                         leasure:panel-shown[detail.name=='device' && leasureJustEjected()] from:body,
+                         click[leasureJustEjected()] from:#device-scan">
+            <p style="color: var(--text-muted);">Checking the card reader...</p>
         </div>
-        <div id="mount-result" style="margin-top: var(--space-sm);"></div>
+        <div id="mount-result" aria-live="polite"></div>
     </article>
     {% else %}
     <article>
@@ -71,7 +83,7 @@
         <div class="grid">
             <div>
                 <label for="device-path">Target Drive</label>
-                <input type="text" name="device_path" id="device-path" placeholder="{{ device_path_placeholder }}" required
+                <input type="text" name="device_path" id="device-path" placeholder="No drive selected" title="A drive path such as {{ device_path_placeholder }}" required
                        style="font-family: var(--font-mono);">
             </div>
             <fieldset>
@@ -94,7 +106,7 @@
 
 <article>
     <header>
-        Music on Device
+        <span class="header-title">Music on Device</span>
         <button class="outline"
                 onclick="var p=document.getElementById('device-path').value; if(p) htmx.ajax('GET','/api/device/files/html?device_path='+encodeURIComponent(p),'#device-files')">
             Refresh

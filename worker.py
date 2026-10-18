@@ -45,7 +45,7 @@ class DownloadWorker:
 
             # Re-enqueue all pending tracks
             result = await session.execute(
-                select(Track).where(Track.status == "pending")
+                select(Track).where(Track.status == "pending").order_by(Track.id)
             )
             pending = result.scalars().all()
             if pending:

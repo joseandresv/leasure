@@ -241,28 +241,6 @@ async def test_carousel_short_strip_is_not_duplicated(client, db):
 
 
 @pytest.mark.asyncio
-async def test_mount_sudo_hint_is_neutral_and_selectable(client, monkeypatch):
-    import subprocess
-
-    from routers import device as device_router
-    from services import platform as platform_service
-
-    monkeypatch.setattr(platform_service, "get_platform", lambda: "wsl2")
-    monkeypatch.setattr(device_router, "get_platform", lambda: "wsl2")
-    monkeypatch.setattr(
-        device_router.subprocess,
-        "run",
-        lambda *a, **kw: subprocess.CompletedProcess(a[0], 1, "", "sudo: a password is required"),
-    )
-
-    resp = await client.post("/api/device/mount", data={"letter": "e"})
-    assert resp.status_code == 200
-    assert "sudo mount -t drvfs E: /mnt/e" in resp.text
-    assert "--color-error" not in resp.text
-    assert "user-select" in resp.text
-
-
-@pytest.mark.asyncio
 async def test_spotify_status_html_hides_env_vars_behind_details(client, monkeypatch):
     import config
 
@@ -456,3 +434,333 @@ async def test_album_track_download_still_uses_the_album_name(client, db, monkey
     assert vals["album"] == "Substance"
     assert vals["album_artist"] == "New Order"
     assert vals["image_url"] == "https://img/substance.jpg"
+
+
+async def _run_sync_job(client, device_path) -> list[dict]:
+    start = await client.post("/api/device/sync/start", data={"device_path": str(device_path), "scope": "all"})
+    assert start.status_code == 200, start.text
+    events = []
+    async with client.stream("GET", f"/api/device/sync/stream/{start.json()['job_id']}") as resp:
+        async for line in resp.aiter_lines():
+            if line.startswith("data: "):
+                events.append(json.loads(line[6:]))
+    return events
+
+
+@pytest.mark.asyncio
+async def test_sync_copies_a_two_disc_album_in_disc_and_track_order(client, db, fake_device, tmp_path, monkeypatch):
+    import shutil
+
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    for disc, number in [(2, 2), (1, 3), (2, 1), (1, 1), (1, 2)]:
+        src = lib / f"{disc}-{number}.mp3"
+        src.write_bytes(b"\xff\xfb\x90\x00" + b"\x00" * 413)
+        await _add_track(db, title=f"Song {disc}{number}", artist="Daft Punk", album="RAM", album_artist="Daft Punk",
+                         track_number=number, disc_number=disc, total_discs=2, status="done",
+                         file_path=str(src), format="mp3")
+    copied = []
+    real_copyfile = shutil.copyfile
+
+    def recording_copyfile(src, dst):
+        copied.append(dst)
+        return real_copyfile(src, dst)
+
+    monkeypatch.setattr(shutil, "copyfile", recording_copyfile)
+
+    events = await _run_sync_job(client, fake_device)
+
+    assert events[-1]["synced"] == 5
+    assert [p.rsplit("/", 1)[1] for p in copied] == [
+        "1-01 - Song 11.mp3", "1-02 - Song 12.mp3", "1-03 - Song 13.mp3", "2-01 - Song 21.mp3", "2-02 - Song 22.mp3",
+    ]
+
+
+async def _seed_done_track_with_sidecars(db, folder, title, **fields):
+    from datetime import UTC
+
+    folder.mkdir(parents=True, exist_ok=True)
+    audio = folder / f"{title}.m4a"
+    audio.write_bytes(b"audio")
+    audio.with_suffix(".jpg").write_bytes(b"jpg")
+    audio.with_suffix(".lrc").write_text("[00:01]la")
+    return await _add_track(db, title=title, status="done", file_path=str(audio), format="m4a",
+                            synced_at=datetime.now(UTC).replace(tzinfo=None), **fields)
+
+
+@pytest.fixture
+def retag_calls(monkeypatch, tmp_path, isolated_paths):
+    import config
+    from services import tagger
+
+    monkeypatch.setattr(config.settings, "library_dir", tmp_path / "library")
+    isolated_paths()
+    calls = []
+
+    async def fake_apply(path, track_id):
+        calls.append((track_id, path))
+
+    monkeypatch.setattr(tagger, "apply_full_metadata", fake_apply)
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_album_download_numbers_a_track_an_earlier_playlist_download_left_unnumbered(
+        client, db, monkeypatch, tmp_path, retag_calls):
+    from pathlib import Path
+
+    from routers import music as music_router
+
+    album_dir = tmp_path / "library" / "The Killers" / "Hot Fuss"
+    track = await _seed_done_track_with_sidecars(db, album_dir, "Mr. Brightside", youtube_id="vid2",
+                                              artist="The Killers", album="Hot Fuss", album_artist="The Killers")
+    monkeypatch.setattr(music_router.yt, "get_album_tracks", lambda bid: {
+        "album": {"name": "Hot Fuss", "artist": "The Killers", "album_artist": "The Killers",
+                  "image_url": None, "year": 2004, "total_tracks": 11, "total_discs": None},
+        "tracks": [{"id": "vid2", "name": "Mr. Brightside", "artist": "The Killers", "track_number": 2,
+                    "duration_ms": 1000, "album_artist": "The Killers", "year": 2004}],
+    })
+
+    resp = await client.post("/api/music/download/album/youtube/MPREb1", data={"format": "mp3"})
+    assert resp.status_code == 200
+
+    async with db() as session:
+        refreshed = await session.get(Track, track.id)
+    moved = album_dir / "02 - Mr. Brightside.m4a"
+    assert (refreshed.track_number, refreshed.total_tracks, refreshed.synced_at) == (2, 11, None)
+    assert Path(refreshed.file_path) == moved and moved.exists()
+    assert (album_dir / "02 - Mr. Brightside.jpg").exists() and (album_dir / "02 - Mr. Brightside.lrc").exists()
+    assert not (album_dir / "Mr. Brightside.m4a").exists()
+    assert retag_calls == [(track.id, moved)]
+
+
+@pytest.mark.asyncio
+async def test_spotify_album_download_moves_a_second_disc_track_under_its_disc_prefix(
+        client, db, monkeypatch, tmp_path, retag_calls):
+    from routers import spotify as spotify_router
+
+    album_dir = tmp_path / "library" / "Daft Punk" / "RAM"
+    track = await _seed_done_track_with_sidecars(db, album_dir, "Contact", spotify_uri="spotify:track:c",
+                                              artist="Daft Punk", album="RAM", album_artist="Daft Punk")
+    monkeypatch.setattr(spotify_router.sp, "get_artist_genres", lambda artist_id: [])
+    monkeypatch.setattr(spotify_router.sp, "get_album_tracks", lambda album_id: {
+        "album": {"name": "RAM", "artist": "Daft Punk", "album_artist": "Daft Punk", "image_url": None,
+                  "release_date": "2013-05-17", "genres": [], "total_tracks": 13, "total_discs": 2},
+        "tracks": [{"uri": "spotify:track:c", "name": "Contact", "artist": "Daft Punk", "artist_id": "dp",
+                    "track_number": 1, "disc_number": 2, "duration_ms": 1000}],
+    })
+
+    resp = await client.post("/api/spotify/download/album/ram")
+    assert resp.status_code == 200
+
+    async with db() as session:
+        refreshed = await session.get(Track, track.id)
+    assert refreshed.file_path == str(album_dir / "2-01 - Contact.m4a")
+    assert (album_dir / "2-01 - Contact.m4a").exists()
+    assert refreshed.synced_at is None
+
+
+@pytest.mark.asyncio
+async def test_album_download_leaves_an_already_numbered_track_alone(client, db, monkeypatch, tmp_path, retag_calls):
+    from routers import music as music_router
+
+    album_dir = tmp_path / "library" / "New Order" / "Substance"
+    track = await _seed_done_track_with_sidecars(db, album_dir, "Blue Monday", youtube_id="vid3", artist="New Order",
+                                              album="Substance", album_artist="New Order", track_number=3,
+                                              total_tracks=1)
+    monkeypatch.setattr(music_router.yt, "get_album_tracks", lambda bid: {
+        "album": {"name": "Substance", "artist": "New Order", "album_artist": "New Order",
+                  "image_url": None, "year": 1987, "total_tracks": 1, "total_discs": None},
+        "tracks": [{"id": "vid3", "name": "Blue Monday", "artist": "New Order", "track_number": 3,
+                    "duration_ms": 1000, "album_artist": "New Order", "year": 1987}],
+    })
+
+    await client.post("/api/music/download/album/youtube/MPREb1", data={"format": "mp3"})
+
+    async with db() as session:
+        refreshed = await session.get(Track, track.id)
+    assert refreshed.synced_at is not None
+    assert retag_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("sent", "stored"), [("2", 2), ("", None)])
+async def test_download_track_stores_total_discs(client, db, sent, stored):
+    from sqlalchemy import select
+
+    uri = f"spotify:track:discs{sent or 'none'}"
+    resp = await client.post("/api/music/download/track", data={
+        "title": "Contact", "artist": "Daft Punk", "spotify_uri": uri, "total_discs": sent, "format": "mp3"})
+    assert resp.status_code == 200
+
+    async with db() as session:
+        track = (await session.execute(select(Track).where(Track.spotify_uri == uri))).scalar_one()
+    assert track.total_discs == stored
+
+
+@pytest.mark.asyncio
+async def test_youtube_album_playlist_download_stores_the_track_numbers(client, db, monkeypatch):
+    from sqlalchemy import select
+
+    from routers import youtube as youtube_router
+
+    monkeypatch.setattr(youtube_router.yt, "get_playlist_tracks", lambda pid: {
+        "playlist": {"name": "Hot Fuss"},
+        "tracks": [{"id": "olak1", "name": "Jenny", "artist": "The Killers", "album": "Hot Fuss",
+                    "track_number": 1, "total_tracks": 11}],
+    })
+
+    resp = await client.post("/api/youtube/download/playlist/OLAK5uy_x")
+    assert resp.status_code == 200
+
+    async with db() as session:
+        track = (await session.execute(select(Track).where(Track.youtube_id == "olak1"))).scalar_one()
+    assert (track.track_number, track.total_tracks) == (1, 11)
+
+
+@pytest.mark.asyncio
+async def test_sync_start_is_refused_while_the_card_is_being_ejected(client, fake_device, monkeypatch):
+    from routers import device as device_router
+
+    monkeypatch.setattr(device_router, "_EJECTING", {str(fake_device)})
+
+    resp = await client.post("/api/device/sync/start", data={"device_path": str(fake_device), "scope": "all"})
+
+    assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_the_legacy_sync_counts_as_a_running_sync_for_eject(client, db, fake_device, tmp_path, monkeypatch):
+    from routers import device as device_router
+
+    src = tmp_path / "Song.mp3"
+    src.write_bytes(b"audio")
+    await _add_track(db, title="Song", artist="A", album="B", status="done", file_path=str(src), format="mp3")
+    seen = []
+
+    def copy_while_checking(src, target, track):
+        seen.append(device_router._sync_running_to(str(fake_device)))
+        return 5
+
+    monkeypatch.setattr(device_router, "_copy_track", copy_while_checking)
+
+    resp = await client.post("/api/device/sync", data={"device_path": str(fake_device), "scope": "all"})
+
+    assert resp.status_code == 200
+    assert seen == [True]
+    assert not device_router._sync_running_to(str(fake_device))
+
+
+@pytest.mark.asyncio
+async def test_an_album_refresh_during_a_sync_is_not_marked_synced_by_it(client, db, fake_device, tmp_path, monkeypatch):
+    import asyncio
+
+    from routers import device as device_router
+
+    loop = asyncio.get_running_loop()
+    srcs = [tmp_path / f"{name}.m4a" for name in ("Refreshed", "Untouched")]
+    for src in srcs:
+        src.write_bytes(b"audio")
+    refreshed = await _add_track(db, title="Refreshed", artist="A", album="B", status="done",
+                                 file_path=str(srcs[0]), format="m4a")
+    untouched = await _add_track(db, title="Untouched", artist="A", album="B", status="done",
+                                 file_path=str(srcs[1]), format="m4a")
+
+    async def album_download_renumbers():
+        async with db() as session:
+            row = await session.get(Track, refreshed.id)
+            row.track_number, row.file_path, row.synced_at = 3, str(tmp_path / "03 - Refreshed.m4a"), None
+            await session.commit()
+
+    def copy_then_refresh(src, target, track):
+        if track.id == refreshed.id:
+            asyncio.run_coroutine_threadsafe(album_download_renumbers(), loop).result(5)
+        return 5
+
+    monkeypatch.setattr(device_router, "_copy_track", copy_then_refresh)
+
+    events = await _run_sync_job(client, fake_device)
+
+    assert events[-1]["synced"] == 2
+    async with db() as session:
+        assert (await session.get(Track, refreshed.id)).synced_at is None
+        assert (await session.get(Track, untouched.id)).synced_at is not None
+
+
+def test_a_failed_sidecar_move_puts_the_audio_back(tmp_path, monkeypatch):
+    import errno
+    import os
+
+    from services import tracks
+
+    folder = tmp_path / "A" / "Alb"
+    folder.mkdir(parents=True)
+    (folder / "Song.m4a").write_bytes(b"audio")
+    (folder / "Song.jpg").write_bytes(b"jpg")
+    real_replace = os.replace
+    calls = []
+
+    def replace_failing_second(src, dst):
+        calls.append(src)
+        if len(calls) == 2:
+            raise OSError(errno.EIO, "Input/output error")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(tracks.os, "replace", replace_failing_second)
+
+    with pytest.raises(OSError):
+        tracks.relocate_library_file(folder / "Song.m4a", folder / "03 - Song")
+
+    assert sorted(p.name for p in folder.iterdir()) == ["Song.jpg", "Song.m4a"]
+
+
+def test_a_retry_adopts_a_file_an_earlier_move_left_at_the_new_name(tmp_path):
+    from services import tracks
+
+    moved = tmp_path / "03 - Song.m4a"
+    moved.write_bytes(b"audio")
+
+    assert tracks.relocate_library_file(tmp_path / "Song.m4a", tmp_path / "03 - Song") == moved
+    assert tracks.relocate_library_file(tmp_path / "Song.m4a", tmp_path / "03 - Song", frozenset({str(moved)})) is None
+
+
+@pytest.mark.asyncio
+async def test_a_failed_commit_after_an_album_refresh_moves_the_file_back(db, tmp_path, retag_calls):
+    from services.tracks import refresh_album_track
+
+    album_dir = tmp_path / "library" / "The Killers" / "Hot Fuss"
+    track = await _seed_done_track_with_sidecars(db, album_dir, "Mr. Brightside", artist="The Killers",
+                                              album="Hot Fuss", album_artist="The Killers")
+
+    async with db() as session:
+        row = await session.get(Track, track.id)
+
+        async def locked():
+            raise RuntimeError("database is locked")
+
+        session.commit = locked
+        with pytest.raises(RuntimeError):
+            await refresh_album_track(session, row, {"track_number": 2})
+
+    assert sorted(p.name for p in album_dir.iterdir()) == ["Mr. Brightside.jpg", "Mr. Brightside.lrc",
+                                                            "Mr. Brightside.m4a"]
+
+
+@pytest.mark.asyncio
+async def test_album_download_reports_the_card_copy_a_renumbered_track_leaves_behind(
+        client, db, monkeypatch, tmp_path, retag_calls):
+    from routers import music as music_router
+
+    album_dir = tmp_path / "library" / "The Killers" / "Hot Fuss"
+    await _seed_done_track_with_sidecars(db, album_dir, "Mr. Brightside", youtube_id="vid2",
+                                         artist="The Killers", album="Hot Fuss", album_artist="The Killers")
+    monkeypatch.setattr(music_router.yt, "get_album_tracks", lambda bid: {
+        "album": {"name": "Hot Fuss", "artist": "The Killers", "album_artist": "The Killers",
+                  "image_url": None, "year": 2004, "total_tracks": 11, "total_discs": None},
+        "tracks": [{"id": "vid2", "name": "Mr. Brightside", "artist": "The Killers", "track_number": 2,
+                    "duration_ms": 1000, "album_artist": "The Killers", "year": 2004}],
+    })
+
+    resp = await client.post("/api/music/download/album/youtube/MPREb1", data={"format": "mp3"})
+
+    assert resp.json()["details"][0]["stale_device_path"] == "The Killers/Hot Fuss/Mr. Brightside.m4a"

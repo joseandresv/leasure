@@ -106,9 +106,9 @@ async def _prepare_cover(artwork_url: str | None) -> bytes | None:
     return await asyncio.to_thread(artwork.prepare_cover, data, settings.artwork_size)
 
 
-def _write_tags(audio_path: Path, track: Track, cover_jpeg: bytes | None = None):
+def _write_tags(audio_path: Path, track: Track, cover_jpeg: bytes | None = None, strict: bool = False):
     """Write ID3v2 (MP3), Vorbis comments (FLAC/Opus/Ogg) or iTunes atoms (M4A) tags
-    together with the cover picture, in one open/save of the file."""
+    together with the cover picture, in one open/save of the file. `strict` re-raises a failed save."""
     try:
         suffix = audio_path.suffix.lower()
         if suffix == ".mp3":
@@ -122,6 +122,8 @@ def _write_tags(audio_path: Path, track: Track, cover_jpeg: bytes | None = None)
         else:
             logger.warning("Unknown format %s, skipping tags", audio_path.suffix)
     except Exception as e:
+        if strict:
+            raise
         logger.warning("Failed to tag %s: %s", audio_path, e)
 
 

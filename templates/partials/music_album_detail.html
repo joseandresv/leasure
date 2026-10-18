@@ -85,6 +85,7 @@
                 "album_artist": dl_album_artist,
                 "track_number": track.track_number | default(0, true),
                 "disc_number": track.disc_number | default("", true),
+                "total_discs": album.total_discs | default("", true),
                 "total_tracks": track.total_tracks | default(album.total_tracks | default("", true), true),
                 "year": track.year | default(album.year | default("", true), true),
                 "duration_ms": track.duration_ms | default(0, true),

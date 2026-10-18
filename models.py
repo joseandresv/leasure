@@ -106,4 +106,5 @@ class SyncHistory(Base):
     synced_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     tracks_added: Mapped[int] = mapped_column(Integer, default=0)
     tracks_removed: Mapped[int] = mapped_column(Integer, default=0)
+    tracks_skipped: Mapped[int] = mapped_column(Integer, default=0)  # already current on the card, not re-copied
     total_size: Mapped[int] = mapped_column(Integer, default=0)

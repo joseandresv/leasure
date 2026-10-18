@@ -1,0 +1,53 @@
+{# GET /api/device/removable/html?letter=. Context: drives [{letter, label, fs, total_bytes, total_gb, state}],
+   state in no_media | unmounted | mounted | stale; listing_ok; selected_letter; manual {powershell, terminal}
+   built for selected_letter. #}
+{% from "macros/components.html" import manual_mount %}
+{% if drives %}
+<ul class="slot-list">
+    {% for d in drives %}
+    {% set slot = d.letter | upper ~ ":" %}
+    <li class="drive-row" data-state="{{ d.state }}" data-letter="{{ d.letter }}">
+        <span class="slot-led" aria-hidden="true"></span>
+        <span class="drive-row-info">
+            <span class="drive-row-name">{{ d.label if d.label != slot else "Card reader" }} ({{ slot }}{% if d.fs %}, {{ d.fs }}{% endif %}{% if d.total_gb %}, {{ d.total_gb }} GB{% endif %})</span>
+            <small class="drive-row-state">
+                {%- if d.state == "no_media" %}No card
+                {%- elif d.state == "unmounted" %}Card inserted, not mounted
+                {%- elif d.state == "mounted" %}Mounted at /mnt/{{ d.letter }}
+                {%- elif d.state == "stale" %}Card was removed
+                {%- endif -%}
+            </small>
+        </span>
+        {% if d.state == "unmounted" %}
+        <button hx-post="/api/device/mount" hx-vals='{{ {"letter": d.letter} | tojson }}' hx-target="#mount-result" hx-disabled-elt="this">Mount</button>
+        {% elif d.state == "mounted" %}
+        <button class="outline" hx-post="/api/device/eject" hx-vals='{{ {"letter": d.letter} | tojson }}' hx-target="#mount-result" hx-disabled-elt="this">Eject</button>
+        {% elif d.state == "stale" %}
+        <button class="outline" hx-post="/api/device/eject" hx-vals='{{ {"letter": d.letter} | tojson }}' hx-target="#mount-result" hx-disabled-elt="this">Clear</button>
+        {% endif %}
+    </li>
+    {% endfor %}
+</ul>
+{% endif %}
+{% if not listing_ok %}
+<p class="slot-note">Leasure can't ask Windows which drives are connected. Pick the card's drive letter:</p>
+<form class="slot-picker" hx-post="/api/device/mount" hx-target="#mount-result" hx-disabled-elt="find button" hx-disinherit="hx-disabled-elt">
+    {# A new letter only refetches the hand-mount commands, so the open <details> stays open. #}
+    <select name="letter" id="slot-letter" aria-label="Drive letter"
+            hx-get="/api/device/removable/html" hx-trigger="change" hx-target="#slot-manual" hx-select="#slot-manual" hx-swap="outerHTML">
+        {% for l in "defghijklmnopqrstuvwxyz" %}<option value="{{ l }}"{% if l == selected_letter %} selected{% endif %}>{{ l | upper }}:</option>{% endfor %}
+    </select>
+    <button type="submit">Mount</button>
+    <button type="button" class="outline" hx-post="/api/device/eject" hx-include="closest form" hx-target="#mount-result" hx-disabled-elt="this">Eject</button>
+</form>
+{# hx-preserve keeps it open when a mount or eject refreshes this list. #}
+<details class="manual-details" id="slot-manual-details" hx-preserve>
+    <summary>Mount by hand</summary>
+    <div id="slot-manual">
+        <p class="slot-note">Commands for {{ selected_letter | upper }}:</p>
+        {{ manual_mount(manual) }}
+    </div>
+</details>
+{% elif not drives %}
+<p class="slot-note">No card reader found. Plug in the H2 or a USB card reader, then press Scan.</p>
+{% endif %}
