@@ -1,0 +1,87 @@
+{% set q = qobuz or {} %}
+{% set state = q.state | default('not_configured', true) %}
+{% set chk = check or {} %}
+{% set check_state = chk.state | default('unchecked', true) %}
+{% set is_expired = expired or state == 'expired' %}
+{% set is_connected = state == 'connected' and not is_expired %}
+{% set check_error = chk.error if check_state in ['fail', 'error'] else none %}
+<div id="qobuz-card" class="qobuz-card">
+{% if notice %}<p class="qobuz-notice" role="status">{{ notice }}</p>{% endif %}
+
+{% if is_connected %}
+<p><mark>Connected</mark> to Qobuz{% if q.plan %} ({{ q.plan }}){% endif %}{% if q.hires %} <span class="badge badge-lossless">Hi-Res</span>{% endif %}</p>
+<p class="qobuz-tier">{{ q.max_quality_label }}</p>
+{% if q.hires is sameas false %}<p class="qobuz-muted">This plan streams CD quality (16-bit / 44.1 kHz) only.</p>{% endif %}
+<p class="qobuz-muted">{{ q.downloads_today | default(0, true) }} / {{ q.daily_cap | default(0, true) }} today. Downloads set to Best or FLAC only come from Qobuz first.</p>
+{% elif is_expired %}
+<p><b>Sign in again</b>: Qobuz stopped accepting the saved token, so downloads use YouTube.</p>
+{% elif state == 'ineligible' %}
+<p><b>Signed in</b>, but this Qobuz plan has no lossless streaming, so downloads use YouTube.</p>
+{% else %}
+<p><b>Not signed in</b>. Downloads use YouTube; sign in to get FLAC from Qobuz first.</p>
+{% endif %}
+
+{% if q.breaker and q.breaker.reason %}
+<p class="qobuz-warning">Qobuz paused until {% if q.breaker.until %}<time datetime="{{ q.breaker.until }}" data-local-time>{{ q.breaker.until[11:16] }}</time>{% else %}later{% endif %}: {{ 'its downloads kept failing' if q.breaker.reason == 'cdn_unavailable' else 'it changed its web player or refused the app' }}. Best downloads use YouTube meanwhile; FLAC only tracks wait.</p>
+{% elif q.cooldown_left_s %}
+<p class="qobuz-warning">Qobuz asked Leasure to slow down; Qobuz downloads resume in about {{ ((q.cooldown_left_s / 60) | round(0, 'ceil') | int) }} min.</p>
+{% endif %}
+{% if q.file_protected is sameas false %}
+<p class="qobuz-warning">Leasure could not restrict data/qobuz_session.json: other accounts on this computer can read the token file.</p>
+{% endif %}
+{% if q.last_error and state != 'not_configured' and not is_expired and q.last_error != check_error %}
+<p class="qobuz-muted">{{ q.last_error }}</p>
+{% endif %}
+
+{% if state != 'not_configured' %}
+{% if not is_expired %}
+<div class="qobuz-check">
+    <p>
+        {% if check_state == 'pass' %}
+        <b>Check: PASS</b>{% if chk.probe and chk.probe.bit_depth %}: {{ chk.probe.track or 'the test track' }} streams as FLAC {{ chk.probe.bit_depth }}-bit / {{ '%g' % chk.probe.sampling_rate if chk.probe.sampling_rate else '?' }} kHz.{% endif %}
+        {% elif check_state == 'fail' %}
+        <b>Check: FAIL</b>: Qobuz did not offer a full lossless stream for the test track.
+        {% elif check_state == 'error' %}
+        <b>Check: failed</b>: Qobuz did not answer the question.
+        {% else %}
+        <b>Check: not run</b>. Run it to confirm this account gets FLAC.
+        {% endif %}
+    </p>
+    {% if check_error %}
+    <p class="{{ 'qobuz-error' if check_state == 'error' else 'qobuz-muted' }}">{{ check_error }}</p>
+    {% endif %}
+    {% if chk.checked_label %}<p class="qobuz-muted">Checked {{ chk.checked_label }}.</p>{% endif %}
+</div>
+{% endif %}
+<div class="qobuz-actions">
+    {% if not is_expired %}
+    <button type="button" hx-post="/api/qobuz/check" hx-target="#qobuz-card"
+            hx-swap="outerHTML" hx-disabled-elt="this">Check now</button>
+    {% endif %}
+    <button type="button" class="outline" hx-delete="/api/qobuz/session" hx-target="#qobuz-card"
+            hx-swap="outerHTML" hx-disabled-elt="this"
+            hx-confirm="Make Leasure forget this Qobuz token? New downloads go back to YouTube. The token stays valid at Qobuz until you sign out on play.qobuz.com.">Sign out</button>
+</div>
+{% endif %}
+
+{% if error %}<p class="qobuz-error" role="alert">{{ error }}</p>{% endif %}
+
+<details class="qobuz-signin"{% if not is_connected %} open{% endif %}>
+    <summary>{{ 'Use a different token' if is_connected else 'Sign in with your Qobuz token' }}</summary>
+    <ol>
+        <li>Open <a href="https://play.qobuz.com" target="_blank" rel="noopener">play.qobuz.com</a> and sign in (Google is fine).</li>
+        <li>Press <kbd>F12</kbd>, then <b>Application</b> → <b>Local Storage</b> → <code>https://play.qobuz.com</code>.</li>
+        <li>Click the key <code>localuser</code>. Copy <code>"id"</code> into User ID and <code>"userAuthToken"</code> into Token.</li>
+    </ol>
+    <form hx-post="/api/qobuz/session" hx-target="#qobuz-card" hx-swap="outerHTML" hx-disabled-elt="find button">
+        <label for="qobuz-user-id">User ID</label>
+        <input type="text" id="qobuz-user-id" name="user_id" inputmode="numeric"
+               value="{{ user_id_value or '' }}" autocomplete="off" spellcheck="false" required>
+        <label for="qobuz-token">Token</label>
+        <input type="password" id="qobuz-token" name="user_auth_token"
+               autocomplete="off" spellcheck="false" required>
+        <p class="qobuz-muted">The token works like a password; Leasure keeps it only in data/qobuz_session.json on this computer.</p>
+        <button type="submit">Sign in to Qobuz</button>
+    </form>
+</details>
+</div>

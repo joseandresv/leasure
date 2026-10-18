@@ -51,3 +51,9 @@ def test_sweep_without_manifest_removes_nothing(tmp_path):
 def test_corrupt_manifest_is_treated_as_empty(tmp_path):
     (tmp_path / MANIFEST_NAME).write_text("{not json")
     assert read_manifest(tmp_path) == set()
+
+
+def test_generate_m3u_uses_the_given_card_path(tmp_path):
+    track = {**TRACKS[0], "format": "flac", "rel_path": "Artist/Album/01 - Song.m4a"}
+    raw = generate_m3u("Mix", [track], tmp_path).read_bytes()
+    assert raw == b"\xef\xbb\xbfArtist/Album/01 - Song.m4a\r\n"

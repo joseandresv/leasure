@@ -2,9 +2,9 @@
 quality + container values. Kept in one place so the routers can't drift."""
 
 # UI format value -> (quality tag, initial container)
-#   native         -- keep the original AAC/Opus stream, no re-encode (best fidelity our sources can give)
-#   mp3            -- transcode to MP3 320
-#   flac_lossless  -- real lossless from Qobuz/Tidal/Bandcamp/Archive (requires setup; fails if unavailable)
+#   native         -- Qobuz FLAC when signed in, else the original YouTube AAC/Opus stream (no re-encode)
+#   mp3            -- YouTube audio transcoded to MP3 320; never asks Qobuz
+#   flac_lossless  -- Qobuz FLAC only; fails instead of falling back to a lossy source
 # There is deliberately no lossy-FLAC option: a FLAC container filled from a YouTube
 # stream claims a fidelity the source never had.
 _FORMAT_MAP: dict[str, tuple[str, str]] = {

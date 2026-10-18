@@ -156,13 +156,54 @@
         }
     }
 
-    // The readout sits before the wheel in the DOM, so Tab from the selected song would
-    // leave the panel; it goes to that song's album or download action instead.
-    function focusReadoutAction(deck, e) {
-        const action = deck.querySelector('.deck-album-slot button, .deck-dbstate button');
-        if (!action) return;
-        action.focus();
+    const READOUT_ACTIONS = '.deck-album-slot button, .deck-dbstate button';
+    const FOCUSABLE = 'a[href], button, input, select, textarea, [tabindex]';
+
+    function isTabbable(el) {
+        return el.tabIndex >= 0 && !el.disabled && !el.closest('[inert]')
+            && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
+    }
+
+    function focusIfAny(el, e) {
+        if (!el) return;
+        el.focus();
         e.preventDefault();
+    }
+
+    // The first stop after the wheel that is neither the wheel nor the readout, so Tab
+    // out of the readout leaves the deck instead of cycling back into it.
+    function nextAfterWheel(deck) {
+        const wheel = deck.querySelector('#music-results .deck-wheel');
+        if (!wheel) return null;
+        const readout = deck.querySelector('.deck-readout');
+        return Array.from(document.querySelectorAll(FOCUSABLE)).find((el) =>
+            (wheel.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING)
+            && !wheel.contains(el) && !(readout && readout.contains(el)) && isTabbable(el)) || null;
+    }
+
+    // The readout sits before the wheel in the DOM, so plain Tab order would loop
+    // banner -> readout -> search/tabs -> banner. Tab from the selected song goes to its
+    // album or download action, Shift+Tab from there comes back, and Tab past the
+    // readout's last control jumps beyond the wheel, but only when the readout was
+    // entered from the banner; arriving from the top, Tab carries on to search and tabs.
+    function handleDeckTab(deck, e) {
+        const readout = deck.querySelector('.deck-readout');
+        if (!e.shiftKey && e.target.classList.contains('deck-banner')) {
+            focusIfAny(deck.querySelector(READOUT_ACTIONS), e);
+        } else if (e.shiftKey && e.target === deck.querySelector(READOUT_ACTIONS)) {
+            focusIfAny(deck.querySelector('.deck-banner.is-center'), e);
+        } else if (!e.shiftKey && deck.dataset.fromBanner && readout && readout.contains(e.target)) {
+            const stops = Array.from(readout.querySelectorAll(FOCUSABLE)).filter(isTabbable);
+            if (e.target === stops[stops.length - 1]) focusIfAny(nextAfterWheel(deck), e);
+        }
+    }
+
+    function noteReadoutEntry(deck, e) {
+        const readout = deck.querySelector('.deck-readout');
+        if (!readout || !readout.contains(e.target) || readout.contains(e.relatedTarget)) return;
+        const fromBanner = e.relatedTarget && e.relatedTarget.classList.contains('deck-banner');
+        if (fromBanner) deck.dataset.fromBanner = '1';
+        else delete deck.dataset.fromBanner;
     }
 
     // The deck outlives every wheel swapped into it, so it gets one key listener that
@@ -170,12 +211,14 @@
     function bindDeckKeys(deck) {
         if (deck.dataset.deckKeysBound) return;
         deck.dataset.deckKeysBound = '1';
+        deck.addEventListener('focusin', (e) => noteReadoutEntry(deck, e));
         deck.addEventListener('keydown', (e) => {
-            if (!deck.deckStep || e.target.matches('select, textarea')) return;
-            if (e.key === 'Tab' && !e.shiftKey && e.target.classList.contains('deck-banner')) {
-                focusReadoutAction(deck, e);
+            if (!deck.deckStep) return;
+            if (e.key === 'Tab') {
+                handleDeckTab(deck, e);
                 return;
             }
+            if (e.target.matches('select, textarea')) return;
             if (e.key === 'ArrowDown' || e.key === 'ArrowRight') { deck.deckStep(1); e.preventDefault(); }
             else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') { deck.deckStep(-1); e.preventDefault(); }
         });
@@ -268,6 +311,21 @@
     document.addEventListener('animationend', (e) => {
         const p = e.target.parentElement;
         if (p && p.id === 'music-results') p.classList.remove('roll-in-up', 'roll-in-down');
+    });
+
+    // Tab clicks replace each other's requests (hx-sync), so only the latest one may
+    // clear the busy state.
+    let resultsXhr = null;
+    document.addEventListener('htmx:beforeRequest', (e) => {
+        const target = e.detail.target;
+        if (!target || target.id !== 'music-results') return;
+        resultsXhr = e.detail.xhr;
+        target.setAttribute('aria-busy', 'true');
+    });
+    document.addEventListener('htmx:afterRequest', (e) => {
+        const target = e.detail.target;
+        if (!target || target.id !== 'music-results' || e.detail.xhr !== resultsXhr) return;
+        target.removeAttribute('aria-busy');
     });
 
     document.addEventListener('htmx:afterSettle', (e) => initDeck(e.detail.target));

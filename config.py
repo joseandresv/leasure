@@ -15,12 +15,12 @@ class Settings(BaseSettings):
     google_client_secret: str = ""
     google_redirect_uri: str = "http://127.0.0.1:8642/api/youtube/oauth/callback"
 
-    # Lossless services (optional)
-    qobuz_email: str = ""
-    qobuz_password: str = ""
-    tidal_email: str = ""
-    tidal_password: str = ""
-    deezer_arl: str = ""
+    # Qobuz (FLAC). The login lives in data/qobuz_session.json (Qobuz card on Home), never in .env.
+    qobuz_max_format: int = 27            # 27 = up to 24/192, 7 = up to 24/96, 6 = 16/44.1
+    qobuz_max_downloads_per_day: int = 100
+    qobuz_api_calls_per_minute: int = 20
+    qobuz_check_query: str = "Miles Davis So What"
+    qobuz_upgrade_keep_days: int = 30     # old files of an upgrade stay in data/upgrades/ for Revert
 
     # Paths
     library_dir: Path = Path("./library")
@@ -54,6 +54,8 @@ class Settings(BaseSettings):
     # Server
     host: str = "127.0.0.1"
     port: int = 8642
+    # Host header values the server answers (DNS-rebinding guard). Add a LAN name here to reach Leasure from it.
+    allowed_hosts: list[str] = ["127.0.0.1", "localhost"]
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
@@ -62,6 +64,41 @@ class Settings(BaseSettings):
     def _supported_id3_version(cls, value: int) -> int:
         if value not in (3, 4):
             raise ValueError("ID3_VERSION must be 3 (ID3v2.3) or 4 (ID3v2.4)")
+        return value
+
+    @field_validator("qobuz_max_format")
+    @classmethod
+    def _known_qobuz_format(cls, value: int) -> int:
+        if value not in (6, 7, 27):
+            raise ValueError("QOBUZ_MAX_FORMAT must be 27 (24-bit/192 kHz), 7 (24-bit/96 kHz) or 6 (16-bit/44.1 kHz)")
+        return value
+
+    @field_validator("qobuz_api_calls_per_minute")
+    @classmethod
+    def _gentle_qobuz_rate(cls, value: int) -> int:
+        if not 1 <= value <= 40:
+            raise ValueError("QOBUZ_API_CALLS_PER_MINUTE must be between 1 and 40")
+        return value
+
+    @field_validator("qobuz_max_downloads_per_day")
+    @classmethod
+    def _non_negative_cap(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("QOBUZ_MAX_DOWNLOADS_PER_DAY cannot be negative")
+        return value
+
+    @field_validator("qobuz_upgrade_keep_days")
+    @classmethod
+    def _keep_backups_a_day(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("QOBUZ_UPGRADE_KEEP_DAYS must be at least 1")
+        return value
+
+    @field_validator("allowed_hosts")
+    @classmethod
+    def _some_host(cls, value: list[str]) -> list[str]:
+        if not value:
+            raise ValueError("ALLOWED_HOSTS needs at least one host name")
         return value
 
 

@@ -1,0 +1,34 @@
+{% set unmatched = unmatched_count | default(0, true) %}
+{% if not connected or eligible_count or queued_count or unmatched or message or error %}
+<div class="qobuz-upgrade" id="qobuz-upgrade-{{ scope }}">
+{% if not connected %}
+<small>Sign in to Qobuz on Home to upgrade to FLAC</small>
+{% elif eligible_count or queued_count or unmatched %}
+{% if eligible_count %}
+{% if scope == 'all' %}
+<button type="button" class="outline" hx-post="/api/qobuz/upgrade/all"
+        hx-confirm="Queue {{ eligible_count }} {{ 'track' if eligible_count == 1 else 'tracks' }} for a FLAC upgrade? Each replaces the current file (about 30–200 MB per track; the old file is kept{{ ' %d days' % keep_days if keep_days is number }} so you can revert) and the next sync replaces the card copy.{{ ' Up to %d a day.' % daily_cap if daily_cap is number }}"
+        hx-target="closest .qobuz-upgrade" hx-swap="outerHTML" hx-disabled-elt="this">Upgrade all eligible to FLAC ({{ eligible_count }})</button>
+{% else %}
+<button type="button" class="outline" hx-post="/api/qobuz/upgrade/tracks"
+        hx-vals='{{ {"track_ids": eligible_ids | join(","), "scope": "album"} | tojson }}'
+        hx-target="closest .qobuz-upgrade" hx-swap="outerHTML" hx-disabled-elt="this">Upgrade to FLAC ({{ eligible_count }})</button>
+{% endif %}
+{% elif unmatched %}
+{% if scope == 'all' %}
+<button type="button" class="outline" hx-post="/api/qobuz/upgrade/all" hx-vals='{"include_unmatched": "true"}'
+        hx-confirm="Ask Qobuz again for {{ unmatched }} {{ 'track' if unmatched == 1 else 'tracks' }} it could not match before? Each match replaces the current file (the old file is kept{{ ' %d days' % keep_days if keep_days is number }} so you can revert).{{ ' Up to %d a day.' % daily_cap if daily_cap is number }}"
+        hx-target="closest .qobuz-upgrade" hx-swap="outerHTML" hx-disabled-elt="this">Try again on Qobuz ({{ unmatched }} not matched before)</button>
+{% else %}
+<button type="button" class="outline" hx-post="/api/qobuz/upgrade/tracks"
+        hx-vals='{{ {"track_ids": unmatched_ids | default([], true) | join(","), "scope": "album", "include_unmatched": "true"} | tojson }}'
+        hx-target="closest .qobuz-upgrade" hx-swap="outerHTML" hx-disabled-elt="this">Try again on Qobuz ({{ unmatched }} not matched before)</button>
+{% endif %}
+{% endif %}
+{% if queued_count %}<small>{{ queued_count }} upgrading</small>{% endif %}
+{% if failed_count %}<small>{{ failed_count }} could not be upgraded; see the queue on Home</small>{% endif %}
+{% endif %}
+{% if message %}<small class="qobuz-upgrade-message" role="status">{{ message }}</small>{% endif %}
+{% if error %}<small class="qobuz-error" role="alert">{{ error }}</small>{% endif %}
+</div>
+{% endif %}

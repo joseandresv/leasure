@@ -8,7 +8,7 @@ import spotipy
 from config import settings
 from models import Track
 from routers import art
-from services import spotify_client
+from services import artwork, spotify_client
 
 JPEG = b"\xff\xd8\xff\xe0fake-jpeg"
 
@@ -162,3 +162,80 @@ def test_rate_limited_album_lookup_returns_none_at_once(monkeypatch, caplog):
     assert time.monotonic() - start < 1
     assert fake.calls == 1
     assert [r.message for r in caplog.records if "Retry-After 80000" in r.message]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("url", [
+    "https://music.youtube.com/image/mixart?r=abc&v=1",
+    "https://static.qobuz.com/images/covers/ab/cd/0886443927087_600.jpg",
+])
+async def test_proxy_allows_image_paths_on_page_hosts(client, monkeypatch, url):
+    _mock_upstream(monkeypatch, lambda req: httpx.Response(200, content=JPEG, headers={"content-type": "image/jpeg"}))
+    assert (await client.get("/api/art/proxy", params={"url": url})).status_code == 200
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("url", [
+    "https://music.youtube.com/watch?v=x",
+    "https://music.youtube.com/image/../watch",
+    "https://static.qobuz.com/images/%2e%2e/x",
+    "https://static.qobuz.com/images/%2E%2E/x",
+    "https://static.qobuz.com/other",
+])
+async def test_proxy_rejects_other_paths_on_page_hosts(client, monkeypatch, url):
+    _mock_upstream(monkeypatch, lambda req: pytest.fail("must not fetch"))
+    resp = await client.get("/api/art/proxy", params={"url": url})
+    assert resp.status_code == 400
+    assert "Spotify, YouTube or Qobuz" in resp.json()["detail"]
+
+
+def _mock_artwork_host(monkeypatch, handler) -> list[bool]:
+    redirects: list[bool] = []
+
+    def client(follow_redirects):
+        redirects.append(follow_redirects)
+        return httpx.AsyncClient(transport=httpx.MockTransport(handler), follow_redirects=follow_redirects)
+
+    monkeypatch.setattr(artwork, "_client", client)
+    return redirects
+
+
+@pytest.mark.asyncio
+async def test_fetch_artwork_returns_the_image_bytes(monkeypatch):
+    _mock_artwork_host(monkeypatch, lambda req: httpx.Response(200, content=JPEG, headers={"content-type": "image/jpeg"}))
+    assert await artwork.fetch_artwork("https://i.scdn.co/image/x") == JPEG
+
+
+@pytest.mark.asyncio
+async def test_fetch_artwork_refuses_more_than_5_mib(monkeypatch):
+    async def chunks():
+        for _ in range(6):
+            yield b"\xff" * (1024 * 1024)
+
+    _mock_artwork_host(monkeypatch, lambda req: httpx.Response(200, content=chunks(), headers={"content-type": "image/png"}))
+    assert await artwork.fetch_artwork("https://i.scdn.co/image/x") is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_artwork_refuses_a_non_image(monkeypatch):
+    _mock_artwork_host(monkeypatch, lambda req: httpx.Response(200, content=b"<html>", headers={"content-type": "text/html"}))
+    assert await artwork.fetch_artwork("https://i.scdn.co/image/x") is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_artwork_does_not_follow_a_qobuz_redirect(monkeypatch):
+    def handler(req):
+        if req.url.host == "static.qobuz.com":
+            return httpx.Response(302, headers={"location": "https://evil.example/x.jpg"})
+        pytest.fail("followed the redirect")
+
+    redirects = _mock_artwork_host(monkeypatch, handler)
+    assert await artwork.fetch_artwork("https://static.qobuz.com/images/covers/x_600.jpg") is None
+    assert redirects == [False]
+
+
+@pytest.mark.asyncio
+async def test_fetch_artwork_logs_the_host_not_the_url(monkeypatch, caplog):
+    _mock_artwork_host(monkeypatch, lambda req: httpx.Response(404))
+    await artwork.fetch_artwork("https://i.scdn.co/image/x?sig=SECRET")
+    assert "i.scdn.co" in caplog.text and "SECRET" not in caplog.text

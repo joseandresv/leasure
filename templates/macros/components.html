@@ -64,7 +64,8 @@
             {% if track.db.synced %}<span class="badge badge-done">ON DEVICE</span>
             {% else %}<span class="badge badge-mp3">IN LIBRARY</span>{% endif %}
             {% if track.db.file_size %}<span class="deck-db-meta">{{ '%.1f' % (track.db.file_size / 1048576) }} MB</span>{% endif %}
-            {% if track.db.engine %}<span class="deck-db-meta">via {{ track.db.engine }}</span>{% endif %}
+            {% set engine = track.db.engine_used or track.db.engine %}
+            {% if engine %}<span class="deck-db-meta">via {{ engine_label(engine) }}</span>{% endif %}
         {% elif track.download_status in ['pending', 'downloading'] %}
             {{ badge(track.download_status) }}
         {% elif track.download_status == 'error' %}
@@ -144,9 +145,9 @@
 {% macro format_selector(id_suffix='') %}
 <select name="format" id="dl-format{{ '-' + id_suffix if id_suffix else '' }}" class="format-select"
         aria-label="Download format">
-    <option value="native" title="Keeps the source file as it is: AAC 256 kbps with a YouTube Music Premium account, no re-encode">Best (AAC 256 w/ Premium)</option>
-    <option value="mp3" title="Re-encoded to MP3 at 320 kbps for the widest player compatibility">MP3 320</option>
-    <option value="flac_lossless" title="Lossless FLAC from Qobuz or Tidal, needs streamrip credentials">FLAC lossless</option>
+    <option value="native" title="FLAC from Qobuz when you are signed in there; otherwise the YouTube Music stream as it is (AAC 256 with Premium), no re-encode">Best (FLAC via Qobuz, else AAC 256)</option>
+    <option value="mp3" title="Skips Qobuz: YouTube audio re-encoded to MP3 320">MP3 320 (YouTube)</option>
+    <option value="flac_lossless" title="Lossless from Qobuz; fails instead of falling back">FLAC only (Qobuz)</option>
 </select>
 {% endmacro %}
 
@@ -164,13 +165,27 @@
 {# What the file on disk actually is, from the download's provenance. Takes an ORM
    Track or the deck's `db` dict. Rows downloaded before provenance was recorded have
    no bitrate to report, so they say "AAC ?" rather than inventing one, and "FLAC"
-   is never printed unless is_lossless proves it. #}
+   is never printed unless is_lossless proves it. Depth and rate come from STREAMINFO
+   when the row has them, else from a flac_<bits>_<khz> tier. #}
 {% macro quality_badge(t) %}
 {%- if t and t.quality -%}
 {%- set tier = t.quality | string | lower -%}
 {%- set fmt = (t.format | default('', true)) | string | lower -%}
 {%- set lossless = true if t.is_lossless else false -%}
-{%- set label = 'AAC 256' if tier == 'aac_256'
+{%- set parts = tier.split('_') -%}
+{%- if lossless and t.source_bit_depth and t.source_sample_rate -%}
+{%- set bits = t.source_bit_depth | int -%}
+{%- set hz = t.source_sample_rate | int -%}
+{%- elif lossless and parts | length == 3 and parts[0] == 'flac' and parts[1].isdigit() and parts[2].isdigit() -%}
+{%- set bits = parts[1] | int -%}
+{%- set hz = {'44': 44100, '88': 88200, '176': 176400}.get(parts[2], (parts[2] | int) * 1000) -%}
+{%- else -%}
+{%- set bits = 0 -%}
+{%- set hz = 0 -%}
+{%- endif -%}
+{%- set khz = '%g' % (hz / 1000) -%}
+{%- set label = 'FLAC ' ~ bits ~ '/' ~ khz if bits and hz
+           else 'AAC 256' if tier == 'aac_256'
            else 'AAC 128' if tier == 'aac_128'
            else 'Opus 160' if tier == 'opus_160'
            else 'MP3 320' if tier == 'mp3_320'
@@ -180,20 +195,42 @@
            else 'AAC ?' if fmt in ['m4a', 'aac', 'mp4']
            else 'Opus ?' if fmt in ['opus', 'ogg', 'webm']
            else 'Unknown' -%}
+{%- set hires = bits >= 24 and hz > 48000 -%}
 {%- set cls = 'badge-lossless' if lossless
          else 'badge-native' if tier in ['aac_256', 'aac_128', 'opus_160']
          else 'badge-mp3' -%}
+{%- set skip_notes = {'no_match': 'Qobuz had no confident match',
+                      'not_streamable': 'Qobuz cannot stream it in lossless',
+                      'cap': 'Qobuz daily cap was reached',
+                      'signed_out': 'Qobuz sign-in had expired',
+                      'ineligible': 'Qobuz plan has no lossless streaming',
+                      'unavailable': 'Qobuz was unavailable',
+                      'cdn_unavailable': 'Qobuz downloads were failing'} -%}
 {%- set detail = [] -%}
+{%- if t.engine_used == 'qobuz' %}{% set _ = detail.append('Qobuz') %}{% endif -%}
+{%- if t.source_format_id %}{% set _ = detail.append('format ' ~ t.source_format_id) %}{% endif -%}
+{%- if bits and hz %}{% set _ = detail.append(bits ~ '-bit / ' ~ khz ~ ' kHz') %}{% endif -%}
 {%- if t.source_codec %}{% set _ = detail.append('source ' ~ t.source_codec) %}{% endif -%}
 {%- if t.source_bitrate_kbps %}{% set _ = detail.append(t.source_bitrate_kbps ~ ' kbps') %}{% endif -%}
 {%- if t.premium_used %}{% set _ = detail.append('Premium session') %}{% endif -%}
 {%- if t.transcoded %}{% set _ = detail.append('re-encoded to ' ~ label) %}{% endif -%}
+{%- if not lossless and t.qobuz_skip_reason in skip_notes %}{% set _ = detail.append(skip_notes[t.qobuz_skip_reason]) %}{% endif -%}
 <span class="badge {{ cls }}"{% if detail %} title="{{ detail | join(' · ') }}"{% endif %}>{{ label }}{%
+    if hires %} <i class="badge-note badge-hires">Hi-Res</i>{% endif %}{%
     if t.premium_used %} <i class="badge-note badge-premium">Premium</i>{% endif %}{%
-    if t.transcoded %} <i class="badge-note">re-encoded</i>{% endif %}</span>{%
-    if t.verification == 'duration_mismatch' %}<span class="badge-warn" title="This file's length does not match the track that was asked for{% if t.matched_title %} — Leasure matched “{{ t.matched_title }}”{% endif %}. Play it before you sync.">&#9888;</span>{% endif %}
+    if t.transcoded %} <i class="badge-note">re-encoded</i>{% endif %}{%
+    if t.upgrade_state in ['queued', 'downloading'] %} <i class="badge-note">→ FLAC</i>{% endif %}{%
+    if t.upgrade_state == 'reverted' %} <i class="badge-note">kept original</i>{% endif %}</span>{%
+    if t.verification == 'duration_mismatch' %}<span class="badge-warn" title="This file's length does not match the track that was asked for{% if t.matched_title %} — Leasure matched “{{ t.matched_title }}”{% endif %}. Play it before you sync.">&#9888;</span>{% endif %}{%
+    if t.upgrade_state == 'error' %}<span class="badge-warn" title="{{ t.upgrade_error or 'The FLAC upgrade failed.' }}">&#9888;</span>{% endif %}
 {%- endif -%}
 {% endmacro %}
+
+{# Display name of Track.engine_used. #}
+{% macro engine_label(engine) -%}
+{{ {'qobuz': 'Qobuz', 'ytmusic': 'YouTube Music', 'youtube-search': 'YouTube search',
+    'youtube': 'YouTube', 'card-import': 'Card import'}.get(engine, engine) }}
+{%- endmacro %}
 
 {# Download button — pure HTMX, replaces itself with a badge on success #}
 {% macro download_button(track, source, format_id_suffix='') %}

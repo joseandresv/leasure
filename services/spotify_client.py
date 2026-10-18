@@ -296,7 +296,10 @@ def get_playlist_tracks(playlist_id: str, limit: int = 500, offset: int = 0) -> 
             _note_rate_limit(e)
         error_str = str(e)
         logger.error("Failed to get playlist tracks for %s: %s", playlist_id, error_str[:200])
-        return {"error": error_str[:200], "playlist": playlist_info, "tracks": [], "total": 0, "offset": 0, "limit": limit}
+        result = {"error": error_str[:200], "playlist": playlist_info, "tracks": [], "total": 0, "offset": 0, "limit": limit}
+        if isinstance(e, spotipy.SpotifyException):
+            result["error_status"] = e.http_status
+        return result
 
     return {
         "playlist": playlist_info,

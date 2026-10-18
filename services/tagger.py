@@ -25,8 +25,9 @@ from services import artwork
 logger = logging.getLogger(__name__)
 
 
-async def apply_full_metadata(audio_path: Path, track_id: int):
-    """Apply complete H2-compatible metadata to a downloaded track."""
+async def apply_full_metadata(audio_path: Path, track_id: int, *, artwork_url_override: str | None = None):
+    """Apply complete H2-compatible metadata to a downloaded track; `artwork_url_override`
+    replaces the row's cover URL for this run only."""
     async with async_session() as session:
         track = await session.get(Track, track_id)
         if not track:
@@ -41,7 +42,7 @@ async def apply_full_metadata(audio_path: Path, track_id: int):
                 await session.commit()
 
     # 1. Fetch the cover once; it is both embedded and written as the sidecar
-    cover_jpeg = await _prepare_cover(track.artwork_url)
+    cover_jpeg = await _prepare_cover(artwork_url_override or track.artwork_url)
 
     # 2. Tags and cover art in a single open/save of the audio file
     await asyncio.to_thread(_write_tags, audio_path, track, cover_jpeg)

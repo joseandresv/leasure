@@ -25,7 +25,8 @@
                 <div class="deck-head-right">
                     <button class="deck-refresh" title="Refresh"
                             hx-get="/api/music/deck?refresh=1"
-                            hx-target="#music-results" hx-swap="innerHTML" hx-indicator="this">&#x21bb;</button>
+                            hx-target="#music-results" hx-swap="innerHTML"
+                            hx-sync="#music-results:replace" hx-indicator="#music-loading">&#x21bb;</button>
                     <span class="deck-source-chip deck-source">—</span>
                 </div>
             </div>
@@ -56,22 +57,29 @@
                    hx-get="/api/music/search"
                    hx-trigger="keyup changed delay:400ms"
                    hx-target="#music-results"
-                   hx-swap="innerHTML">
+                   hx-swap="innerHTML"
+                   hx-sync="#music-results:replace" hx-indicator="#music-loading">
         </div>
 
         <div class="tab-nav">
             <button @click="tab='deck'" :class="tab==='deck' && 'tab-active'"
-                    hx-get="/api/music/deck" hx-target="#music-results" hx-swap="innerHTML">◉ The Deck</button>
+                    hx-get="/api/music/deck" hx-target="#music-results" hx-swap="innerHTML"
+                    hx-sync="#music-results:replace" hx-indicator="#music-loading">◉ The Deck</button>
             <button @click="tab='recent'" :class="tab==='recent' && 'tab-active'"
-                    hx-get="/api/music/recent" hx-target="#music-results" hx-swap="innerHTML">Recently Listened</button>
+                    hx-get="/api/music/recent" hx-target="#music-results" hx-swap="innerHTML"
+                    hx-sync="#music-results:replace" hx-indicator="#music-loading">Recently Listened</button>
             <button @click="tab='albums'" :class="tab==='albums' && 'tab-active'"
-                    hx-get="/api/music/albums" hx-target="#music-results" hx-swap="innerHTML">Albums</button>
+                    hx-get="/api/music/albums" hx-target="#music-results" hx-swap="innerHTML"
+                    hx-sync="#music-results:replace" hx-indicator="#music-loading">Albums</button>
             <button @click="tab='playlists'" :class="tab==='playlists' && 'tab-active'"
-                    hx-get="/api/music/playlists" hx-target="#music-results" hx-swap="innerHTML">Playlists</button>
+                    hx-get="/api/music/playlists" hx-target="#music-results" hx-swap="innerHTML"
+                    hx-sync="#music-results:replace" hx-indicator="#music-loading">Playlists</button>
             <button @click="tab='artists'" :class="tab==='artists' && 'tab-active'"
-                    hx-get="/api/music/artists" hx-target="#music-results" hx-swap="innerHTML">Artists</button>
+                    hx-get="/api/music/artists" hx-target="#music-results" hx-swap="innerHTML"
+                    hx-sync="#music-results:replace" hx-indicator="#music-loading">Artists</button>
         </div>
 
+        <div id="music-loading" class="htmx-indicator" role="status" aria-live="polite">loading…</div>
         <div id="music-results" hx-get="/api/music/deck" hx-trigger="load" hx-swap="innerHTML">
             <i style="color: var(--text-muted);">loading...</i>
         </div>

@@ -471,7 +471,7 @@ async def test_sync_copies_a_two_disc_album_in_disc_and_track_order(client, db, 
     events = await _run_sync_job(client, fake_device)
 
     assert events[-1]["synced"] == 5
-    assert [p.rsplit("/", 1)[1] for p in copied] == [
+    assert [p.rsplit("/", 1)[1].removesuffix(".leasure-part") for p in copied] == [
         "1-01 - Song 11.mp3", "1-02 - Song 12.mp3", "1-03 - Song 13.mp3", "2-01 - Song 21.mp3", "2-02 - Song 22.mp3",
     ]
 
@@ -640,7 +640,7 @@ async def test_the_legacy_sync_counts_as_a_running_sync_for_eject(client, db, fa
 
     def copy_while_checking(src, target, track):
         seen.append(device_router._sync_running_to(str(fake_device)))
-        return 5
+        return [device_router._Written("audio", "A/B/Song.mp3", src, True)]
 
     monkeypatch.setattr(device_router, "_copy_track", copy_while_checking)
 
@@ -675,7 +675,7 @@ async def test_an_album_refresh_during_a_sync_is_not_marked_synced_by_it(client,
     def copy_then_refresh(src, target, track):
         if track.id == refreshed.id:
             asyncio.run_coroutine_threadsafe(album_download_renumbers(), loop).result(5)
-        return 5
+        return [device_router._Written("audio", f"A/B/{src.name}", src, True)]
 
     monkeypatch.setattr(device_router, "_copy_track", copy_then_refresh)
 
@@ -747,6 +747,35 @@ async def test_a_failed_commit_after_an_album_refresh_moves_the_file_back(db, tm
 
 
 @pytest.mark.asyncio
+async def test_an_album_refresh_waiting_on_an_upgrade_moves_the_new_flac(db, tmp_path, retag_calls):
+    import asyncio
+
+    from services import track_locks
+    from services.tracks import refresh_album_track
+
+    album_dir = tmp_path / "library" / "The Killers" / "Hot Fuss"
+    track = await _seed_done_track_with_sidecars(db, album_dir, "Mr. Brightside", artist="The Killers",
+                                                 album="Hot Fuss", album_artist="The Killers")
+    async with db() as session:
+        row = await session.get(Track, track.id)
+        async with track_locks.hold(track.id):
+            refresh = asyncio.create_task(refresh_album_track(session, row, {"track_number": 5}))
+            await asyncio.sleep(0)
+            (album_dir / "Mr. Brightside.m4a").unlink()
+            (album_dir / "Mr. Brightside.flac").write_bytes(b"flac")
+            async with db() as other:
+                (await other.get(Track, track.id)).file_path = str(album_dir / "Mr. Brightside.flac")
+                await other.commit()
+        await refresh
+
+    async with db() as session:
+        stored = await session.get(Track, track.id)
+    assert stored.file_path == str(album_dir / "05 - Mr. Brightside.flac")
+    assert (album_dir / "05 - Mr. Brightside.flac").read_bytes() == b"flac"
+    assert retag_calls == [(track.id, album_dir / "05 - Mr. Brightside.flac")]
+
+
+@pytest.mark.asyncio
 async def test_album_download_reports_the_card_copy_a_renumbered_track_leaves_behind(
         client, db, monkeypatch, tmp_path, retag_calls):
     from routers import music as music_router
@@ -797,3 +826,18 @@ async def test_spotify_playlist_429_starts_the_rate_limit_window_and_says_so(cli
     resp = await client.get("/api/music/playlist/spotify/PL1")
 
     assert "try again in ~10 min" in resp.text
+
+
+async def test_startup_does_not_claim_an_address_uvicorn_may_not_use(db, monkeypatch, caplog):
+    from app import app
+    from config import settings
+    from worker import DownloadWorker
+
+    monkeypatch.setattr("app.download_worker", DownloadWorker())
+    monkeypatch.setattr(settings, "download_worker_enabled", False)
+    caplog.set_level("INFO", logger="app")
+
+    async with app.router.lifespan_context(app):
+        pass
+
+    assert "Leasure ready" in caplog.text and f":{settings.port}" not in caplog.text

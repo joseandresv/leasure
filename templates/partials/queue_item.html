@@ -1,3 +1,6 @@
+{% set route_labels = {"qobuz_first": "FLAC (Qobuz) or YouTube", "qobuz_only": "FLAC (Qobuz)",
+                       "youtube": "YouTube", "upgrade": "FLAC upgrade"} %}
+{% set actions = "/api/qobuz/upgrade" if t.kind == 'upgrade' else "/api/downloads" %}
 <div class="queue-item{% if t.status == 'error' %} queue-item-error{% endif %}">
     {% if t.status != 'error' %}
     <div class="audio-bars"><span></span><span></span><span></span><span></span></div>
@@ -10,12 +13,12 @@
         {% endif %}
     </div>
     <span class="badge badge-{{ 'error' if t.status == 'error' else ('downloading' if t.status == 'downloading' else 'mp3') }}">{{ t.status }}</span>
-    <small style="font-family: var(--font-mono); color: var(--text-muted);">{{ t.format | upper }}</small>
+    <small class="queue-item-route">{{ route_labels[t.route] if t.route in route_labels else t.format | upper }}</small>
     {% if t.status == 'error' %}
     <div class="queue-item-actions">
-        <button class="outline" type="button" hx-post="/api/downloads/retry/{{ t.id }}"
+        <button class="outline" type="button" hx-post="{{ actions }}/{{ 'track' if t.kind == 'upgrade' else 'retry' }}/{{ t.id }}"
                 hx-target="closest .queue-item" hx-swap="outerHTML">Retry</button>
-        <button class="outline" type="button" hx-post="/api/downloads/dismiss/{{ t.id }}"
+        <button class="outline" type="button" hx-post="{{ actions }}/dismiss/{{ t.id }}"
                 hx-target="closest .queue-item" hx-swap="outerHTML">Dismiss</button>
     </div>
     {% endif %}

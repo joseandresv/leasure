@@ -21,6 +21,8 @@ ALLOWED_HOSTS = frozenset({
     "lh3.googleusercontent.com",
     "i.ytimg.com",
 })
+# Hosts that also serve pages: only their image paths may be proxied.
+PATH_PREFIXED_HOSTS = {"music.youtube.com": "/image/", "static.qobuz.com": "/images/"}
 SPOTIFY_IMAGE_CDN = re.compile(r"image-cdn-[a-z0-9]+\.spotifycdn\.com")
 # No SVG: served from our origin it could run script.
 IMAGE_TYPES = frozenset({"image/jpeg", "image/png", "image/webp", "image/gif", "image/avif"})
@@ -35,8 +37,17 @@ def _allowed(url: str) -> bool:
     except ValueError:
         return False
     host = parts.hostname or ""
-    return (parts.scheme == "https" and port in (None, 443) and not parts.username and not parts.password
-            and (host in ALLOWED_HOSTS or SPOTIFY_IMAGE_CDN.fullmatch(host) is not None))
+    if parts.scheme != "https" or port not in (None, 443) or parts.username or parts.password:
+        return False
+    if ".." in parts.path or "%2e" in parts.path.lower():
+        return False
+    if host in PATH_PREFIXED_HOSTS:
+        try:
+            # The path httpx will actually request, after its own normalisation.
+            return httpx.URL(url).path.startswith(PATH_PREFIXED_HOSTS[host])
+        except httpx.InvalidURL:
+            return False
+    return host in ALLOWED_HOSTS or SPOTIFY_IMAGE_CDN.fullmatch(host) is not None
 
 
 def _client() -> httpx.AsyncClient:
@@ -63,7 +74,7 @@ async def _fetch_image(url: str) -> tuple[bytes, str]:
 @router.get("/proxy")
 async def proxy_art(url: str):
     if len(url) > 2048 or not _allowed(url):
-        raise HTTPException(400, detail="Only https cover art from Spotify or YouTube image hosts can be proxied.")
+        raise HTTPException(400, detail="Only https cover art from Spotify, YouTube or Qobuz image hosts can be proxied.")
     try:
         async with asyncio.timeout(TIMEOUT_S):
             body, content_type = await _fetch_image(url)

@@ -1,0 +1,21 @@
+{
+  "user": {
+    "id": 1234567,
+    "display_name": "fake-user",
+    "country_code": "ES",
+    "credential": {
+      "id": 1,
+      "label": "Studio",
+      "description": "Qobuz Studio",
+      "parameters": {
+        "lossy_streaming": true,
+        "lossless_streaming": true,
+        "hires_streaming": true,
+        "hires_purchases_streaming": true,
+        "short_label": "Studio",
+        "nested": {"ignored": true}
+      }
+    },
+    "subscription": {"offer": "studio"}
+  }
+}

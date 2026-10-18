@@ -1,11 +1,32 @@
 {% if error %}
 <p>{{ error }}</p>
 {% else %}
+{% set kept_reasons = {"changed_on_card": "changed on the card — remove by hand if unwanted",
+                       "path_in_use": "another track uses this path",
+                       "waiting": "waits for the FLAC copy"} %}
 <div style="margin-bottom: var(--space-md);">
     <strong>{{ to_add | length }}</strong> to add &middot;
     <strong>{{ already_synced | length }}</strong> already on device &middot;
     <strong>{{ on_device_only | length }}</strong> on device only
 </div>
+
+{% if space %}
+<p class="sync-space">Needs {{ space.needed_bytes | filesizeformat }}, {{ space.free_bytes | filesizeformat }} free on the card.</p>
+{% if not space.fits %}
+<p class="sync-warning" role="alert">Not enough space on the card for this sync. Free up space on the card or sync fewer tracks.</p>
+{% endif %}
+{% for files, label in [(space.too_large, "too large for the card (4 GB or more)"), (space.too_long, "path too long for the card")] if files %}
+<details>
+    <summary class="diff-unknown">! {{ files | length }} skipped: {{ label }}</summary>
+    {% for f in files %}
+    <div class="track-row diff-row-unknown">
+        <span class="diff-unknown" style="width: 1.5rem;">!</span>
+        <div class="track-info"><div class="track-title">{{ f }}</div></div>
+    </div>
+    {% endfor %}
+</details>
+{% endfor %}
+{% endif %}
 
 {% if to_add %}
 <details open>
@@ -46,6 +67,36 @@
         <span class="diff-unknown" style="width: 1.5rem;">?</span>
         <div class="track-info">
             <div class="track-title">{{ f }}</div>
+        </div>
+    </div>
+    {% endfor %}
+</details>
+{% endif %}
+
+{% if to_remove %}
+<details>
+    <summary class="diff-remove">− {{ to_remove | length }} superseded {{ 'copy' if to_remove | length == 1 else 'copies' }} removed after {{ 'its' if to_remove | length == 1 else 'their' }} FLAC is copied</summary>
+    {% for r in to_remove %}
+    <div class="track-row diff-row-remove">
+        <span style="width: 1.5rem; color: var(--color-error);">−</span>
+        <div class="track-info">
+            <div class="track-title">{{ r.title or r.path }}</div>
+            <div class="track-artist">{{ r.path }}{% if r.state == 'waiting' %} &middot; waits for the FLAC copy{% endif %}</div>
+        </div>
+    </div>
+    {% endfor %}
+</details>
+{% endif %}
+
+{% if kept %}
+<details>
+    <summary class="diff-unknown">{{ kept | length }} old {{ 'copy' if kept | length == 1 else 'copies' }} kept</summary>
+    {% for k in kept %}
+    <div class="track-row diff-row-unknown">
+        <span class="diff-unknown" style="width: 1.5rem;">=</span>
+        <div class="track-info">
+            <div class="track-title">{{ k.path }}</div>
+            <div class="track-artist">{{ kept_reasons.get(k.reason, k.reason) }}</div>
         </div>
     </div>
     {% endfor %}

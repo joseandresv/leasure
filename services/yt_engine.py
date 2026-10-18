@@ -8,7 +8,7 @@ import os
 import re
 import shutil
 from dataclasses import dataclass, replace
-from datetime import date
+from datetime import date, datetime, time, timedelta
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -42,6 +42,14 @@ _GONE_MARKERS = ("video unavailable", "private video", "removed by the uploader"
 
 class DownloadFailed(RuntimeError):
     """The track cannot be downloaded; the message is shown to the user as-is."""
+
+
+class CapDeferred(RuntimeError):
+    """A cap, cooldown, breaker or full disk holds the track: it stays queued. Message shown as-is."""
+
+    def __init__(self, message: str, *, retry_after_s: float = 300.0) -> None:
+        super().__init__(message)
+        self.retry_after_s = retry_after_s
 
 
 def _download_failure(error: Exception) -> DownloadFailed:
@@ -170,12 +178,24 @@ def search_youtube(title: str, artist: str, duration_ms: int = 0) -> tuple[Candi
     return pick_best(candidates, title, artist, duration_ms)
 
 
+def counter_date() -> str:
+    """The day the daily download counters (YouTube and Qobuz) count for."""
+    return date.today().isoformat()
+
+
+def seconds_until_tomorrow() -> float:
+    """Until counter_date() rolls over, plus a few seconds of margin."""
+    now = datetime.now()
+    midnight = datetime.combine(now.date() + timedelta(days=1), time.min)
+    return (midnight - now).total_seconds() + 5
+
+
 def downloads_today() -> int:
     try:
         state = json.loads(DAILY_COUNTER_FILE.read_text())
     except (OSError, ValueError):
         return 0
-    return int(state.get("count", 0)) if state.get("date") == date.today().isoformat() else 0
+    return int(state.get("count", 0)) if state.get("date") == counter_date() else 0
 
 
 def daily_cap_reached() -> bool:
@@ -184,7 +204,7 @@ def daily_cap_reached() -> bool:
 
 def record_daily_download() -> int:
     count = downloads_today() + 1
-    DAILY_COUNTER_FILE.write_text(json.dumps({"date": date.today().isoformat(), "count": count}))
+    DAILY_COUNTER_FILE.write_text(json.dumps({"date": counter_date(), "count": count}))
     return count
 
 

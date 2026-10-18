@@ -9,7 +9,7 @@ from pathlib import Path
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import Track
-from services import tagger
+from services import tagger, track_locks
 from services.device import build_device_path
 from services.yt_engine import _files_of_other_tracks, _track_stem, with_audio_suffix
 
@@ -125,24 +125,27 @@ async def refresh_album_track(session: AsyncSession, track: Track, data: dict) -
 
     Returns the card path a synced track had before when it changed: sync never deletes
     audio, so that old copy stays on the card next to the new one."""
-    old_card_path = _card_path(track) if track.synced_at and track.file_path else None
-    if not refresh_album_fields(track, data):
-        return None
-    old_file, path = track.file_path, None
-    if track.status == "done" and track.file_path:
-        stem = _track_stem(track)
-        path = await asyncio.to_thread(relocate_library_file, Path(track.file_path), stem,
-                                       await _files_of_other_tracks(track.id, stem))
-        if path:
-            track.file_path = str(path)
-        track.synced_at = None
-    try:
-        await session.commit()
-    except Exception:
-        if path and str(path) != old_file:
-            old = Path(old_file)
-            await asyncio.to_thread(relocate_library_file, path, old.with_name(old.stem))
-        raise
+    async with track_locks.hold(track.id):
+        # A FLAC upgrade or revert may have swapped the file while this waited for the lock.
+        await session.refresh(track)
+        old_card_path = _card_path(track) if track.synced_at and track.file_path else None
+        if not refresh_album_fields(track, data):
+            return None
+        old_file, path = track.file_path, None
+        if track.status == "done" and track.file_path:
+            stem = _track_stem(track)
+            path = await asyncio.to_thread(relocate_library_file, Path(track.file_path), stem,
+                                           await _files_of_other_tracks(track.id, stem))
+            if path:
+                track.file_path = str(path)
+            track.synced_at = None
+        try:
+            await session.commit()
+        except Exception:
+            if path and str(path) != old_file:
+                old = Path(old_file)
+                await asyncio.to_thread(relocate_library_file, path, old.with_name(old.stem))
+            raise
     stale = old_card_path if old_card_path and old_card_path != _card_path(track) else None
     if stale:
         logger.info("Track %d now syncs to a new card path; its old copy %s stays on the card", track.id, stale)

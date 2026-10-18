@@ -191,25 +191,22 @@ async def test_a_track_with_no_confident_match_fails_loudly(db, fake_ytdlp, monk
     assert fake_ytdlp.calls == []
 
 
-async def test_daily_cap_leaves_the_track_pending_and_queued(db, monkeypatch):
-    from worker import DownloadWorker
+async def test_daily_cap_defers_a_youtube_download(db, monkeypatch):
+    from services.downloader import download_track
 
     monkeypatch.setattr(yt_engine, "daily_cap_reached", lambda: True)
-    monkeypatch.setattr("worker.CAP_RETRY_SECONDS", 0)
     called = []
 
     async def _never(track_id):
         called.append(track_id)
 
-    monkeypatch.setattr("services.downloader.download_track", _never)
-    track_id = await _seed_track(db, status="pending")
-    worker = DownloadWorker()
+    monkeypatch.setattr(yt_engine, "download", _never)
+    track_id = await _seed_track(db, status="pending", quality="mp3_320")
 
-    await worker._process_track(0, track_id)
+    with pytest.raises(yt_engine.CapDeferred, match="cap") as deferred:
+        await download_track(track_id)
 
-    track = await _track(db, track_id)
-    assert (track.status, called, worker.queue_size) == ("pending", [], 1)
-    assert "cap" in track.error_message
+    assert called == [] and deferred.value.retry_after_s > 0
 
 
 def test_a_cookie_file_leaves_no_cookieless_retry(tmp_path, monkeypatch):
@@ -309,4 +306,4 @@ async def test_recovery_requeues_pending_tracks_in_id_order(db):
 
     await worker._recover_orphaned()
 
-    assert [worker.queue.get_nowait() for _ in ids] == ids
+    assert [worker.queue.get_nowait()[2] for _ in ids] == ids

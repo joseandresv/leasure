@@ -90,7 +90,7 @@ async def test_retry_requeues_the_track_and_clears_the_error(client, db):
         assert retried.error_message is None
 
     from worker import download_worker
-    assert download_worker.queue.get_nowait() == track.id
+    assert download_worker.queue.get_nowait()[2] == track.id
 
 
 @pytest.mark.asyncio

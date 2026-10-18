@@ -43,13 +43,16 @@ def _format_error(request: Request, error: ValueError):
     raise HTTPException(status_code=400, detail=str(error))
 
 
-def _unavailable(kind: str, provider: str) -> HTMLResponse:
+def _unavailable(kind: str, provider: str, status: int | None = None) -> HTMLResponse:
+    if provider == "spotify" and status == 403:
+        return HTMLResponse("<p>This Spotify playlist is private or not available to Leasure "
+                            "(Spotify only lets apps read playlists you own or follow).</p>")
     seconds = sp.rate_limit_seconds_left() if provider == "spotify" else 0
     if not seconds:
         return HTMLResponse(f"<p>{kind} not found or source unavailable.</p>")
     wait = f"~{round(seconds / 3600)} h" if seconds >= 5400 else f"~{max(1, round(seconds / 60))} min"
     return HTMLResponse(f"<p>Spotify is rate-limiting Leasure right now (try again in {wait}). "
-                        "YouTube Music albums still work.</p>")
+                        f"YouTube Music {kind.lower()}s still work.</p>")
 
 
 # --- Browse endpoints (return HTML partials) ---
@@ -233,9 +236,11 @@ async def playlist_detail(
     """Playlist tracks from a specific provider."""
     playlist_info = None
     tracks = []
+    error_status = None
 
     if provider == "spotify":
         data = await asyncio.to_thread(sp.get_playlist_tracks, playlist_id)
+        error_status = data.get("error_status") if data else None
         if data and not data.get("error"):
             playlist_info = data.get("playlist", {})
             for t in data["tracks"]:
@@ -266,7 +271,7 @@ async def playlist_detail(
                 })
 
     if not playlist_info:
-        return _unavailable("Playlist", provider)
+        return _unavailable("Playlist", provider, error_status)
 
     # Playlist row exists? (sync can only write an .m3u8 when this is True)
     pl_row_stmt = select(Playlist).where(Playlist.source == provider, Playlist.source_id == playlist_id)

@@ -47,11 +47,28 @@
                 </button>
                 {% endif %}
             </div>
+            {% if not is_playlist %}
+            {% set upgrade = namespace(ids=[], possible=false) %}
+            {% for track in tracks if track.db and track.db.id %}
+                {% set upgrade.ids = upgrade.ids + [track.db.id] %}
+                {% if track.db.upgrade_possible %}{% set upgrade.possible = true %}{% endif %}
+            {% endfor %}
+            {% if upgrade.possible %}
+            <div id="qobuz-upgrade-album-slot" hx-get="/api/qobuz/upgrade/button/html"
+                 hx-vals='{{ {"scope": "album", "track_ids": upgrade.ids | join(",")} | tojson }}'
+                 hx-trigger="load, qobuz:changed from:body" hx-swap="innerHTML"></div>
+            {% endif %}
+            {% endif %}
         </div>
     </div>
 </div>
 
-<div id="album-tracks">
+<div hidden hx-get="/api/music/{{ 'playlist' if is_playlist else 'album' }}/{{ provider | urlencode }}/{{ album_id | urlencode }}"
+     hx-trigger="qobuz:queued[this.closest('dialog').open] from:body"
+     hx-target="#album-tracks" hx-select="#album-tracks" hx-swap="outerHTML"></div>
+{# A provider error page has no rows; keep the old ones rather than swapping in nothing. #}
+<div id="album-tracks"
+     hx-on::before-swap="if (event.target === this) event.detail.shouldSwap = event.detail.serverResponse.includes('id=&quot;album-tracks&quot;')">
 {% for track in tracks %}
 <div class="track-row">
     <span class="track-num">{{ track.track_number | default(loop.index, true) }}</span>

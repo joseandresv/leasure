@@ -55,11 +55,20 @@ document.addEventListener('htmx:afterRequest', function(event) {
     }
 });
 
-// Log HTMX errors
+// FastAPI puts the reason for a refusal in the JSON `detail`; show it when it is text.
+function responseDetail(xhr) {
+    try {
+        const detail = JSON.parse(xhr.responseText).detail;
+        return typeof detail === 'string' && detail ? detail : null;
+    } catch (e) {
+        return null;
+    }
+}
+
 document.addEventListener('htmx:responseError', function(event) {
     console.error('HTMX error:', event.detail);
-    if (Alpine.store('toast')) {
-        Alpine.store('toast').add('Request failed', 'error');
+    if (window.Alpine && Alpine.store('toast')) {
+        Alpine.store('toast').add(responseDetail(event.detail.xhr) || 'Request failed', 'error');
     }
 });
 
@@ -121,7 +130,7 @@ document.addEventListener('click', function(event) {
 // Covers on CDNs that send no CORS header fail to load as WebGL textures or
 // crossorigin images; the server re-serves them from our origin. Hosts known to
 // send none go through it on the first try, others only after a failure.
-const NO_CORS_COVER_HOSTS = new Set(['www.gstatic.com']);
+const NO_CORS_COVER_HOSTS = new Set(['www.gstatic.com', 'music.youtube.com']);
 
 function absoluteUrl(url) {
     try { return new URL(url); } catch (e) { return null; }
@@ -188,6 +197,18 @@ document.addEventListener('DOMContentLoaded', function() {
     initColorExtraction();
 });
 
+// Server timestamps are UTC (naive ones too); show them as the viewer's clock time.
+function localizeTimes() {
+    document.querySelectorAll('time[data-local-time]:not([data-localized])').forEach(function(el) {
+        var iso = el.getAttribute('datetime') || '';
+        var when = new Date(/(Z|[+-]\d\d:?\d\d)$/i.test(iso) ? iso : iso + 'Z');
+        if (isNaN(when.getTime())) return;
+        el.textContent = when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        el.dataset.localized = '1';
+    });
+}
+document.addEventListener('htmx:afterSettle', localizeTimes);
+
 /* ── Device Sync SSE Handler ── */
 
 // Loose comparison (trailing separator, drive-letter case) so a path the server
@@ -211,7 +232,21 @@ function syncCountSegments(data, hasErrors) {
         if (data.skipped) segs.push({ n: data.skipped }, ' already on the card');
     }
     if (data.playlists) segs.push(' · ', { n: data.playlists }, ' playlists generated');
+    if (data.removed) segs.push(' · ', { n: data.removed }, ' old copies removed');
+    if (data.kept) segs.push(' · ', { n: data.kept }, ' old copies kept');
     return segs;
+}
+
+var KEPT_REASONS = {
+    changed_on_card: 'changed on the card — remove by hand if unwanted',
+    path_in_use: 'another track uses this path',
+    waiting: 'waits for the FLAC copy'
+};
+
+function keptCopyLines(keptPaths) {
+    return (keptPaths || []).map(function(k) {
+        return k.path + ' — ' + (KEPT_REASONS[k.reason] || k.reason);
+    });
 }
 
 var SYNC_ERRORS_SHOWN = 50;
@@ -369,6 +404,10 @@ function startSync(e) {
                 box.appendChild(p);
                 if (errors.length > 0) {
                     box.appendChild(syncErrorDetails(errors, errorLabel, !data.copied));
+                }
+                var kept = keptCopyLines(data.kept_paths);
+                if (kept.length) {
+                    box.appendChild(syncErrorDetails(kept, data.kept + ' old copies kept on the card', false));
                 }
                 status.appendChild(box);
 

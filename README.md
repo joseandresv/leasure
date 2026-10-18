@@ -53,10 +53,26 @@ One pipeline handles every YouTube download (`services/yt_engine.py`):
 `source_format_id`, `source_codec`, `source_bitrate_kbps`, `source_sample_rate`, `premium_used`,
 `transcoded`, `is_lossless`, `verification`, `matched_title` and `match_score`.
 
-Formats offered are "Best available" (the source stream, remuxed, no re-encode), MP3 320, and
-FLAC lossless from a real lossless service. The old "FLAC (transcoded)" option is gone: a FLAC
-container filled from a YouTube stream claims a fidelity the source never had, and `flac_lossless`
-now fails with a clear message instead of silently transcoding a lossy source.
+Formats offered are "Best" (Qobuz FLAC when signed in, else the YouTube stream, remuxed, no
+re-encode), MP3 320 (YouTube only, never Qobuz), and "FLAC only" (Qobuz only). A FLAC container is
+never filled from a YouTube stream: `flac_lossless` fails with a clear message instead.
+
+With a Qobuz sign-in, "Best" and "FLAC only" go to `services/qobuz_engine.py` first: a strict match
+(ISRC, or title/artist/duration gates that reject live, remix, mono, re-recorded and numbered
+variants), a FLAC up to 24-bit/192 kHz (`QOBUZ_MAX_FORMAT`), its shipped tags stripped, the whole
+file decoded by ffmpeg, then Leasure's own tags and sidecars in staging before the move into the
+library. The result tier is `flac_{bits}_{khz}` (`flac_24_96`...) with `engine_used = "qobuz"`.
+When Qobuz cannot be used (not signed in, cap, no confident match, preview-only) "Best" falls back
+to YouTube and `qobuz_skip_reason` records why; a damaged Qobuz download is an error, not a fallback.
+Qobuz streams are capped by `QOBUZ_MAX_DOWNLOADS_PER_DAY` (default 100, `data/qobuz_daily.json`),
+API calls by `QOBUZ_API_CALLS_PER_MINUTE`, with a 3-8 s gap between tracks; a 429 or repeated
+failures pause Qobuz and leave FLAC-only tracks queued rather than failing them.
+
+"Upgrade to FLAC" (album page, library) queues Qobuz versions of finished lossy tracks. The new
+FLAC replaces the library file only after it downloaded, decoded and tagged cleanly; the old file
+and sidecars are kept in `data/upgrades/<id>/` for `QOBUZ_UPGRADE_KEEP_DAYS` (30) so "Undo FLAC"
+can put them back. The next sync removes the superseded card copy only when its bytes match what
+Leasure wrote there.
 
 The cookie file is the owner's Google session, so authenticated downloads are throttled
 (10-30 s between tracks, 5 MB/s ceiling, 3 retries) and capped at `YT_MAX_DOWNLOADS_PER_DAY`
@@ -273,6 +289,22 @@ Authenticated downloads are capped per day by `YT_MAX_DOWNLOADS_PER_DAY` (defaul
 
 That cookie file is what yt-dlp authenticates with. It is written automatically whenever you connect through the header-paste flow, and you can also drop in an export from a browser extension such as "Get cookies.txt LOCALLY" (save it as `data/cookies.txt`, or set `COOKIE_FILE` to another path). Cookies older than 12 hours are flagged as stale in the card. **Treat the file as your Google session**: keep it private and out of any synced folder.
 
+### Configure Qobuz (FLAC) — optional
+
+Leasure talks to Qobuz directly (no streamrip) and needs only your user id and token, so it works
+for accounts that sign in with Google:
+
+1. Open <https://play.qobuz.com> and sign in.
+2. Press F12 → **Application** → **Local Storage** → `https://play.qobuz.com` → key `localuser`.
+3. Copy `"id"` into **User ID** and `"userAuthToken"` into **Token** on the Qobuz card on Home.
+
+The token is stored in `data/qobuz_session.json` (owner-only: `chmod 600` on Linux, `icacls` on
+Windows and on `/mnt/<letter>` under WSL2). **It works like a password.** "Check now" resolves a test
+track and shows PASS when the account gets full lossless streams; "Sign out" only makes Leasure forget
+the token. `python -m scripts.qobuz_check` prints the same diagnosis in redacted JSON.
+
+Without a sign-in the engine is inert and every download uses YouTube as before.
+
 ### Configure YouTube (plain) — optional, for watch-history feed
 
 Plain YouTube watch history requires a Google OAuth2 flow (separate from YouTube Music). This is **optional** — skip this section if you only care about Spotify and YouTube Music history.
@@ -422,6 +454,7 @@ leasure/
     device.py             # Device detection, sync, diff
     downloads.py          # Download queue monitoring
     library.py            # Library browsing
+    qobuz.py              # Qobuz card (sign-in, check) and FLAC upgrade endpoints
   services/
     spotify_client.py     # Spotipy wrapper (OAuth, library, recently_played, currently_playing)
     browser_session.py    # Reads the YouTube login from Leasure's own browser window over CDP
@@ -430,7 +463,11 @@ leasure/
     downloader.py         # Download dispatcher (routes to engines)
     yt_engine.py          # The YouTube pipeline: scored match, staging dir, provenance, atomic move
     ytdlp_opts.py         # Shared yt-dlp option sets (cookies, throttle, PO-token solver)
-    streamrip_engine.py   # Lossless download via Qobuz/Tidal/Deezer (optional)
+    qobuz_client.py       # Minimal Qobuz API client (httpx): app id/secret scrape, signing, CDN download
+    qobuz_session.py      # Stored Qobuz sign-in (data/qobuz_session.json), check, status
+    qobuz_engine.py       # Qobuz FLAC downloads and reversible FLAC upgrades
+    secret_file.py        # Atomic owner-only writes for credential files
+    track_locks.py        # One asyncio lock per track for file moves + commits
     bandcamp_engine.py    # Bandcamp lossless fallback (optional)
     archive_engine.py     # Internet Archive lossless fallback (optional)
     tagger.py             # Full H2 metadata: ID3 tags, embedded art, sidecar files, lyrics

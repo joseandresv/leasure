@@ -29,6 +29,9 @@ def generate_m3u(playlist_name: str, tracks: list[dict], device_root: Path) -> P
 
     lines = []
     for track in tracks:
+        if track.get("rel_path"):
+            lines.append(track["rel_path"])
+            continue
         ext = track.get("format", "mp3")
         rel_path = build_device_path(
             track["artist"],

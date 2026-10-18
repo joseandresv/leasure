@@ -1,0 +1,28 @@
+{
+  "query": "Miles Davis So What",
+  "tracks": {
+    "limit": 10,
+    "offset": 0,
+    "total": 3,
+    "items": [
+      {
+        "id": 52219581, "title": "So What", "version": "2009 Remaster", "duration": 562, "isrc": "us-sm1-59-00113",
+        "track_number": 1, "media_number": 1, "maximum_bit_depth": 24, "maximum_sampling_rate": 192000,
+        "streamable": true, "hires_streamable": true,
+        "performer": {"id": 1, "name": "Miles Davis"},
+        "album": {"id": "0886443927087", "title": "Kind Of Blue", "upc": "0886443927087",
+                  "artist": {"name": "Miles Davis"},
+                  "image": {"small": "https://static.qobuz.com/images/covers/87/70/0886443927087_230.jpg",
+                            "large": "https://static.qobuz.com/images/covers/87/70/0886443927087_600.jpg"}}
+      },
+      {
+        "id": 52219582, "title": "So What (Live)", "version": "Live", "duration": 540, "isrc": "USSM15900999",
+        "track_number": 2, "media_number": 1, "maximum_bit_depth": 16, "maximum_sampling_rate": 44.1,
+        "streamable": false, "hires_streamable": false,
+        "album": {"id": 77, "title": "Live Somewhere", "artist": {"name": "Miles Davis Quintet"},
+                  "image": {"large": "http://static.qobuz.com/images/covers/x_600.jpg"}}
+      },
+      {"title": "No id, dropped"}
+    ]
+  }
+}

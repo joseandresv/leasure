@@ -1,14 +1,17 @@
+import asyncio
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import case, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db import get_session
 from models import Track
 from routers import device as device_router
+from services import qobuz_session
+from services.downloader import QOBUZ_ROUTED
 from worker import download_worker
 
 router = APIRouter()
@@ -18,8 +21,9 @@ ACTIVE_STATUSES = ["downloading", "converting", "tagging", "pending"]
 # Failures stay in the queue until the user retries or dismisses them: an error that is
 # only visible as a counter in the footer is an error nobody fixes.
 QUEUE_STATUSES = [*ACTIVE_STATUSES, "error"]
-_QUEUE_ORDER = case({"downloading": 0, "converting": 0, "tagging": 0, "pending": 1, "error": 2},
-                    value=Track.status, else_=3)
+UPGRADE_QUEUE_STATES = ("queued", "downloading", "error")
+_UPGRADE_STATUS = {"queued": "pending", "downloading": "downloading", "error": "error"}
+_QUEUE_ORDER = {"downloading": 0, "converting": 0, "tagging": 0, "pending": 1, "error": 2}
 
 
 def _is_htmx(request: Request) -> bool:
@@ -33,23 +37,40 @@ def _format_downloaded_at(value: datetime | None) -> str | None:
     return value.replace(tzinfo=UTC).astimezone().strftime("%d %b %Y, %H:%M")
 
 
-def _queue_row(track: Track) -> dict:
+def _route(track: Track, qobuz_ready: bool) -> str:
+    if track.quality not in QOBUZ_ROUTED or not qobuz_ready:
+        return "youtube"
+    return "qobuz_only" if track.quality == "flac_lossless" else "qobuz_first"
+
+
+def _queue_row(track: Track, qobuz_ready: bool) -> dict:
+    """A download, or a finished track's FLAC upgrade, as the queue shows it."""
+    upgrade = track.status == "done" and track.upgrade_state in UPGRADE_QUEUE_STATES
     return {
         "id": track.id,
         "title": track.title,
         "artist": track.artist,
-        "status": track.status,
         "format": track.format,
         "quality": track.quality,
-        "error_message": track.error_message,
+        "kind": "upgrade" if upgrade else "download",
+        "status": _UPGRADE_STATUS[track.upgrade_state] if upgrade else track.status,
+        "error_message": track.upgrade_error if upgrade else track.error_message,
+        "route": "upgrade" if upgrade else _route(track, qobuz_ready),
     }
+
+
+async def _qobuz_ready() -> bool:
+    return await asyncio.to_thread(qobuz_session.usable) is not None
 
 
 async def _queue_rows(session: AsyncSession) -> list[dict]:
     """Everything the user still has to care about: downloading, then pending, then failed."""
-    stmt = select(Track).where(Track.status.in_(QUEUE_STATUSES)).order_by(_QUEUE_ORDER, Track.id)
+    stmt = select(Track).where(or_(Track.status.in_(QUEUE_STATUSES),
+                                   and_(Track.status == "done", Track.upgrade_state.in_(UPGRADE_QUEUE_STATES))))
     result = await session.execute(stmt)
-    return [_queue_row(t) for t in result.scalars().all()]
+    ready = await _qobuz_ready()
+    rows = [_queue_row(t, ready) for t in result.scalars().all()]
+    return sorted(rows, key=lambda r: (_QUEUE_ORDER.get(r["status"], 3), r["id"]))
 
 
 def _sync_running() -> bool:
@@ -77,13 +98,15 @@ async def retry_download(request: Request, track_id: int, session: AsyncSession 
     track = await session.get(Track, track_id)
     if not track:
         raise HTTPException(status_code=404, detail="That download is no longer in the queue.")
+    if track.status == "done":
+        raise HTTPException(status_code=409, detail="This track is already in the library.")
     track.status = "pending"
     track.error_message = None
     await session.commit()
     await download_worker.enqueue(track.id)
     if _is_htmx(request):
         return templates.TemplateResponse(request=request, name="partials/queue_item.html",
-                                          context={"t": _queue_row(track)})
+                                          context={"t": _queue_row(track, await _qobuz_ready())})
     return {"status": "pending", "track_id": track.id}
 
 

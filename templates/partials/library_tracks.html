@@ -21,6 +21,15 @@
             <td>{{ t.album or '-' }}</td>
             <td>
                 {{ quality_badge(t) }}
+                {% if t.upgrade_state == 'error' and t.upgrade_error %}
+                <small class="upgrade-note">FLAC upgrade failed: {{ t.upgrade_error }}</small>
+                {% endif %}
+                {% if t.upgrade_revertible %}
+                <button type="button" class="outline dl-btn upgrade-undo"
+                        hx-post="/api/qobuz/upgrade/revert/{{ t.id }}" hx-target="this" hx-swap="outerHTML"
+                        hx-disabled-elt="this"
+                        hx-confirm="Put the previous file back? The FLAC is set aside and the next sync swaps the card copy back.">Undo FLAC</button>
+                {% endif %}
             </td>
             <td>
                 {% if t.synced_at %}

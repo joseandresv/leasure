@@ -635,6 +635,7 @@ select {
 .format-select {
     width: auto;
     min-width: 140px;
+    max-width: 100%;
     display: inline-block;
     text-overflow: ellipsis;
 }
@@ -716,6 +717,12 @@ input[type="radio"], input[type="checkbox"] {
 .badge-premium {
     color: var(--accent-amber);
     opacity: 1;
+}
+
+.badge-note.badge-hires {
+    color: var(--text-led);
+    opacity: 1;
+    text-shadow: 0 0 6px var(--text-led-glow);
 }
 
 .badge-warn {
@@ -1320,6 +1327,8 @@ dialog header button:hover { color: var(--text-primary); }
     margin-left: auto;
 }
 
+.queue-item-route { color: var(--text-muted); font-size: 0.75rem; white-space: nowrap; }
+
 
 /* --- 23. Sync Diff --- */
 
@@ -1345,6 +1354,64 @@ dialog header button:hover { color: var(--text-primary); }
 .sync-result details > summary { justify-content: flex-start; gap: var(--space-xs); cursor: pointer; }
 .sync-result details > summary::before { content: '▸'; }
 .sync-result details[open] > summary::before { transform: rotate(90deg); }
+
+.sync-space { margin-bottom: var(--space-sm); color: var(--text-secondary); }
+.diff-row-remove .track-artist { overflow-wrap: anywhere; }
+
+/* Warnings that ask for an action: the colour alone is not enough on the navy glass. */
+.sync-warning, .qobuz-warning {
+    color: var(--color-warning);
+    border-left: 3px solid var(--color-warning);
+    padding-left: var(--space-sm);
+    margin-bottom: var(--space-sm);
+}
+
+
+/* --- 23b. Qobuz --- */
+
+.qobuz-card p { margin-bottom: var(--space-sm); }
+.qobuz-muted { color: var(--text-muted); font-size: 0.85rem; }
+.qobuz-error { color: var(--color-error); }
+.qobuz-notice { color: var(--color-success); }
+
+/* The plan's ceiling reads like the H2's own spec plate: the one lit line on the card. */
+.qobuz-tier {
+    font-family: var(--font-display);
+    font-size: 0.95rem;
+    letter-spacing: 0.04em;
+    color: var(--text-led);
+    text-shadow: 0 0 10px var(--text-led-glow);
+}
+
+.qobuz-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-sm);
+    margin-bottom: var(--space-md);
+}
+
+/* A long summary wraps instead of being cut, so the card fits a 390px phone. */
+.qobuz-signin > summary { white-space: normal; }
+.qobuz-signin ol { padding-left: 1.2rem; margin-bottom: var(--space-md); }
+.qobuz-signin li { margin-bottom: var(--space-xs); overflow-wrap: anywhere; }
+.qobuz-signin form {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-xs);
+}
+.qobuz-signin form input { margin-bottom: var(--space-sm); }
+.qobuz-signin form button { justify-self: start; }
+
+.qobuz-upgrade {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-xs) var(--space-sm);
+}
+.qobuz-upgrade:has(> *) { margin: var(--space-sm) 0; }
+
+.upgrade-note { display: block; color: var(--color-warning); font-size: 0.75rem; }
+.upgrade-undo { margin-left: var(--space-xs); }
 
 
 /* --- 24. Drive Cards --- */
@@ -1824,7 +1891,7 @@ dialog header button:hover { color: var(--text-primary); }
     font-size: 0.9rem; transition: color 150ms ease, border-color 150ms ease, transform 300ms ease;
 }
 .deck-refresh:hover { color: var(--deck-accent); border-color: var(--deck-accent); }
-.deck-refresh.htmx-request { animation: deck-spin 700ms linear infinite; }
+.music-cabinet:has(#music-results[aria-busy="true"]) .deck-refresh { animation: deck-spin 700ms linear infinite; }
 @keyframes deck-spin { to { transform: rotate(360deg); } }
 
 /* VU meter level — drifts like a needle responding to music. */
@@ -2097,7 +2164,23 @@ dialog header button:hover { color: var(--text-primary); }
 @keyframes results-roll-down { from { opacity: 0; transform: translateY(-56px) rotateX(22deg); } }
 @media (prefers-reduced-motion: reduce) {
     #music-results.roll-in-up > *, #music-results.roll-in-down > * { animation: none; }
+    .music-cabinet:has(#music-results[aria-busy="true"]) .deck-refresh { animation: none; }
 }
+
+/* Sits in the tab row's bottom margin so showing it never shifts the wheel. */
+#music-loading {
+    height: 0;
+    overflow: visible;
+    transform: translateY(calc(-1 * var(--space-md) + 1px));
+    text-align: right;
+    font-family: var(--font-display);
+    font-size: 0.65rem;
+    letter-spacing: 0.12em;
+    color: var(--album-accent);
+    visibility: hidden;
+    pointer-events: none;
+}
+#music-loading.htmx-request { visibility: visible; }
 
 /* Banner rows — art on the left, title/artist on the right (DDR list row) */
 .deck-banner-row {

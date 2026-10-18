@@ -1,0 +1,10 @@
+{
+  "track_id": 52219581,
+  "duration": 562,
+  "url": "https://streaming-qobuz-std.akamaized.net/file?uid=1&eid=52219581&fmt=27&profile=raw&hmac=deadbeefcafe0123",
+  "format_id": 27,
+  "mime_type": "audio/flac",
+  "sampling_rate": 192,
+  "bit_depth": 24,
+  "restrictions": [{"code": "FormatRestrictedByFormatAvailability"}]
+}

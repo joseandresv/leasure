@@ -16,14 +16,19 @@
     </div>
 
     <div x-show="view === 'list'">
-        <input type="search" placeholder="search title, artist, album..."
+        <div id="qobuz-upgrade-all-slot" hx-get="/api/qobuz/upgrade/button/html?scope=all"
+             hx-trigger="load, leasure:panel-shown[detail.name=='library'] from:body, qobuz:changed from:body"
+             hx-swap="innerHTML"></div>
+
+        <input type="search" id="library-search" placeholder="search title, artist, album..."
                hx-get="/api/library/tracks/html"
                hx-trigger="keyup changed delay:300ms"
                hx-target="#track-list"
                hx-swap="innerHTML"
                name="q">
 
-        <div hx-get="/api/library/tracks/html" hx-trigger="load" hx-swap="innerHTML" id="track-list">
+        <div hx-get="/api/library/tracks/html" hx-trigger="load, qobuz:queued from:body"
+             hx-include="#library-search" hx-swap="innerHTML" id="track-list">
             <i style="color: var(--text-muted);">loading...</i>
         </div>
     </div>

@@ -8,10 +8,12 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from markupsafe import escape
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.responses import JSONResponse
 
 from config import settings
 from db import init_db
+from services import qobuz_client
 from services.ytdlp_opts import ensure_deno_on_path
 from worker import download_worker
 
@@ -20,6 +22,10 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+# The Qobuz token and signed CDN URLs must never reach a log line, whoever logs them.
+qobuz_client.install_log_redaction()
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 # yt-dlp is only imported lazily inside the download engines, so doing this after
 # the imports above is still early enough.
@@ -31,7 +37,8 @@ async def lifespan(app: FastAPI):
     logger.info("Starting Leasure...")
     await init_db()
     await download_worker.start()
-    logger.info("Leasure ready at http://%s:%d", settings.host, settings.port)
+    # The bound address belongs to uvicorn (--port), which logs it itself; settings.port may not be it.
+    logger.info("Leasure ready")
     yield
     await download_worker.stop()
     logger.info("Leasure shutdown complete")
@@ -63,6 +70,8 @@ class SameOriginMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(SameOriginMiddleware)
+# Added last so it runs first: a DNS-rebinding page reaches 127.0.0.1 under its own host name.
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
@@ -73,11 +82,12 @@ templates.env.globals["platform"] = get_platform()
 templates.env.globals["device_path_placeholder"] = device_path_placeholder()
 
 # Register routers
-from routers import art, device, downloads, library, music, spotify, youtube  # noqa: E402
+from routers import art, device, downloads, library, music, qobuz, spotify, youtube  # noqa: E402
 
 app.include_router(music.router, prefix="/api/music", tags=["music"])
 app.include_router(spotify.router, prefix="/api/spotify", tags=["spotify"])
 app.include_router(youtube.router, prefix="/api/youtube", tags=["youtube"])
+app.include_router(qobuz.router, prefix="/api/qobuz", tags=["qobuz"])
 app.include_router(downloads.router, prefix="/api/downloads", tags=["downloads"])
 app.include_router(library.router, prefix="/api/library", tags=["library"])
 app.include_router(device.router, prefix="/api/device", tags=["device"])
