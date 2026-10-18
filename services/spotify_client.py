@@ -1,5 +1,7 @@
 import logging
+import time
 
+import requests
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 
@@ -9,6 +11,9 @@ logger = logging.getLogger(__name__)
 
 SCOPES = "user-library-read playlist-read-private playlist-read-collaborative user-read-private user-read-recently-played user-read-currently-playing user-read-playback-state"
 CACHE_PATH = str(settings.data_dir / ".spotify_cache")
+REQUEST_TIMEOUT_S = 10
+
+_rate_limited_until = 0.0
 
 
 def _get_auth_manager() -> SpotifyOAuth:
@@ -46,7 +51,30 @@ def get_client() -> spotipy.Spotify | None:
         return None
     if not token_info:
         return None
-    return spotipy.Spotify(auth_manager=auth)
+    # A plain session, not spotipy's urllib3 retry adapter: that adapter sleeps through a 429's
+    # Retry-After, which Spotify sets to hours once the app is rate-limited.
+    return spotipy.Spotify(auth_manager=auth, requests_session=requests.Session(), requests_timeout=REQUEST_TIMEOUT_S)
+
+
+def rate_limit_seconds_left() -> float:
+    """Seconds until Spotify's last 429 Retry-After expires; 0 when not rate-limited."""
+    return max(0.0, _rate_limited_until - time.monotonic())
+
+
+def is_rate_limited() -> bool:
+    return rate_limit_seconds_left() > 0
+
+
+def _note_rate_limit(e: spotipy.SpotifyException) -> None:
+    global _rate_limited_until
+    try:
+        retry_after = int((e.headers or {}).get("Retry-After") or 0)
+    except ValueError:
+        retry_after = 0
+    if not is_rate_limited():
+        logger.warning("Spotify is rate-limiting this app (429, Retry-After %ss); skipping Spotify album lookups until then",
+                       retry_after)
+    _rate_limited_until = time.monotonic() + retry_after
 
 
 def is_connected() -> bool:
@@ -140,11 +168,20 @@ def get_saved_albums(limit: int = 20, offset: int = 0) -> dict | None:
 
 
 def get_album_tracks(album_id: str, client: spotipy.Spotify | None = None) -> dict | None:
-    """`client` lets a caller use a session with its own retry policy."""
+    """`client` lets a caller use a session with its own retry policy; it then also handles 429s itself.
+    Without one, a rate-limited Spotify yields None at once instead of an error."""
+    if client is None and is_rate_limited():
+        return None
     sp = client or get_client()
     if not sp:
         return None
-    album = sp.album(album_id)
+    try:
+        album = sp.album(album_id)
+    except spotipy.SpotifyException as e:
+        if client is not None or e.http_status != 429:
+            raise
+        _note_rate_limit(e)
+        return None
     isrcs = _fetch_isrcs(sp, [t["id"] for t in album["tracks"]["items"] if t.get("id")])
     credit = album_fields(album)
     tracks = []
@@ -203,6 +240,8 @@ def get_playlists(limit: int = 20, offset: int = 0) -> dict | None:
 
 
 def get_playlist_tracks(playlist_id: str, limit: int = 500, offset: int = 0) -> dict | None:
+    if is_rate_limited():
+        return None
     sp = get_client()
     if not sp:
         return None
@@ -253,6 +292,8 @@ def get_playlist_tracks(playlist_id: str, limit: int = 500, offset: int = 0) -> 
                     break
 
     except Exception as e:
+        if isinstance(e, spotipy.SpotifyException) and e.http_status == 429:
+            _note_rate_limit(e)
         error_str = str(e)
         logger.error("Failed to get playlist tracks for %s: %s", playlist_id, error_str[:200])
         return {"error": error_str[:200], "playlist": playlist_info, "tracks": [], "total": 0, "offset": 0, "limit": limit}
@@ -302,6 +343,7 @@ def get_currently_playing() -> dict | None:
             "artist": ", ".join(a["name"] for a in t["artists"]),
             "artist_id": t["artists"][0]["id"] if t.get("artists") else None,
             "album": t["album"]["name"] if t.get("album") else None,
+            "album_id": t["album"]["id"] if t.get("album") else None,
             "album_image_url": t["album"]["images"][0]["url"] if t.get("album", {}).get("images") else None,
             "track_number": t.get("track_number"),
             "disc_number": t.get("disc_number"),

@@ -22,6 +22,9 @@ class DownloadWorker:
         self._tasks: list[asyncio.Task] = []
 
     async def start(self):
+        if not settings.download_worker_enabled:
+            logger.warning("Download worker disabled (DOWNLOAD_WORKER_ENABLED=false): queued tracks stay pending")
+            return
         # Recover orphaned tracks from previous crash/restart
         await self._recover_orphaned()
 

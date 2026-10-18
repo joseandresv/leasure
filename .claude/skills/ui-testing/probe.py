@@ -1,7 +1,7 @@
 """Headless-browser probe for Leasure. Runs a small scripted scenario against the
 local server and writes screenshots + a JSON report. Usage:
 
-    python probe.py --out DIR [--base http://127.0.0.1:8642] [--scenario home|device|all]
+    python probe.py --out DIR [--base http://127.0.0.1:8650] [--scenario home|device|all]
     python probe.py --out DIR --script my_steps.py     # custom steps (see run_custom)
 
 A custom script defines `def steps(page, shot):` where `shot(name)` saves a
@@ -11,6 +11,7 @@ collected and written to report.json.
 import argparse
 import importlib.util
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -18,6 +19,20 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 PANELS = ("home", "music", "library", "downloads", "device")
+# The server sees the real SD cards; nothing a probe does may mount, eject or copy to them.
+DEVICE_WRITES = re.compile(r"/api/device/(mount|eject|automount|sync)(\?.*)?$")
+SYNC_START = re.compile(r"/api/device/sync/start(\?.*)?$")
+SYNC_STREAM = re.compile(r"/api/device/sync/stream/")
+FAKE_SYNC_EVENTS = "".join(f"data: {json.dumps(e)}\n\n" for e in (
+    {"type": "start", "total": 1},
+    {"type": "done", "total": 1, "synced": 1, "copied": 1, "skipped": 0, "size_mb": 1.0, "errors": [], "playlists": 0},
+))
+
+
+def guard_device(page):
+    page.route(DEVICE_WRITES, lambda route: route.abort())
+    page.route(SYNC_START, lambda route: route.fulfill(json={"job_id": "uitest", "device_path": "", "scope": "all"}))
+    page.route(SYNC_STREAM, lambda route: route.fulfill(body=FAKE_SYNC_EVENTS, content_type="text/event-stream"))
 
 
 def open_panel(page, name: str):
@@ -52,12 +67,14 @@ def run_custom(page, shot, script_path: str):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
-    ap.add_argument("--base", default="http://127.0.0.1:8642")
+    ap.add_argument("--base", default="http://127.0.0.1:8650")
     ap.add_argument("--scenario", default="all")
     ap.add_argument("--script")
     ap.add_argument("--width", type=int, default=1280)
     ap.add_argument("--height", type=int, default=900)
     args = ap.parse_args()
+    if ":8642" in args.base:
+        sys.exit("Refusing to probe port 8642: that is the owner's real server. Start an isolated one (see SKILL.md).")
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -67,6 +84,7 @@ def main():
         browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
         page = browser.new_page(viewport={"width": args.width, "height": args.height})
         page.base_url = args.base
+        guard_device(page)
         page.on("console", lambda m: report["console_errors"].append(m.text) if m.type == "error" else None)
         page.on("pageerror", lambda e: report["page_errors"].append(str(e)))
         page.on("requestfailed", lambda r: report["failed_requests"].append(f"{r.method} {r.url} {r.failure}"))

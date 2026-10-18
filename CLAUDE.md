@@ -4,12 +4,14 @@
 
 Leasure is a local music downloader and library manager designed specifically for the HIFI WALKER H2 portable music player. It runs as a FastAPI web server on native Windows, plain Linux, or WSL2 (see the platform layer below), provides a browser-based UI for browsing Spotify and YouTube Music libraries, downloads audio via yt-dlp, applies H2-compatible metadata, and syncs to the H2's SD card.
 
+The owner's H2 runs firmware V2.3 (hw4) on the HiBy platform.
+
 The target user has Spotify Premium and YouTube Music Premium subscriptions. The app uses these accounts for library browsing and leverages YouTube Music Premium for higher quality audio via Chrome cookie extraction.
 
 ## Key Architecture Decisions
 
 ### Platform layer (Windows / Linux / WSL2)
-`services/platform.py` detects the runtime platform (`get_platform()` returns `windows` | `wsl2` | `linux`). Device detection in `services/device.py` dispatches to one of three backends: Win32 drive enumeration via ctypes (Windows), `/media` + `/run/media` mount scanning (Linux), or `/mnt/<letter>` drvfs scanning (WSL2). The manual `/api/device/mount` endpoint and its UI only apply on WSL2 — Windows and desktop Linux auto-mount removable drives. Templates receive `platform` and `device_path_placeholder` as Jinja globals. The cookie-extraction browser is configurable via `COOKIE_BROWSER` (default chrome) because Chrome 127+ app-bound encryption can block yt-dlp cookie extraction on native Windows (Firefox works there). Install scripts live in `scripts/` (install.sh/run.sh for Linux/WSL2, install.ps1/run.ps1 for Windows).
+`services/platform.py` detects the runtime platform (`get_platform()` returns `windows` | `wsl2` | `linux`). Device detection in `services/device.py` dispatches to one of three backends: Win32 drive enumeration via ctypes (Windows), `/media` + `/run/media` mount scanning (Linux), or `/mnt/<letter>` drvfs scanning (WSL2). Mounting only applies on WSL2 — Windows and desktop Linux auto-mount removable drives, and `POST /api/device/mount`, `/eject` and `/automount` are no-ops there. On WSL2 `services/wsl_mount.py` lists the Windows card-reader slots through PowerShell (`Win32_LogicalDisk`) and mounts/ejects `/mnt/<letter>` (drvfs, owned by the user) without a password: root comes from `wsl.exe -d <distro> -u root -e` through Windows interop, `sudo -n` as fallback, and only allow-listed absolute binaries (`mkdir`, `mount`, `umount`, `rmdir`) run as root. The Device page's Card Reader (`GET /api/device/removable/html`, `partials/removable_drives.html`, `partials/mount_result.html`) shows the slots; `POST /api/device/automount` (Device panel opened, Scan) mounts inserted cards and clears stale mounts of pulled cards. Mount and eject refuse the system drive, eject is refused while a sync writes to the card, and without a working root helper the result shows copy-paste commands. Templates receive `platform` and `device_path_placeholder` as Jinja globals. The cookie-extraction browser is configurable via `COOKIE_BROWSER` (default chrome) because Chrome 127+ app-bound encryption can block yt-dlp cookie extraction on native Windows (Firefox works there). Install scripts live in `scripts/` (install.sh/run.sh for Linux/WSL2, install.ps1/run.ps1 for Windows).
 
 ### yt-dlp instead of spotDL, in one engine
 SpotDL was the original download engine but caused compatibility issues (dependency conflicts with the main app's Python environment, unreliable matching). The project now uses yt-dlp directly with ytmusicapi for search. `services/yt_engine.py` is the single pipeline for both Spotify-sourced and YouTube-sourced tracks (the old `spotdl_engine.py` / `ytdlp_engine.py` pair, which duplicated it, is gone). It resolves the source (an exact `youtube_id` wins over any search; otherwise scored ytmusicapi results, then scored `ytsearch5` results, with variant penalties and a minimum score -- no blind `ytsearch1`), downloads into `downloads/<track_id>/` via `extract_info(download=True)`, reads the provenance from `info["requested_downloads"][0]` (never by re-probing the output), verifies the duration within 10 s, then moves the file atomically into the library and removes the staging dir. There is no "most recent file in the folder" fallback. `Track.quality` stores the result tier (`aac_256`, `mp3_320`, ...) next to `source_format_id`, `source_codec`, `source_bitrate_kbps`, `source_sample_rate`, `premium_used`, `transcoded`, `is_lossless`, `verification`, `matched_title` and `match_score`. Lossy FLAC is no longer offered anywhere: `flac_lossless` fails with a message when no lossless engine is configured. Authenticated attempts are throttled and capped by `YT_MAX_DOWNLOADS_PER_DAY` (counter in `data/yt_daily.json`); a "Sign in to confirm" / 403 refusal stops the download and asks for fresh cookies instead of retrying cookie-less.
@@ -41,7 +43,7 @@ The frontend uses htmx for partial page updates. Routers have both JSON API endp
 The H2 reads `.jpg` sidecar files (same name as audio) for album art and `.lrc` files for synced lyrics. These are created alongside the audio files in the library and copied during sync.
 
 ### Sync is a POST-created job streamed by id
-`POST /api/device/sync/start` validates the target with `resolve_sync_target()` (must be a volume `detect_devices()` found, never `device_type == "system"`) and returns a single-use job id; `GET /api/device/sync/stream/{job_id}` streams SSE progress. The old `GET /sync/stream?device_path=` was CSRF-able (a drive-by page could copy the library anywhere and delete playlists) and is gone. `SameOriginMiddleware` in `app.py` additionally rejects mutating requests the browser marks cross-site.
+`POST /api/device/sync/start` validates the target with `resolve_sync_target()` (must be a volume `detect_devices()` found, never `device_type == "system"`) and returns a single-use job id; `GET /api/device/sync/stream/{job_id}` streams SSE progress. Tracks copy album by album in disc/track order; a file whose card copy has the same size and mtime (within 2 s, FAT rounding) is skipped, and the copy gets the source mtime so the next sync recognises it; the `done` event carries `copied` and `skipped`. On a multi-disc album (`total_discs > 1` or disc > 1) names get a `D-NN - ` prefix instead of `NN - `; dotted titles ("Mr. Brightside") keep their full name (`with_audio_suffix`, not `with_suffix`). The old `GET /sync/stream?device_path=` was CSRF-able (a drive-by page could copy the library anywhere and delete playlists) and is gone. `SameOriginMiddleware` in `app.py` additionally rejects mutating requests the browser marks cross-site.
 
 ### Playlist manifest on the card
 `services/playlist.py` writes `.leasure-playlists.json` at the card root listing the `.m3u8` files Leasure generated. `sweep_orphan_playlists()` only deletes names from that manifest, so user-made playlists are never removed.
@@ -87,8 +89,15 @@ services/
   platform.py       -- Runtime platform detection (windows | wsl2 | linux)
   formats.py        -- Shared download format/quality mapping
   device.py         -- Device detection (per-platform backends), FAT32 filename sanitization, device path builder
+  wsl_mount.py      -- WSL2 passwordless card mount/eject via `wsl.exe -u root` (sudo -n fallback)
+  card_import.py    -- Rebuilds the library from the songs on an H2 card (card is only read)
   playlist.py       -- M3U playlist generation (H2 format) + on-card manifest of generated files
   oauth_state.py    -- one-shot OAuth state tokens shared by Spotify and Google flows
+
+scripts/
+  import_card.py    -- Import the songs on an H2 card into the library (`--source`, `--dry-run`; report in data/card-import/)
+  move_library.py   -- Move the library to DEST with size+SHA-256 checks, rewrite Track.file_path (`--dry-run`, `--force`)
+  clean_card.py     -- Delete the card copies an import made stale, after a sync; dry run unless `--apply`
 
 tests/              -- pytest suite (ASGI client, temp data dir); .github/workflows/ci.yml runs ruff + pytest
 .claude/agents/     -- frontend-dev, backend-dev (Opus, load coding-standards), user-tester (Opus, read-only, loads ui-testing)
@@ -136,7 +145,7 @@ The H2 uses the album artist (TPE2/albumartist) tag for its Category browser. If
 ruff check .
 pytest -q          # tests/ — temp data dir, ASGI client, no network; fixtures in tests/conftest.py
 ```
-`tests/conftest.py` sets `DATA_DIR`/`LIBRARY_DIR`/`DOWNLOAD_DIR` env vars before importing `config`, and the `fake_device` fixture monkeypatches `detect_devices()` so sync tests get a temp "H2".
+`tests/conftest.py` sets `DATA_DIR`/`LIBRARY_DIR`/`DOWNLOAD_DIR` env vars before importing `config`, and the `fake_device` fixture monkeypatches `detect_devices()` so sync tests get a temp "H2". An autouse guard in `conftest.py` (`assert_isolated_paths`, covered by `tests/test_isolation.py`) stops the run with exit 2 when `data_dir`/`library_dir`/`download_dir` or the database file are not temp paths outside the repo. Never run pytest or app scripts against the real `data/` or library: a stray run once emptied the real DB.
 
 ### Browser-level QA
 The `user-tester` agent drives the running app in headless Chromium via the `ui-testing` skill (`.claude/skills/ui-testing/`). Python Playwright lives in `~/.venvs/leasure-tester`; Chromium needs `LD_LIBRARY_PATH=~/.local/chromium-deps/usr/lib/x86_64-linux-gnu` on this box (libs extracted from .deb without root).
@@ -174,9 +183,10 @@ async def test_home():
 ## Environment
 
 - Runs on native Windows, plain Linux, or WSL2 (primary dev environment: WSL2 Ubuntu with Windows drives at /mnt/)
-- Python 3.11+ with venv at `.venv/` (created by `scripts/install.sh` / `scripts/install.ps1`); on this WSL2 checkout the venv lives at `~/.venvs/leasure` (OneDrive folder) — start with `LEASURE_VENV=~/.venvs/leasure scripts/run.sh`
+- Python 3.11+ with venv at `.venv/` (created by `scripts/install.sh` / `scripts/install.ps1`); on this WSL2 checkout the venv lives at `~/.venvs/leasure` (kept on the Linux filesystem) — start with `LEASURE_VENV=~/.venvs/leasure scripts/run.sh`
 - ffmpeg and deno are installed user-side here (`~/.local/bin/ffmpeg`, `~/.deno/bin/deno`) because sudo needs a password
 - ffmpeg must be installed (`sudo apt install ffmpeg` / `winget install Gyan.FFmpeg`)
 - deno must be installed for yt-dlp PO tokens
 - A browser logged into YouTube Music for Premium quality (Chrome by default; set `COOKIE_BROWSER=firefox` on native Windows if Chrome cookie extraction is blocked)
-- WARNING: keeping the repo inside a OneDrive-synced folder causes intermittent EIO through the WSL drvfs bridge when OneDrive dehydrates files; pin the folder ("Always keep on this device") or move it out of OneDrive
+- The checkout lives at `C:\dev\leasure` (`/mnt/c/dev/leasure`), out of OneDrive since 2026-10-17; `data/` and `downloads/` stay in the repo
+- The song library stays in OneDrive on purpose so other Windows PCs can reach it: `LIBRARY_DIR=/mnt/c/Users/pepe_/OneDrive/Música/Leasure` in `.env`, pinned "Always keep on this device" (dehydrated OneDrive files cause intermittent EIO through the WSL drvfs bridge)

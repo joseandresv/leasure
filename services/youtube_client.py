@@ -52,6 +52,13 @@ def get_client():
         return None
 
 
+def browse_client():
+    """The saved-login client, else an anonymous one: search and album pages need no login."""
+    from ytmusicapi import YTMusic
+
+    return get_client() or YTMusic()
+
+
 def is_connected() -> bool:
     yt = get_client()
     if not yt:
@@ -230,6 +237,7 @@ def get_history(limit: int = 50) -> list[dict] | None:
                 "name": t["title"],
                 "artist": ", ".join(a["name"] for a in t.get("artists", []) if a.get("name")),
                 "album": t.get("album", {}).get("name") if t.get("album") else None,
+                "album_id": (t.get("album") or {}).get("id"),
                 "album_artist": first_artist(t.get("artists")),
                 "duration_ms": _parse_duration(t.get("duration", "")),
                 "image_url": t["thumbnails"][-1]["url"] if t.get("thumbnails") else None,
@@ -489,12 +497,9 @@ def get_library_albums(limit: int = 50) -> list[dict] | None:
 
 
 def get_album_tracks(browse_id: str, client=None) -> dict | None:
-    """`client` lets a caller without saved headers browse with an anonymous YTMusic()."""
-    yt = client or get_client()
-    if not yt:
-        return None
+    """`client` lets a caller reuse the client it searched with."""
     try:
-        album = yt.get_album(browse_id)
+        album = (client or browse_client()).get_album(browse_id)
         album_artist = ", ".join(a["name"] for a in album.get("artists") or [] if a.get("name"))
         year = _year(album.get("year"))
         tracks = []

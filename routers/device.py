@@ -44,6 +44,22 @@ def _is_accessible(path: Path) -> bool:
         return False
 
 
+def _is_writable(path: Path) -> bool:
+    # drvfs reports 0777 even on a write-protected card, so only a real write tells.
+    probe = path / f".leasure-write-test-{secrets.token_hex(4)}"
+    try:
+        probe.write_bytes(b"leasure")
+    except OSError as e:
+        logger.warning("Write test on %s failed: %s", path, e)
+        return False
+    finally:
+        try:
+            probe.unlink(missing_ok=True)
+        except OSError as e:
+            logger.warning("Could not remove the write test file %s: %s", probe, e)
+    return True
+
+
 def _msg(text: str, color: str = "--text-secondary") -> HTMLResponse:
     return HTMLResponse(f'<p style="color:var({color});">{escape(text)}</p>')
 
@@ -482,6 +498,10 @@ async def _run_sync(job: dict) -> None:
     try:
         if not _is_accessible(target):
             publish({"type": "error", "message": f"Drive {target} not accessible. Make sure it is mounted."})
+            return
+        if not await asyncio.to_thread(_is_writable, target):
+            publish({"type": "error", "message": "The card is write-protected (read-only). Check the lock switch on "
+                                                 "the SD card or its adapter, then reinsert or remount it."})
             return
         async with async_session() as session:
             await _sync_library_to_device(session, target, job["scope"], publish)

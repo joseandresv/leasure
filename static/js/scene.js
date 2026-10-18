@@ -427,30 +427,45 @@
 
     /* ─── Device Screen Texture (rhythm-deck "now showing") ─── */
 
-    function setDeviceArt(url) {
-        if (!THREE || !screenMat) return;
-        if (!url) {
-            screenMat.map = null;
-            screenMat.color.setHex(0x161616);
-            screenMat.emissive.setHex(0xff8c00);
-            screenMat.emissiveIntensity = 0.5;
-            screenMat.needsUpdate = true;
-            return;
-        }
+    // Bumped on every selection so a slow cover cannot land after a newer one.
+    let artRequest = 0;
+
+    // A cover is shown as pure emission over a black base: lit by the scene's bright
+    // ambient light, light covers clipped to white. The idle screen stays amber.
+    function setScreenMap(tex) {
+        if (screenMat.emissiveMap && screenMat.emissiveMap !== tex) screenMat.emissiveMap.dispose();
+        screenMat.emissiveMap = tex;
+        screenMat.color.setHex(tex ? 0x000000 : 0x161616);
+        screenMat.emissive.setHex(tex ? 0xffffff : 0xff8c00);
+        screenMat.emissiveIntensity = tex ? 1 : 0.5;
+        screenMat.needsUpdate = true;
+    }
+
+    function loadScreenArt(url, request, mayProxy) {
         const loader = new THREE.TextureLoader();
         loader.setCrossOrigin('anonymous');
         loader.load(
             url,
             (tex) => {
-                screenMat.map = tex;
-                screenMat.color.setHex(0xffffff);
-                screenMat.emissive.setHex(0xffffff);
-                screenMat.emissiveIntensity = 0.4;  // make the art glow on the screen
-                screenMat.needsUpdate = true;
+                if (request === artRequest) setScreenMap(tex);
+                else tex.dispose();
             },
             undefined,
-            () => { /* CORS/load failure — keep the default amber screen */ }
+            () => {
+                if (request !== artRequest) return;
+                const proxied = mayProxy && window.coverProxyUrl && coverProxyUrl(url);
+                if (proxied) loadScreenArt(proxied, request, false);
+                else setScreenMap(null);
+            }
         );
+    }
+
+    function setDeviceArt(url) {
+        if (!THREE || !screenMat) return;
+        const request = ++artRequest;
+        if (!url) { setScreenMap(null); return; }
+        const first = window.coverLoadUrl ? coverLoadUrl(url) : url;
+        loadScreenArt(first, request, first === url);
     }
 
     /* Tint the device's key light toward the selected album color */

@@ -84,6 +84,60 @@ document.addEventListener('htmx:beforeRequest', function(event) {
     });
 });
 
+/* ── Detail modals ── */
+
+function setDetailNote(body, text) {
+    const note = document.createElement('p');
+    note.className = 'detail-note';
+    note.textContent = text;
+    body.replaceChildren(note);
+}
+
+// An opener clears the modal before showing it, so the previous record never stands
+// in for the one still loading. htmx has already sent its request by the time this
+// delegated listener runs.
+document.addEventListener('click', function(event) {
+    const opener = event.target.closest && event.target.closest('[data-opens-detail]');
+    if (!opener) return;
+    const body = document.querySelector(opener.getAttribute('hx-target'));
+    const modal = body && body.closest('dialog');
+    if (!modal) return;
+    setDetailNote(body, opener.dataset.opensDetail || 'Loading…');
+    if (!modal.open) modal.showModal();
+});
+
+['htmx:responseError', 'htmx:sendError'].forEach(function(name) {
+    document.addEventListener(name, function(event) {
+        const body = event.detail.target;
+        if (!body || !body.classList.contains('modal-body')) return;
+        setDetailNote(body, name === 'htmx:sendError'
+            ? 'Leasure did not answer. Check that it is still running, then try again.'
+            : 'This could not be loaded. Close this window and try again.');
+    });
+});
+
+/* ── Cover art ── */
+
+// Covers on CDNs that send no CORS header fail to load as WebGL textures or
+// crossorigin images; the server re-serves them from our origin. Hosts known to
+// send none go through it on the first try, others only after a failure.
+const NO_CORS_COVER_HOSTS = new Set(['www.gstatic.com']);
+
+function absoluteUrl(url) {
+    try { return new URL(url); } catch (e) { return null; }
+}
+
+function coverProxyUrl(url) {
+    const parsed = absoluteUrl(url);
+    if (!parsed || !/^https?:$/.test(parsed.protocol) || parsed.origin === location.origin) return null;
+    return '/api/art/proxy?url=' + encodeURIComponent(parsed.href);
+}
+
+function coverLoadUrl(url) {
+    const parsed = absoluteUrl(url);
+    return (parsed && NO_CORS_COVER_HOSTS.has(parsed.hostname) && coverProxyUrl(url)) || url;
+}
+
 /* ── Album Art Color Extraction (Vibrant.js) ── */
 
 // Vibrant.js 1.0.0 appends a scratch <canvas> to <body> for sampling and never
@@ -145,6 +199,43 @@ function isDetectedDrive(candidate) {
     });
 }
 
+// Strings are plain text, {n} are counts to emphasise; shared by the result box and the toast.
+function syncCountSegments(data, hasErrors) {
+    var segs;
+    if (!data.copied && !data.skipped) {
+        segs = [hasErrors ? 'Nothing copied' : 'No downloaded tracks in this scope'];
+    } else {
+        segs = data.copied ? [{ n: data.copied }, ' copied (' + data.size_mb + ' MB)']
+            : [hasErrors ? 'Nothing copied — ' : 'Nothing new — '];
+        if (data.copied && data.skipped) segs.push(' · ');
+        if (data.skipped) segs.push({ n: data.skipped }, ' already on the card');
+    }
+    if (data.playlists) segs.push(' · ', { n: data.playlists }, ' playlists generated');
+    return segs;
+}
+
+var SYNC_ERRORS_SHOWN = 50;
+
+function syncErrorDetails(errors, label, open) {
+    var details = document.createElement('details');
+    details.open = open;
+    var summary = document.createElement('summary');
+    summary.textContent = label;
+    details.appendChild(summary);
+    var ul = document.createElement('ul');
+    var shown = errors.slice(0, SYNC_ERRORS_SHOWN);
+    if (errors.length > shown.length) shown.push('… and ' + (errors.length - shown.length) + ' more');
+    shown.forEach(function(err) {
+        var li = document.createElement('li');
+        var small = document.createElement('small');
+        small.textContent = err;
+        li.appendChild(small);
+        ul.appendChild(li);
+    });
+    details.appendChild(ul);
+    return details;
+}
+
 function startSync(e) {
     e.preventDefault();
     var path = document.getElementById('device-path').value;
@@ -158,8 +249,8 @@ function startSync(e) {
         btn.classList.remove('syncing');
     }
     // kind 'error' = the sync was attempted and failed, 'warning' = it was refused
-    // before anything ran, so the toast must not claim a failure.
-    function showNotice(message, kind) {
+    // before anything ran or its outcome is unknown, so the toast must not claim a failure.
+    function showNotice(message, kind, heading) {
         resetButton();
         status.textContent = '';
         var box = document.createElement('div');
@@ -168,6 +259,11 @@ function startSync(e) {
             box.classList.add('sync-result-error');
         } else {
             box.classList.add('sync-result-warning');
+        }
+        if (heading) {
+            var h4 = document.createElement('h4');
+            h4.textContent = heading;
+            box.appendChild(h4);
         }
         var p = document.createElement('p');
         p.textContent = message;
@@ -178,7 +274,7 @@ function startSync(e) {
         }
     }
     function showError(message) {
-        showNotice(message, 'error');
+        showNotice(message, 'error', 'Sync failed');
     }
 
     // The server is the source of truth and answers an unknown target with 400;
@@ -244,45 +340,43 @@ function startSync(e) {
                 es.close();
                 resetButton();
 
+                var errors = data.errors || [];
+                var kind = data.total === 0 ? 'info'
+                    : !errors.length ? 'success' : (data.synced ? 'warning' : 'error');
+                var errorLabel = errors.length + (errors.length === 1 ? ' error' : ' errors');
+                var heading = {
+                    info: 'Nothing to sync', success: 'Sync Complete',
+                    warning: 'Sync finished with ' + errorLabel, error: 'Sync failed'
+                }[kind];
+                var segs = syncCountSegments(data, errors.length > 0);
+
                 status.textContent = '';
                 var box = document.createElement('div');
-                box.className = 'sync-result sync-result-success';
+                box.className = 'sync-result' + (kind === 'info' ? '' : ' sync-result-' + kind);
                 var h4 = document.createElement('h4');
-                h4.textContent = 'Sync Complete';
+                h4.textContent = heading;
                 box.appendChild(h4);
                 var p = document.createElement('p');
-                var n = document.createElement('strong');
-                n.textContent = data.synced;
-                p.appendChild(n);
-                p.appendChild(document.createTextNode(' tracks synced (' + data.size_mb + ' MB)'));
-                if (data.playlists) {
-                    p.appendChild(document.createTextNode(' · '));
-                    var pl = document.createElement('strong');
-                    pl.textContent = data.playlists;
-                    p.appendChild(pl);
-                    p.appendChild(document.createTextNode(' playlists generated'));
-                }
+                segs.forEach(function(seg) {
+                    if (typeof seg === 'string') {
+                        p.appendChild(document.createTextNode(seg));
+                    } else {
+                        var n = document.createElement('strong');
+                        n.textContent = seg.n;
+                        p.appendChild(n);
+                    }
+                });
                 box.appendChild(p);
-                if (data.errors && data.errors.length > 0) {
-                    var details = document.createElement('details');
-                    var summary = document.createElement('summary');
-                    summary.textContent = data.errors.length + ' error(s)';
-                    details.appendChild(summary);
-                    var ul = document.createElement('ul');
-                    data.errors.forEach(function(err) {
-                        var li = document.createElement('li');
-                        var small = document.createElement('small');
-                        small.textContent = err;
-                        li.appendChild(small);
-                        ul.appendChild(li);
-                    });
-                    details.appendChild(ul);
-                    box.appendChild(details);
+                if (errors.length > 0) {
+                    box.appendChild(syncErrorDetails(errors, errorLabel, !data.copied));
                 }
                 status.appendChild(box);
 
                 if (Alpine.store('toast')) {
-                    Alpine.store('toast').add('Sync complete: ' + data.synced + ' tracks', 'success');
+                    var countsText = segs.map(function(seg) { return typeof seg === 'string' ? seg : seg.n; }).join('');
+                    var toastText = kind === 'info' ? heading
+                        : heading + ': ' + (kind === 'error' ? errorLabel + ', nothing copied' : countsText);
+                    Alpine.store('toast').add(toastText, kind);
                 }
 
                 htmx.ajax('GET', '/api/device/files/html?device_path=' + encodeURIComponent(path), '#device-files');
@@ -295,7 +389,7 @@ function startSync(e) {
 
         es.onerror = function() {
             es.close();
-            showError('Connection to the sync stream was lost. The sync keeps running on the server — refresh the Device page to see the result.');
+            showNotice('Connection to the sync stream was lost. The sync keeps running on the server — refresh the Device page to see the result.', 'warning');
         };
     }
 }

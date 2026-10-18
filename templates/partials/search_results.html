@@ -9,7 +9,7 @@
      hx-get="/api/music/album/{{ album.sources[0].provider }}/{{ album.sources[0].id }}"
      hx-target="#music-detail"
      hx-swap="innerHTML"
-     onclick="document.getElementById('music-detail-modal').showModal()"
+     data-opens-detail="Loading album…"
      {% endif %}>
     <div class="vinyl-wrap">
         <div class="vinyl-disc"></div>

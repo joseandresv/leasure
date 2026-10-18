@@ -16,6 +16,7 @@ from services import youtube_client as yt
 from services.formats import resolve_format
 from services.music_aggregator import (
     enrich_with_download_status,
+    find_youtube_album,
     get_unified_albums,
     get_unified_playlists,
     get_unified_recent,
@@ -40,6 +41,15 @@ def _format_error(request: Request, error: ValueError):
         return templates.TemplateResponse(request=request, name="partials/download_badge.html",
                                           context={"status": "error", "message": str(error)})
     raise HTTPException(status_code=400, detail=str(error))
+
+
+def _unavailable(kind: str, provider: str) -> HTMLResponse:
+    seconds = sp.rate_limit_seconds_left() if provider == "spotify" else 0
+    if not seconds:
+        return HTMLResponse(f"<p>{kind} not found or source unavailable.</p>")
+    wait = f"~{round(seconds / 3600)} h" if seconds >= 5400 else f"~{max(1, round(seconds / 60))} min"
+    return HTMLResponse(f"<p>Spotify is rate-limiting Leasure right now (try again in {wait}). "
+                        "YouTube Music albums still work.</p>")
 
 
 # --- Browse endpoints (return HTML partials) ---
@@ -136,6 +146,25 @@ async def artists(request: Request):
     )
 
 
+@router.get("/album/resolve")
+async def album_resolve(
+    request: Request,
+    title: str = "",
+    artist: str = "",
+    album: str = "",
+    duration_ms: int = 0,
+    session: AsyncSession = Depends(get_session),
+):
+    """Album detail for a track that carries no album id, found on YouTube Music by title and artist."""
+    title, artist, album = title.strip(), artist.strip(), album.strip()
+    browse_id = None
+    if title or album:
+        browse_id = await asyncio.to_thread(find_youtube_album, title, artist, album, duration_ms)
+    if not browse_id:
+        return HTMLResponse("<p>No matching album found on YouTube Music.</p>")
+    return await _album_detail_response(request, "youtube", browse_id, session)
+
+
 @router.get("/album/{provider}/{album_id}")
 async def album_detail(
     request: Request,
@@ -144,6 +173,10 @@ async def album_detail(
     session: AsyncSession = Depends(get_session),
 ):
     """Album detail with tracks from a specific provider."""
+    return await _album_detail_response(request, provider, album_id, session)
+
+
+async def _album_detail_response(request: Request, provider: str, album_id: str, session: AsyncSession):
     album = None
     tracks = []
 
@@ -181,7 +214,7 @@ async def album_detail(
                 })
 
     if not album:
-        return HTMLResponse("<p>Album not found or source unavailable.</p>")
+        return _unavailable("Album", provider)
 
     return templates.TemplateResponse(
         request=request,
@@ -233,7 +266,7 @@ async def playlist_detail(
                 })
 
     if not playlist_info:
-        return HTMLResponse("<p>Playlist not found or source unavailable.</p>")
+        return _unavailable("Playlist", provider)
 
     # Playlist row exists? (sync can only write an .m3u8 when this is True)
     pl_row_stmt = select(Playlist).where(Playlist.source == provider, Playlist.source_id == playlist_id)

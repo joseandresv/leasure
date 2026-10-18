@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     # Ceiling on authenticated YouTube downloads per day (counter in data/yt_daily.json).
     yt_max_downloads_per_day: int = 50
     max_concurrent_downloads: int = 1
+    # False for throwaway/test servers: nothing is downloaded and pending tracks are not re-queued.
+    download_worker_enabled: bool = True
     artwork_size: int = 500
     # ID3v2 minor version for MP3 tags: 3 (v2.3) is what embedded players read reliably, 4 is v2.4.
     id3_version: int = 3

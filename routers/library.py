@@ -1,16 +1,54 @@
+import asyncio
 from collections import Counter, defaultdict
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import FileResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from config import settings
 from db import get_session
 from models import Track
 from services.tagger import primary_artist
 
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
+
+
+def sidecar_art_path(file_path: str | None) -> Path | None:
+    """The track's existing .jpg sidecar, only if it resolves inside the library dir. Blocking."""
+    if not file_path:
+        return None
+    try:
+        jpg = Path(file_path).with_suffix(".jpg").resolve()
+    except (OSError, ValueError):
+        return None
+    if not jpg.is_relative_to(settings.library_dir.resolve()) or not jpg.is_file():
+        return None
+    return jpg
+
+
+def library_art_url(track_id: int) -> str:
+    return f"/api/library/art/{track_id}"
+
+
+def sidecar_art_url(tracks: list[tuple[int, str | None]], tries: int = 3) -> str | None:
+    """Art URL of the first of the album's tracks (up to `tries` with a file) that has a sidecar. Blocking."""
+    for track_id, file_path in [t for t in tracks if t[1]][:tries]:
+        if sidecar_art_path(file_path):
+            return library_art_url(track_id)
+    return None
+
+
+@router.get("/art/{track_id}")
+async def track_art(track_id: int, session: AsyncSession = Depends(get_session)):
+    file_path = await session.scalar(select(Track.file_path).where(Track.id == track_id))
+    path = await asyncio.to_thread(sidecar_art_path, file_path)
+    if path is None:
+        raise HTTPException(404, detail="This track has no cover art in the library.")
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=3600"})
 
 
 async def _library_totals(session: AsyncSession) -> dict:
@@ -99,7 +137,7 @@ async def list_tracks_html(
 async def genre_graph(session: AsyncSession = Depends(get_session)):
     """Return genre-based graph data for Sigma.js visualization."""
     result = await session.execute(
-        select(Track.album, Track.album_artist, Track.artist, Track.artwork_url, Track.genre)
+        select(Track.id, Track.file_path, Track.album, Track.album_artist, Track.artist, Track.artwork_url, Track.genre)
         .where(Track.status == "done", Track.album.isnot(None))
         .order_by(Track.album)
     )
@@ -109,15 +147,19 @@ async def genre_graph(session: AsyncSession = Depends(get_session)):
 
     # Two artists can share an album title, so key by artist too — the same grouping
     # the H2 browses by (album artist, defaulted to the primary artist as in the tagger).
-    for album, album_artist, artist, artwork, genre_str in result.all():
+    for track_id, file_path, album, album_artist, artist, artwork, genre_str in result.all():
         genres = list(dict.fromkeys(
             g.strip().lower() for g in (genre_str or "").split(",") if g.strip()
         ))
         key_artist = album_artist or primary_artist(artist) or "Unknown"
-        entry = albums.setdefault((key_artist, album), {"artist": key_artist, "artwork": artwork, "genres": Counter()})
+        entry = albums.setdefault((key_artist, album),
+                                  {"artist": key_artist, "artwork": artwork, "genres": Counter(), "tracks": []})
         entry["artwork"] = entry["artwork"] or artwork
+        entry["tracks"].append((track_id, file_path))
         entry["genres"].update(genres)
         genre_track_counts.update(genres)
+
+    await asyncio.to_thread(_fill_sidecar_artwork, albums.values())
 
     nodes = []
     genre_index = defaultdict(list)
@@ -159,3 +201,9 @@ async def genre_graph(session: AsyncSession = Depends(get_session)):
         }
 
     return {"nodes": nodes, "edges": edges, "genres": genre_colors}
+
+
+def _fill_sidecar_artwork(entries) -> None:
+    for entry in entries:
+        if not entry["artwork"]:
+            entry["artwork"] = sidecar_art_url(entry["tracks"])

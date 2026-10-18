@@ -764,3 +764,36 @@ async def test_album_download_reports_the_card_copy_a_renumbered_track_leaves_be
     resp = await client.post("/api/music/download/album/youtube/MPREb1", data={"format": "mp3"})
 
     assert resp.json()["details"][0]["stale_device_path"] == "The Killers/Hot Fuss/Mr. Brightside.m4a"
+
+
+@pytest.mark.asyncio
+async def test_spotify_album_detail_says_when_spotify_is_rate_limiting(client, db, monkeypatch):
+    import time
+
+    from services import spotify_client
+
+    monkeypatch.setattr(spotify_client, "_rate_limited_until", time.monotonic() + 7200)
+
+    resp = await client.get("/api/music/album/spotify/AL1")
+
+    assert "Spotify is rate-limiting Leasure right now (try again in ~2 h). YouTube Music albums still work." in resp.text
+
+
+@pytest.mark.asyncio
+async def test_spotify_playlist_429_starts_the_rate_limit_window_and_says_so(client, db, monkeypatch):
+    import spotipy
+
+    from services import spotify_client
+
+    class RateLimited:
+        def playlist(self, *args, **kwargs):
+            raise spotipy.SpotifyException(429, -1, "rate limited", headers={"Retry-After": "600"})
+
+        playlist_items = playlist
+
+    monkeypatch.setattr(spotify_client, "_rate_limited_until", 0.0)
+    monkeypatch.setattr(spotify_client, "get_client", lambda: RateLimited())
+
+    resp = await client.get("/api/music/playlist/spotify/PL1")
+
+    assert "try again in ~10 min" in resp.text

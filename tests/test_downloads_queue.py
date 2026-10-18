@@ -236,3 +236,21 @@ def test_an_unreachable_network_is_named_as_the_reason():
     failure = _download_failure(RuntimeError("ERROR: unable to download: <urlopen error [Errno -3] "
                                              "Temporary failure in name resolution>"))
     assert "network connection" in str(failure)
+
+
+@pytest.mark.asyncio
+async def test_a_disabled_worker_neither_starts_nor_requeues_pending_tracks(db, monkeypatch):
+    from app import app
+    from config import settings
+    from worker import DownloadWorker
+
+    worker = DownloadWorker()
+    monkeypatch.setattr("app.download_worker", worker)
+    monkeypatch.setattr(settings, "download_worker_enabled", False)
+    track = await _add_track(db, title="T", artist="A", status="pending")
+
+    async with app.router.lifespan_context(app):
+        assert (worker.queue_size, worker._tasks) == (0, [])
+
+    async with db() as session:
+        assert (await session.get(Track, track.id)).status == "pending"

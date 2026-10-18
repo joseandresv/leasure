@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -72,7 +73,7 @@ templates.env.globals["platform"] = get_platform()
 templates.env.globals["device_path_placeholder"] = device_path_placeholder()
 
 # Register routers
-from routers import device, downloads, library, music, spotify, youtube  # noqa: E402
+from routers import art, device, downloads, library, music, spotify, youtube  # noqa: E402
 
 app.include_router(music.router, prefix="/api/music", tags=["music"])
 app.include_router(spotify.router, prefix="/api/spotify", tags=["spotify"])
@@ -80,6 +81,7 @@ app.include_router(youtube.router, prefix="/api/youtube", tags=["youtube"])
 app.include_router(downloads.router, prefix="/api/downloads", tags=["downloads"])
 app.include_router(library.router, prefix="/api/library", tags=["library"])
 app.include_router(device.router, prefix="/api/device", tags=["device"])
+app.include_router(art.router, prefix="/api/art", tags=["art"])
 
 
 # API endpoints used by the SPA
@@ -90,6 +92,7 @@ from sqlalchemy.ext.asyncio import AsyncSession  # noqa: E402
 
 from db import get_session  # noqa: E402
 from models import Track  # noqa: E402
+from routers.library import sidecar_art_url  # noqa: E402
 
 
 @app.get("/api/status/bar")
@@ -123,21 +126,40 @@ async def status_bar(session: AsyncSession = Depends(get_session)):
     return HTMLResponse(f'<span>{queue_html}{now_html}</span>')
 
 
+CAROUSEL_SIZE = 30
+
+
+def _carousel_albums(rows) -> list[tuple[str, str | None, str | None]]:
+    """(artist, album, cover URL or None) for the newest albums, those with art first. Blocking: stats sidecars."""
+    groups: dict[tuple[str, str | None], dict] = {}
+    for track_id, url, album, artist, file_path in rows:
+        group = groups.setdefault((artist, album), {"url": None, "tracks": []})
+        if not group["url"] and url and str(url).startswith(("https://", "http://")):
+            group["url"] = url
+        group["tracks"].append((track_id, file_path))
+    with_art, without_art = [], []
+    for (artist, album), group in groups.items():
+        if len(with_art) >= CAROUSEL_SIZE:
+            break
+        url = group["url"] or sidecar_art_url(group["tracks"])
+        (with_art if url else without_art).append((artist, album, url))
+    return (with_art + without_art)[:CAROUSEL_SIZE]
+
+
 @app.get("/api/home/carousel")
 async def home_carousel(session: AsyncSession = Depends(get_session)):
     """LP carousel of album artwork from downloaded tracks."""
     result = await session.execute(
-        select(Track.artwork_url, Track.album, Track.artist)
+        select(Track.id, Track.artwork_url, Track.album, Track.artist, Track.file_path)
         .where(Track.status == "done")
-        .group_by(Track.artist, Track.album)
-        .limit(30)
+        .order_by(func.coalesce(Track.downloaded_at, Track.created_at).desc(), Track.id.desc())
     )
     covers = []
-    for url, album, artist in result.all():
+    for artist, album, url in await asyncio.to_thread(_carousel_albums, result.all()):
         title = f"{escape(artist)} - {escape(album or 'Unknown album')}"
         # An album with no usable artwork still belongs in the collection: a placeholder
         # tile keeps the count honest instead of claiming there is no music.
-        if url and str(url).startswith(("https://", "http://")):
+        if url:
             covers.append(f'<img src="{escape(url)}" alt="{escape(album)}" title="{title}" data-vibrant>')
         else:
             covers.append(f'<span class="lp-cover-placeholder" title="{title}">{escape(album or "Unknown album")}</span>')

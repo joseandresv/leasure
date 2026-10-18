@@ -1,7 +1,9 @@
 """Unified music aggregator — merges Spotify + YouTube Music libraries."""
 
 import logging
+import re
 import time
+import unicodedata
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -12,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from models import Track
 from services import spotify_client as sp
 from services import youtube_client as yt
+from services.yt_engine import Candidate, pick_best
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +25,12 @@ _recency_cache: dict = {"ts": 0.0, "data": None}
 # loads (re-opening the music panel, switching back to the Deck tab) hit this instead.
 _RECENT_TTL = 45  # seconds
 _recent_cache: dict = {"ts": 0.0, "limit": 0, "data": None}
+
+_DASHES = str.maketrans(dict.fromkeys("\u2010\u2011\u2012\u2013\u2014\u2015\u2212\uff0d", "-"))
+_FULL_ALBUM = re.compile(r"full\s*album|全曲|フルアルバム", re.IGNORECASE)
+_EMPTY_BRACKETS = re.compile(r"[(\[【（]\s*[)\]】）]")
+_TRAILING_YEAR = re.compile(r"[(\[【（]\s*(?:19|20)\d{2}\s*[)\]】）]$")
+_SEPARATORS = " -|:/~"
 
 
 def _artist_key(artist: str) -> str:
@@ -98,6 +107,10 @@ def _tag_fields(track: dict) -> dict:
     }
 
 
+def _album_ref(provider: str, album_id: str | None) -> dict | None:
+    return {"provider": provider, "id": album_id} if album_id else None
+
+
 def _normalize_key(title: str, artist: str) -> str:
     """Create a dedup key from title + artist."""
     return f"{title.strip().lower()}|{artist.strip().lower().split(',')[0]}"
@@ -123,6 +136,10 @@ def _merge_sources(items: list[dict], key_fn) -> list[dict]:
             # Keep the most recent timestamp across duplicates
             if "_ts" in item and item["_ts"] > existing.get("_ts", 0):
                 existing["_ts"] = item["_ts"]
+            # A YouTube Music album opens without the Spotify API, which may be rate-limited.
+            ref = item.get("album_ref")
+            if ref and (not existing.get("album_ref") or ref["provider"] == "youtube"):
+                existing["album_ref"] = ref
         else:
             seen[key] = item
     return list(seen.values())
@@ -375,6 +392,7 @@ def get_unified_recent(limit: int = 50, force: bool = False) -> list[dict]:
             "duration_ms": sp_now.get("duration_ms", 0),
             "track_number": sp_now.get("track_number", 0),
             "isrc": sp_now.get("isrc"),
+            "album_ref": _album_ref("spotify", sp_now.get("album_id")),
             **_tag_fields(sp_now),
             "sources": [{"provider": "spotify", "id": sp_now["id"], "uri": sp_now.get("uri", ""),
                          "artist_id": sp_now.get("artist_id", "")}],
@@ -394,6 +412,7 @@ def get_unified_recent(limit: int = 50, force: bool = False) -> list[dict]:
                 "duration_ms": t.get("duration_ms", 0),
                 "track_number": t.get("track_number", 0),
                 "isrc": t.get("isrc"),
+                "album_ref": _album_ref("spotify", t.get("album_id")),
                 **_tag_fields(t),
                 "sources": [{"provider": "spotify", "id": t["id"], "uri": t.get("uri", ""),
                              "artist_id": t.get("artist_id", "")}],
@@ -411,6 +430,7 @@ def get_unified_recent(limit: int = 50, force: bool = False) -> list[dict]:
                 "image_url": t.get("image_url"),
                 "duration_ms": t.get("duration_ms", 0),
                 "track_number": 0,
+                "album_ref": _album_ref("youtube", t.get("album_id")),
                 **_tag_fields(t),
                 "sources": [{"provider": "youtube music", "id": t["id"]}],
                 "_ts": _ytmusic_bucket_ts(t.get("played", ""), i),
@@ -427,6 +447,7 @@ def get_unified_recent(limit: int = 50, force: bool = False) -> list[dict]:
                 "image_url": t.get("image_url"),
                 "duration_ms": t.get("duration_ms", 0),
                 "track_number": 0,
+                "album_ref": None,
                 "sources": [{"provider": "youtube", "id": t["id"]}],
                 "_ts": now - i * 60,  # assume ~1 minute between items, list order = recency
             })
@@ -439,6 +460,72 @@ def get_unified_recent(limit: int = 50, force: bool = False) -> list[dict]:
     logger.debug("get_unified_recent: %d tracks merged, returning %d in %.2fs (cache MISS)",
                  len(merged), len(result), time.perf_counter() - t0)
     return result
+
+
+def _artists_text(result: dict) -> str:
+    return ", ".join(a["name"] for a in result.get("artists") or [] if a.get("name"))
+
+
+def _clean_title(text: str) -> str:
+    """Drops invisible format characters (LRM, ZWSP, bidi marks) and turns fancy dashes into "-"."""
+    visible = "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
+    return " ".join(visible.translate(_DASHES).split())
+
+
+def _full_album_reading(title: str, artist: str) -> tuple[str, str] | None:
+    """(album, artist) of an "Artist - Album (1990) [Full Album]" upload, or None for any other title."""
+    if not _FULL_ALBUM.search(title):
+        return None
+    unmarked = " ".join(_EMPTY_BRACKETS.sub(" ", _FULL_ALBUM.sub(" ", title)).split())
+    album, artist = _title_readings(unmarked, artist)[-1]
+    album = _TRAILING_YEAR.sub("", album.strip(_SEPARATORS)).strip(_SEPARATORS)
+    return (album, artist) if album else None
+
+
+def _title_readings(title: str, artist: str) -> list[tuple[str, str]]:
+    """(title, artist) as given, plus the "Artist - Song" reading of a plain YouTube video title."""
+    readings = [(title, artist)]
+    left, sep, right = title.partition(" - ")
+    if sep and left.strip() and right.strip():
+        readings.append((right.strip(), left.strip()))
+    return readings
+
+
+def _match_album_result(client, album: str, artist: str) -> str | None:
+    results = client.search(f"{artist} {album}", filter="albums", limit=5) or []
+    albums = {Candidate(video_id=r["browseId"], title=r.get("title") or "", artist=_artists_text(r)): r
+              for r in results if r.get("browseId")}
+    best = pick_best(list(albums), album, artist)
+    return albums[best[0]]["browseId"] if best else None
+
+
+def _match_song_album(client, title: str, artist: str, duration_ms: int) -> str | None:
+    results = client.search(f"{title} {artist}", filter="songs", limit=5) or []
+    songs = {Candidate(video_id=r["videoId"], title=r.get("title") or "", artist=_artists_text(r),
+                       duration_s=r.get("duration_seconds")): r
+             for r in results if r.get("videoId") and (r.get("album") or {}).get("id")}
+    matches = [m for wanted_title, wanted_artist in _title_readings(title, artist)
+               if (m := pick_best(list(songs), wanted_title, wanted_artist, duration_ms))]
+    if not matches:
+        return None
+    best, _ = max(matches, key=lambda m: m[1])
+    return songs[best]["album"]["id"]
+
+
+def find_youtube_album(title: str, artist: str, album: str = "", duration_ms: int = 0) -> str | None:
+    """browseId of the YouTube Music record a track belongs to, or None without a confident match."""
+    title, artist = _clean_title(title), _clean_title(artist)
+    try:
+        client = yt.browse_client()
+        # A full-album upload is not a song: its title names the record, so one album search decides.
+        if full_album := _full_album_reading(title, artist):
+            return _match_album_result(client, *full_album)
+        if album and (browse_id := _match_album_result(client, album, artist)):
+            return browse_id
+        return _match_song_album(client, title, artist, duration_ms)
+    except Exception as e:
+        logger.warning("YouTube Music album lookup failed for '%s - %s': %s", artist, title, e)
+        return None
 
 
 def get_unified_playlists() -> list[dict]:

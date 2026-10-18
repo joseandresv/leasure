@@ -1,5 +1,7 @@
+import errno
 import json
 import os
+from pathlib import Path
 
 import pytest
 from sqlalchemy import select
@@ -73,3 +75,48 @@ async def test_the_diff_counts_an_outdated_card_copy_as_to_add(client, db, fake_
     diff = await client.get("/api/device/diff/html", params={"device_path": str(fake_device)})
 
     assert "<strong>1</strong> to add" in diff.text and "<strong>0</strong> already on device" in diff.text
+
+
+def _fail_write_test(monkeypatch, create_first: bool = False):
+    real_write_bytes = Path.write_bytes
+
+    def write_bytes(self, data):
+        if self.name.startswith(".leasure-write-test-"):
+            if create_first:
+                real_write_bytes(self, b"")
+            raise OSError(errno.EROFS, "Read-only file system")
+        return real_write_bytes(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", write_bytes)
+
+
+@pytest.mark.asyncio
+async def test_a_read_only_card_stops_the_sync_before_copying(client, db, fake_device, tmp_path, monkeypatch):
+    await _library_track(db, tmp_path)
+    _fail_write_test(monkeypatch)
+
+    event = await _sync(client, fake_device)
+
+    assert event["type"] == "error" and "write-protected" in event["message"]
+    assert list(fake_device.iterdir()) == []
+    async with db() as session:
+        assert (await session.scalars(select(SyncHistory))).all() == []
+
+
+@pytest.mark.asyncio
+async def test_a_sync_leaves_no_write_test_file_on_the_card(client, db, fake_device, tmp_path):
+    await _library_track(db, tmp_path)
+
+    done = await _sync(client, fake_device)
+
+    assert done["type"] == "done" and done["copied"] == 1
+    assert list(fake_device.glob(".leasure-write-test-*")) == []
+
+
+def test_the_write_test_file_is_removed_when_the_write_fails_after_creating_it(tmp_path, monkeypatch):
+    from routers.device import _is_writable
+
+    _fail_write_test(monkeypatch, create_first=True)
+
+    assert _is_writable(tmp_path) is False
+    assert list(tmp_path.iterdir()) == []

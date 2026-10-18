@@ -6,7 +6,8 @@
  * the readout (.deck-readout) and stage (.deck-screen-img) live in the cabinet
  * and stay put. Each banner carries data-* for the readout text and a hidden
  * <template class="deck-banner-db"> action (download / OPEN) that is cloned into
- * the readout's .deck-dbstate on selection.
+ * the readout's .deck-dbstate on selection; track banners also carry a
+ * <template class="deck-banner-album"> button cloned into .deck-album-slot.
  */
 (function () {
     'use strict';
@@ -72,26 +73,67 @@
         else img.addEventListener('load', run, { once: true });
     }
 
+    // Anything that is not a URL ("None" from a missing cover) means no cover.
+    function coverUrl(value) {
+        return /^(https?:\/\/|\/(?!\/))/i.test(value || '') ? value : '';
+    }
+
+    function showScreenArt(img, fallback, url) {
+        if (url && img.dataset.cover !== url) {
+            const first = window.coverLoadUrl ? coverLoadUrl(url) : url;
+            img.dataset.cover = url;
+            if (first === url) delete img.dataset.coverProxied;
+            else img.dataset.coverProxied = '1';
+            img.setAttribute('src', first);
+        } else if (!url) {
+            delete img.dataset.cover;
+            img.removeAttribute('src');
+        }
+        img.style.display = url ? 'block' : 'none';
+        if (fallback) fallback.style.display = url ? 'none' : '';
+    }
+
+    // A cover that refuses crossorigin loading gets one retry through the same-origin
+    // proxy; after that the screen goes back to its idle state instead of the last cover.
+    function bindScreenArtFallback(img, fallback) {
+        if (img.dataset.coverBound) return;
+        img.dataset.coverBound = '1';
+        img.addEventListener('error', () => {
+            const proxied = !img.dataset.coverProxied && window.coverProxyUrl && coverProxyUrl(img.dataset.cover || '');
+            if (proxied) {
+                img.dataset.coverProxied = '1';
+                img.setAttribute('src', proxied);
+            } else {
+                showScreenArt(img, fallback, '');
+            }
+        });
+    }
+
     function updateDisplay(deck, banner) {
         const d = banner.dataset;
+        const image = coverUrl(d.image);
         const img = deck.querySelector('.deck-screen-img');
         const fallback = deck.querySelector('.menu-stage-fallback');
 
         if (img) {
-            if (d.image) {
-                if (img.getAttribute('src') !== d.image) img.setAttribute('src', d.image);
-                img.style.display = 'block';
-                if (fallback) fallback.style.display = 'none';
-            } else {
-                img.removeAttribute('src');
-                img.style.display = 'none';
-                if (fallback) fallback.style.display = '';
-            }
+            bindScreenArtFallback(img, fallback);
+            showScreenArt(img, fallback, image);
         }
 
         setText(deck, '.deck-title', d.title);
         setText(deck, '.deck-artist', d.artist);
-        setText(deck, '.deck-album', d.album + (d.year ? '  ·  ' + d.year : ''));
+        // Track banners carry the album as a button that opens the record; the year
+        // then trails it as plain text.
+        const albumTpl = banner.querySelector('.deck-banner-album');
+        const albumSlot = deck.querySelector('.deck-album-slot');
+        if (albumSlot && albumTpl) {
+            albumSlot.replaceChildren(albumTpl.content.cloneNode(true));
+            if (window.htmx) htmx.process(albumSlot);
+            deck.querySelectorAll('.deck-album').forEach((el) => { el.textContent = d.year ? '  ·  ' + d.year : ''; });
+        } else {
+            if (albumSlot) albumSlot.replaceChildren();
+            setText(deck, '.deck-album', [d.album, d.year].filter(Boolean).join('  ·  '));
+        }
         setText(deck, '.deck-genre', d.genre);
         setText(deck, '.deck-year', d.year);
         setText(deck, '.deck-duration', d.duration);
@@ -110,8 +152,17 @@
         applyAccent(img);
 
         if (window.leasureScene && window.leasureScene.setDeviceArt) {
-            window.leasureScene.setDeviceArt(d.image || '');
+            window.leasureScene.setDeviceArt(image);
         }
+    }
+
+    // The readout sits before the wheel in the DOM, so Tab from the selected song would
+    // leave the panel; it goes to that song's album or download action instead.
+    function focusReadoutAction(deck, e) {
+        const action = deck.querySelector('.deck-album-slot button, .deck-dbstate button');
+        if (!action) return;
+        action.focus();
+        e.preventDefault();
     }
 
     // The deck outlives every wheel swapped into it, so it gets one key listener that
@@ -120,7 +171,11 @@
         if (deck.dataset.deckKeysBound) return;
         deck.dataset.deckKeysBound = '1';
         deck.addEventListener('keydown', (e) => {
-            if (!deck.deckStep) return;
+            if (!deck.deckStep || e.target.matches('select, textarea')) return;
+            if (e.key === 'Tab' && !e.shiftKey && e.target.classList.contains('deck-banner')) {
+                focusReadoutAction(deck, e);
+                return;
+            }
             if (e.key === 'ArrowDown' || e.key === 'ArrowRight') { deck.deckStep(1); e.preventDefault(); }
             else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') { deck.deckStep(-1); e.preventDefault(); }
         });
@@ -143,6 +198,7 @@
             banners.forEach((b, j) => {
                 b.classList.toggle('is-center', j === i);
                 b.setAttribute('aria-selected', j === i ? 'true' : 'false');
+                b.tabIndex = j === i ? 0 : -1;
             });
             updateDisplay(deck, banners[i]);
             if (scroll) centerInWheel(wheel, banners[i], true);

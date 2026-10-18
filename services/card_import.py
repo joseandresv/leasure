@@ -374,9 +374,7 @@ def _youtube_payload(browse_id: str, data: dict) -> dict:
 
 def youtube_album_candidates(artist: str, album: str) -> list[dict] | None:
     """Up to two YouTube Music albums that look like `album`. Searching needs no login."""
-    from ytmusicapi import YTMusic
-
-    client = youtube_client.get_client() or YTMusic()
+    client = youtube_client.browse_client()
     results = client.search(f"{artist} {album}", filter="albums", limit=5) or []
     payloads = []
     for item in _closest([r for r in results if r.get("browseId")], album, artist, lambda r: r.get("title"),

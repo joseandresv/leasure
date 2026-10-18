@@ -17,7 +17,8 @@
    Each banner carries data-* for the NOW SELECTED readout and a hidden
    <template class="deck-banner-db"> whose contents are cloned into the readout's
    action slot when the banner is selected (download for tracks, OPEN for
-   albums/playlists). rhythm-deck.js handles selection. #}
+   albums/playlists); track banners add a <template class="deck-banner-album">
+   cloned into the album line. rhythm-deck.js handles selection. #}
 {% macro track_banner(track) %}
 {% set src = track.sources[0] if track.sources else {} %}
 {% set mins = (track.duration_ms or 0) // 60000 %}
@@ -39,8 +40,24 @@
     </span>
     <span class="deck-banner-label">
         <span class="deck-banner-title">{{ track.name }}</span>
-        <span class="deck-banner-artist">{{ track.artist }}</span>
+        <span class="deck-banner-artist">{{ track.artist }}{% if track.album %}<span class="deck-banner-from"> &middot; {{ track.album }}</span>{% endif %}</span>
     </span>
+    <template class="deck-banner-album">
+        <button type="button" class="deck-album-btn"
+                {% if track.album_ref %}hx-get="/api/music/album/{{ track.album_ref.provider }}/{{ track.album_ref.id | urlencode }}"
+                {% else %}hx-get="/api/music/album/resolve"
+                hx-vals='{{ {
+                    "title": track.name,
+                    "artist": track.artist,
+                    "album": track.album | default("", true),
+                    "duration_ms": track.duration_ms | default(0, true)
+                } | tojson }}'{% endif %}
+                hx-target="#music-detail" hx-swap="innerHTML"
+                data-opens-detail="{{ 'Loading album…' if track.album_ref else 'Finding the album…' }}"
+                aria-label="{{ 'Open album: ' ~ track.album if track.album else 'Find the album of this song' }}">
+            <span aria-hidden="true">&#9656;</span> {{ track.album or 'Find album' }}
+        </button>
+    </template>
     <template class="deck-banner-db">
         {% if track.db and track.db.status == 'done' %}
             {{ quality_badge(track.db) }}
@@ -85,7 +102,7 @@
 <button type="button" class="deck-banner deck-banner-row" role="option"
         data-title="{{ title }}" data-artist="{{ subtitle }}" data-album=""
         data-year="{{ year }}" data-genre="" data-duration="" data-trk="{{ trk }}"
-        data-image="{{ image }}" data-source="{{ source }}">
+        data-image="{{ image or '' }}" data-source="{{ source }}">
     <span class="deck-banner-art">
         {% if image %}<img src="{{ image }}" loading="lazy" alt=""{% if kind != 'playlist' %} data-vibrant{% endif %}>
         {% else %}<span class="deck-banner-noart">{% if kind == 'playlist' %}&#9776;{% elif kind == 'artist' %}&#9883;{% else %}&#9835;{% endif %}</span>{% endif %}
@@ -99,7 +116,7 @@
         {% if detail_url %}
         <button class="outline deck-open-btn"
                 hx-get="{{ detail_url }}" hx-target="#music-detail" hx-swap="innerHTML"
-                onclick="document.getElementById('music-detail-modal').showModal()">&#9656; OPEN</button>
+                data-opens-detail="Loading {{ kind }}…">&#9656; OPEN</button>
         {% endif %}
         {% if dl_count and total %}<span class="badge badge-done">{{ dl_count }}/{{ total }}</span>{% endif %}
         {% if source %}<span class="deck-db-meta">{{ source }}</span>{% endif %}
