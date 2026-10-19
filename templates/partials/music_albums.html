@@ -1,9 +1,9 @@
-{% from "macros/components.html" import item_banner %}
+{% from "macros/components.html" import item_banner, album_detail_url %}
 <div class="deck-wheel deck-wheel-v" role="listbox" aria-label="Albums">
 {% for album in albums %}
 {{ item_banner(
     album.image_url, album.name, album.artist, 'album',
-    detail_url='/api/music/album/' ~ album.sources[0].provider ~ '/' ~ album.sources[0].id,
+    detail_url=album_detail_url(album.sources[0].provider, album.sources[0].id, album.name, album.artist),
     source=album.sources[0].provider,
     year=album.year or '',
     trk=album.total_tracks or '',
@@ -13,5 +13,9 @@
 </div>
 
 {% if not albums %}
+{% if spotify_notice %}
+<p class="deck-empty">No albums found. {{ spotify_notice }}; YouTube Music albums still show here.</p>
+{% else %}
 <p class="deck-empty">No albums found. Connect Spotify or YouTube Music to browse your library.</p>
+{% endif %}
 {% endif %}

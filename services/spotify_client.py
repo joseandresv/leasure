@@ -1,4 +1,7 @@
+import copy
+import functools
 import logging
+import math
 import time
 
 import requests
@@ -53,7 +56,21 @@ def get_client() -> spotipy.Spotify | None:
         return None
     # A plain session, not spotipy's urllib3 retry adapter: that adapter sleeps through a 429's
     # Retry-After, which Spotify sets to hours once the app is rate-limited.
-    return spotipy.Spotify(auth_manager=auth, requests_session=requests.Session(), requests_timeout=REQUEST_TIMEOUT_S)
+    return _GuardedSpotify(auth_manager=auth, requests_session=requests.Session(), requests_timeout=REQUEST_TIMEOUT_S)
+
+
+class _GuardedSpotify(spotipy.Spotify):
+    """Every request goes through here: nothing is sent while rate-limited, and any 429 starts the window."""
+
+    def _internal_call(self, method, url, payload, params):
+        if is_rate_limited():
+            raise spotipy.SpotifyException(429, -1, f"{url}: not sent, Spotify is rate-limiting Leasure",
+                                           headers={"Retry-After": str(math.ceil(rate_limit_seconds_left()))})
+        try:
+            return super()._internal_call(method, url, payload, params)
+        except spotipy.SpotifyException as e:
+            _note_rate_limit(e)
+            raise
 
 
 def rate_limit_seconds_left() -> float:
@@ -65,22 +82,53 @@ def is_rate_limited() -> bool:
     return rate_limit_seconds_left() > 0
 
 
-def _note_rate_limit(e: spotipy.SpotifyException) -> None:
+def wait_text(seconds: float) -> str:
+    return f"~{round(seconds / 3600)} h" if seconds >= 5400 else f"~{max(1, round(seconds / 60))} min"
+
+
+def rate_limit_message() -> str | None:
+    seconds = rate_limit_seconds_left()
+    return f"Spotify is rate-limiting Leasure (try again in {wait_text(seconds)})" if seconds else None
+
+
+def _note_rate_limit(e: Exception) -> bool:
+    """Starts the rate-limit window when `e` is a 429; True if it was one."""
     global _rate_limited_until
+    if not (isinstance(e, spotipy.SpotifyException) and e.http_status == 429):
+        return False
     try:
         retry_after = int((e.headers or {}).get("Retry-After") or 0)
     except ValueError:
         retry_after = 0
     if not is_rate_limited():
-        logger.warning("Spotify is rate-limiting this app (429, Retry-After %ss); skipping Spotify album lookups until then",
+        logger.warning("Spotify is rate-limiting this app (429, Retry-After %ss); skipping Spotify calls until then",
                        retry_after)
     _rate_limited_until = time.monotonic() + retry_after
+    return True
+
+
+def _web_api(default=None):
+    """For functions that call the Web API: `default` at once while rate-limited, and on a 429."""
+    def wrap(fn):
+        @functools.wraps(fn)
+        def guarded(*args, **kwargs):
+            if is_rate_limited():
+                return copy.copy(default)
+            try:
+                return fn(*args, **kwargs)
+            except spotipy.SpotifyException as e:
+                if not _note_rate_limit(e):
+                    raise
+                return copy.copy(default)
+        return guarded
+    return wrap
 
 
 def is_connected() -> bool:
     return get_client() is not None
 
 
+@_web_api()
 def get_user_profile() -> dict | None:
     sp = get_client()
     if not sp:
@@ -88,15 +136,19 @@ def get_user_profile() -> dict | None:
     return sp.current_user()
 
 
+@_web_api(default=[])
 def get_artist_genres(artist_id: str) -> list[str]:
     """Fetch genres for an artist from Spotify. Returns list of genre strings."""
+    if not artist_id:
+        return []
     sp = get_client()
-    if not sp or not artist_id:
+    if not sp:
         return []
     try:
         artist = sp.artist(artist_id)
         return artist.get("genres", [])
     except Exception as e:
+        _note_rate_limit(e)
         logger.debug("Failed to get genres for artist %s: %s", artist_id, e)
         return []
 
@@ -135,6 +187,8 @@ def _fetch_isrcs(sp: spotipy.Spotify, track_ids: list[str]) -> dict[str, str]:
             full = sp.tracks(batch)
         except Exception as e:
             logger.warning("Failed to fetch ISRCs for %d tracks: %s", len(batch), e)
+            if _note_rate_limit(e):
+                break
             continue
         for t in (full or {}).get("tracks") or []:
             if t and t.get("id") and _isrc(t):
@@ -142,11 +196,17 @@ def _fetch_isrcs(sp: spotipy.Spotify, track_ids: list[str]) -> dict[str, str]:
     return isrcs
 
 
+@_web_api()
 def get_saved_albums(limit: int = 20, offset: int = 0) -> dict | None:
     sp = get_client()
     if not sp:
         return None
-    result = sp.current_user_saved_albums(limit=limit, offset=offset)
+    try:
+        result = sp.current_user_saved_albums(limit=limit, offset=offset)
+    except Exception as e:
+        _note_rate_limit(e)
+        logger.warning("Failed to get Spotify saved albums: %s", e)
+        return None
     albums = []
     for item in result.get("items", []):
         album = item["album"]
@@ -216,6 +276,7 @@ def get_album_tracks(album_id: str, client: spotipy.Spotify | None = None) -> di
     }
 
 
+@_web_api()
 def get_playlists(limit: int = 20, offset: int = 0) -> dict | None:
     sp = get_client()
     if not sp:
@@ -239,9 +300,8 @@ def get_playlists(limit: int = 20, offset: int = 0) -> dict | None:
     }
 
 
+@_web_api()
 def get_playlist_tracks(playlist_id: str, limit: int = 500, offset: int = 0) -> dict | None:
-    if is_rate_limited():
-        return None
     sp = get_client()
     if not sp:
         return None
@@ -259,6 +319,7 @@ def get_playlist_tracks(playlist_id: str, limit: int = 500, offset: int = 0) -> 
             "owner": (pl_meta.get("owner") or {}).get("display_name", ""),
         }
     except Exception as e:
+        _note_rate_limit(e)
         logger.warning("Failed to get playlist metadata for %s: %s", playlist_id, e)
 
     try:
@@ -292,8 +353,7 @@ def get_playlist_tracks(playlist_id: str, limit: int = 500, offset: int = 0) -> 
                     break
 
     except Exception as e:
-        if isinstance(e, spotipy.SpotifyException) and e.http_status == 429:
-            _note_rate_limit(e)
+        _note_rate_limit(e)
         error_str = str(e)
         logger.error("Failed to get playlist tracks for %s: %s", playlist_id, error_str[:200])
         result = {"error": error_str[:200], "playlist": playlist_info, "tracks": [], "total": 0, "offset": 0, "limit": limit}
@@ -328,6 +388,7 @@ def _parse_track(t: dict) -> dict:
     }
 
 
+@_web_api()
 def get_currently_playing() -> dict | None:
     """Fetch the track currently playing on Spotify (if any)."""
     sp = get_client()
@@ -357,10 +418,12 @@ def get_currently_playing() -> dict | None:
             **album_fields(t.get("album") or {}),
         }
     except Exception as e:
+        _note_rate_limit(e)
         logger.debug("Failed to get currently playing: %s", e)
         return None
 
 
+@_web_api()
 def get_recently_played(limit: int = 50) -> list[dict] | None:
     """Fetch recently played tracks from Spotify (last 50 max)."""
     sp = get_client()
@@ -397,10 +460,12 @@ def get_recently_played(limit: int = 50) -> list[dict] | None:
             })
         return tracks
     except Exception as e:
+        _note_rate_limit(e)
         logger.error("Failed to get recently played: %s", e)
         return None
 
 
+@_web_api()
 def get_liked_songs(limit: int = 50, offset: int = 0) -> dict | None:
     sp = get_client()
     if not sp:
@@ -428,3 +493,11 @@ def get_liked_songs(limit: int = 50, offset: int = 0) -> dict | None:
         "offset": result.get("offset", 0),
         "limit": result.get("limit", 50),
     }
+
+
+@_web_api()
+def search_catalog(query: str, limit: int = 20) -> dict | None:
+    sp = get_client()
+    if not sp:
+        return None
+    return sp.search(q=query, type="album,track,artist", limit=limit)

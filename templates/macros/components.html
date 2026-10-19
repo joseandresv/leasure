@@ -44,7 +44,7 @@
     </span>
     <template class="deck-banner-album">
         <button type="button" class="deck-album-btn"
-                {% if track.album_ref %}hx-get="/api/music/album/{{ track.album_ref.provider }}/{{ track.album_ref.id | urlencode }}"
+                {% if track.album_ref %}hx-get="{{ album_detail_url(track.album_ref.provider, track.album_ref.id, track.album, track.album_artist or track.artist) }}"
                 {% else %}hx-get="/api/music/album/resolve"
                 hx-vals='{{ {
                     "title": track.name,
@@ -97,6 +97,12 @@
     </template>
 </button>
 {% endmacro %}
+
+{# Album detail URL. Spotify links also carry the album name and artist, so the server
+   can find the album elsewhere while Spotify is not answering. #}
+{% macro album_detail_url(provider, album_id, name='', artist='') -%}
+/api/music/album/{{ provider | urlencode }}/{{ album_id | urlencode }}{% if provider == 'spotify' and (name or artist) %}?{{ {'name': name or '', 'artist': artist or ''} | urlencode }}{% endif %}
+{%- endmacro %}
 
 {# Album / playlist / artist banner. detail_url (optional) wires the OPEN action. #}
 {% macro item_banner(image, title, subtitle, kind, detail_url='', source='', year='', trk='', dl_count=0, total=0) %}

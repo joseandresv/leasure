@@ -10,5 +10,9 @@
 </div>
 
 {% if not playlists %}
+{% if spotify_notice %}
+<p class="deck-empty">No playlists found. {{ spotify_notice }}; YouTube Music playlists still show here.</p>
+{% else %}
 <p class="deck-empty">No playlists found.</p>
+{% endif %}
 {% endif %}

@@ -314,18 +314,6 @@ def _spotify_payload(data: dict) -> dict:
                         "youtube_id": None} for t in data["tracks"]]}
 
 
-def _spotify_lookup_client():
-    base = spotify_client.get_client()
-    if base is None:
-        return None
-    import requests
-    import spotipy
-
-    # A plain session, without spotipy's urllib3 retry adapter: that adapter sleeps through the
-    # whole Retry-After of a 429, which Spotify sets to many minutes once a bulk run trips its limit.
-    return spotipy.Spotify(auth_manager=base.auth_manager, requests_session=requests.Session())
-
-
 def _spotify_call(fn, *args, **kwargs):
     """One paced Spotify request; a short Retry-After is waited out once, a long one ends Spotify lookups."""
     import spotipy
@@ -345,7 +333,7 @@ def _spotify_call(fn, *args, **kwargs):
 
 def spotify_album_candidates(artist: str, album: str) -> list[dict] | None:
     """Up to two Spotify albums that look like `album`, with their tracks; None when Spotify is not connected."""
-    client = _spotify_lookup_client()
+    client = spotify_client.get_client()
     if client is None:
         return None
     clean = lambda s: s.replace('"', " ")  # noqa: E731

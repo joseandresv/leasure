@@ -1,5 +1,6 @@
 """Unified music aggregator — merges Spotify + YouTube Music libraries."""
 
+import copy
 import logging
 import re
 import time
@@ -25,6 +26,11 @@ _recency_cache: dict = {"ts": 0.0, "data": None}
 # loads (re-opening the music panel, switching back to the Deck tab) hit this instead.
 _RECENT_TTL = 45  # seconds
 _recent_cache: dict = {"ts": 0.0, "limit": 0, "data": None}
+
+# The last merged album list, kept so a Spotify album link without name/artist can still be
+# looked up on YouTube Music while Spotify is rate-limiting Leasure; "spotify" is the last Spotify
+# part of it, shown again in the meantime.
+_albums_cache: dict = {"data": None, "spotify": None}
 
 _DASHES = str.maketrans(dict.fromkeys("\u2010\u2011\u2012\u2013\u2014\u2015\u2212\uff0d", "-"))
 _FULL_ALBUM = re.compile(r"full\s*album|全曲|フルアルバム", re.IGNORECASE)
@@ -307,23 +313,29 @@ async def enrich_with_download_status(tracks: list[dict], session: AsyncSession)
         track["download_status"] = status
 
 
+def _spotify_albums() -> list[dict]:
+    """Spotify saved albums as unified entries; the last ones fetched while Spotify is rate-limiting Leasure."""
+    sp_data = sp.get_saved_albums(limit=50, offset=0)
+    if not sp_data:
+        return copy.deepcopy(_albums_cache.get("spotify") or []) if sp.is_rate_limited() else []
+    albums = [{
+        "id": f"sp:{a['id']}",
+        "name": a["name"],
+        "artist": a["artist"],
+        "image_url": a.get("image_url"),
+        "year": a.get("release_date", "")[:4] if a.get("release_date") else None,
+        "total_tracks": a.get("total_tracks", 0),
+        "sources": [{"provider": "spotify", "id": a["id"], "uri": a.get("uri", "")}],
+    } for a in sp_data.get("albums", [])]
+    # Merging appends YouTube sources to these dicts, so the cache keeps its own copy.
+    _albums_cache["spotify"] = copy.deepcopy(albums)
+    return albums
+
+
 def get_unified_albums() -> list[dict]:
     """Merge Spotify saved albums + YouTube library albums, sorted by recency."""
     t0 = time.perf_counter()
-    albums = []
-
-    sp_data = sp.get_saved_albums(limit=50, offset=0)
-    if sp_data:
-        for a in sp_data.get("albums", []):
-            albums.append({
-                "id": f"sp:{a['id']}",
-                "name": a["name"],
-                "artist": a["artist"],
-                "image_url": a.get("image_url"),
-                "year": a.get("release_date", "")[:4] if a.get("release_date") else None,
-                "total_tracks": a.get("total_tracks", 0),
-                "sources": [{"provider": "spotify", "id": a["id"], "uri": a.get("uri", "")}],
-            })
+    albums = _spotify_albums()
 
     yt_albums = yt.get_library_albums(limit=50)
     if yt_albums:
@@ -343,8 +355,20 @@ def get_unified_albums() -> list[dict]:
     for a in merged:
         a["_ts"] = recency.get(_album_key(a.get("artist", ""), a.get("name", "")), 0)
     merged.sort(key=lambda a: (-a.get("_ts", 0), a["name"].lower()))
+    _albums_cache["data"] = merged
     logger.debug("get_unified_albums: %d albums in %.2fs", len(merged), time.perf_counter() - t0)
     return merged
+
+
+def known_spotify_album(album_id: str) -> dict | None:
+    """{"name", "artist"} of a Spotify album the cached album list or recent tracks mention, without asking Spotify."""
+    for album in _albums_cache["data"] or []:
+        if any(s["provider"] == "spotify" and s.get("id") == album_id for s in album.get("sources", [])):
+            return {"name": album["name"], "artist": album.get("artist") or ""}
+    for track in _recent_cache["data"] or []:
+        if track.get("album_ref") == {"provider": "spotify", "id": album_id} and track.get("album"):
+            return {"name": track["album"], "artist": track.get("album_artist") or track.get("artist") or ""}
+    return None
 
 
 def get_unified_recent(limit: int = 50, force: bool = False) -> list[dict]:
@@ -525,6 +549,15 @@ def find_youtube_album(title: str, artist: str, album: str = "", duration_ms: in
         return _match_song_album(client, title, artist, duration_ms)
     except Exception as e:
         logger.warning("YouTube Music album lookup failed for '%s - %s': %s", artist, title, e)
+        return None
+
+
+def find_youtube_album_by_name(album: str, artist: str) -> str | None:
+    """browseId of the YouTube Music album called `album` by `artist`, or None without a confident match."""
+    try:
+        return _match_album_result(yt.browse_client(), _clean_title(album), _clean_title(artist))
+    except Exception as e:
+        logger.warning("YouTube Music album lookup failed for '%s - %s': %s", artist, album, e)
         return None
 
 

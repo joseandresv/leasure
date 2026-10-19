@@ -1,4 +1,4 @@
-{% from "macros/components.html" import format_selector, badge, duration %}
+{% from "macros/components.html" import format_selector, badge, duration, album_detail_url %}
 
 {% if results.albums %}
 <h2>albums</h2>
@@ -6,7 +6,7 @@
 {% for album in results.albums %}
 <div class="album-card"
      {% if album.sources[0].provider in ['spotify', 'youtube'] %}
-     hx-get="/api/music/album/{{ album.sources[0].provider }}/{{ album.sources[0].id }}"
+     hx-get="{{ album_detail_url(album.sources[0].provider, album.sources[0].id, album.name, album.artist) }}"
      hx-target="#music-detail"
      hx-swap="innerHTML"
      data-opens-detail="Loading album…"
@@ -93,5 +93,5 @@
 {% endif %}
 
 {% if not results.albums and not results.tracks and not results.artists %}
-<p style="color: var(--text-muted);">No results found for "{{ query }}"</p>
+<p style="color: var(--text-muted);">No results found for "{{ query }}"{% if spotify_notice %}. {{ spotify_notice }}, so Spotify was not searched.{% endif %}</p>
 {% endif %}

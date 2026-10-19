@@ -550,7 +550,7 @@ async def test_spotify_album_download_moves_a_second_disc_track_under_its_disc_p
                     "track_number": 1, "disc_number": 2, "duration_ms": 1000}],
     })
 
-    resp = await client.post("/api/spotify/download/album/ram")
+    resp = await client.post("/api/spotify/download/album/4m2880jivSbbyEGAKfITCa")
     assert resp.status_code == 200
 
     async with db() as session:

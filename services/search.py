@@ -16,14 +16,12 @@ def _normalize_key(title: str, artist: str) -> str:
 
 async def search_spotify(query: str, limit: int = 20) -> dict:
     """Search Spotify catalog for albums, tracks, and artists."""
-    client = await asyncio.to_thread(sp.get_client)
-    if not client:
-        return {"albums": [], "tracks": [], "artists": []}
-
     try:
-        results = await asyncio.to_thread(client.search, q=query, type="album,track,artist", limit=limit)
+        results = await asyncio.to_thread(sp.search_catalog, query, limit)
     except Exception as e:
         logger.warning("Spotify search failed: %s", e)
+        results = None
+    if not results:
         return {"albums": [], "tracks": [], "artists": []}
 
     albums = []

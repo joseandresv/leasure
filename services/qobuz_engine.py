@@ -71,7 +71,7 @@ UPGRADE_NO_MATCH = "No exact Qobuz match; the current file is kept."
 DAMAGED_MESSAGE = "The Qobuz download is damaged or incomplete — retry."
 NOT_REVERTIBLE = "There is no earlier file to go back to."
 
-_BENIGN_VERSION = re.compile(r"\b(?:\d{4} remaster(?:ed)?(?: version)?|remaster(?:ed)?(?: \d{4})?(?: version)?"
+BENIGN_VERSION = re.compile(r"\b(?:\d{4} remaster(?:ed)?(?: version)?|remaster(?:ed)?(?: \d{4})?(?: version)?"
                              r"|album version|explicit|single version|original mix)\b")
 _NUMBER_TOKEN = re.compile(r"\b(?:\d+|i|ii|iii|iv|v|vi|vii|viii|ix|x|xi|xii)\b")
 _ARTIST_SPLIT = re.compile(r",|&|\bfeat\b\.?|\bft\b\.?|\bfeaturing\b")
@@ -300,7 +300,7 @@ def _before_body_hook(route: str, expected_s: float | None):
 # --- matching -----------------------------------------------------------------------------
 
 def _norm(text: str | None) -> str:
-    lowered = _BENIGN_VERSION.sub(" ", (text or "").casefold())
+    lowered = BENIGN_VERSION.sub(" ", (text or "").casefold())
     return " ".join(re.sub(r"[\W_]+", " ", lowered).split())
 
 

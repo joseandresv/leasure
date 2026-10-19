@@ -1,6 +1,7 @@
 {% from "macros/components.html" import url_code %}
 {% if connected %}
-<p><mark>Connected</mark> as <strong>{{ user }}</strong></p>
+<p><mark>Connected</mark>{% if user %} as <strong>{{ user }}</strong>{% endif %}</p>
+{% if rate_limit %}<p style="color: var(--text-muted);">{{ rate_limit }}.</p>{% endif %}
 {% elif auth_url %}
 <p>Not connected. <a href="{{ auth_url }}">Connect Spotify</a></p>
 {% else %}

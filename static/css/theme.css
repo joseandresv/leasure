@@ -965,6 +965,7 @@ input[type="radio"], input[type="checkbox"] {
     margin-top: var(--space-md);
     flex-wrap: wrap;
 }
+.album-actions[hidden] { display: none; }
 
 /* Source badges in album detail */
 .source-badges {
@@ -1137,6 +1138,15 @@ dialog header button:hover { color: var(--text-primary); }
 
 .modal-body { padding: var(--space-md); }
 .detail-note { color: var(--text-muted); }
+.detail-notice {
+    max-width: 65ch;
+    margin: var(--space-md) 0 var(--space-sm);
+    padding: var(--space-sm) var(--space-md);
+    border-left: 3px solid var(--color-warning);
+    background: var(--bg-elevated);
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
 
 
 /* --- 18. Toast Notifications --- */

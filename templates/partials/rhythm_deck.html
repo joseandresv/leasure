@@ -12,5 +12,9 @@
 </div>
 
 {% if not tracks %}
+{% if spotify_notice %}
+<p class="deck-empty">No recent listening to show. {{ spotify_notice }}; YouTube Music history still shows here.</p>
+{% else %}
 <p class="deck-empty">No recent listening to spin. Play something on Spotify or YT Music.</p>
+{% endif %}
 {% endif %}

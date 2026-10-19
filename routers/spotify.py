@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings
 from db import get_session
 from models import Playlist, PlaylistTrack, Track
-from services import oauth_state
+from services import oauth_state, spotify_albums
 from services import spotify_client as sp
 from services.formats import resolve_format
 from services.tracks import optional_int, refresh_album_track, upsert_track
@@ -46,7 +46,8 @@ async def status_html(request: Request):
     if connected:
         profile = await asyncio.to_thread(sp.get_user_profile)
         return templates.TemplateResponse(request=request, name="partials/spotify_status.html",
-                                          context={"connected": True, "user": profile.get("display_name", "Unknown") if profile else "Unknown"})
+                                          context={"connected": True, "user": (profile or {}).get("display_name"),
+                                                   "rate_limit": sp.rate_limit_message()})
     return templates.TemplateResponse(request=request, name="partials/spotify_status.html",
                                       context={"connected": False, "auth_url": "/api/spotify/auth"})
 
@@ -77,7 +78,7 @@ async def album_tracks_html(
     album_id: str,
     session: AsyncSession = Depends(get_session),
 ):
-    result = await asyncio.to_thread(sp.get_album_tracks, album_id)
+    result = await asyncio.to_thread(spotify_albums.get_album, album_id)
     if result is None:
         return HTMLResponse('<p>Not connected to Spotify.</p>')
 
@@ -207,7 +208,7 @@ async def albums(
 
 @router.get("/albums/{album_id}")
 async def album_tracks(album_id: str, session: AsyncSession = Depends(get_session)):
-    result = await asyncio.to_thread(sp.get_album_tracks, album_id)
+    result = await asyncio.to_thread(spotify_albums.get_album, album_id)
     if result is None:
         return {"error": "Not connected to Spotify"}
 
@@ -352,7 +353,7 @@ async def download_album(
     format: str = "mp3",
     session: AsyncSession = Depends(get_session),
 ):
-    album_data = sp.get_album_tracks(album_id)
+    album_data = await asyncio.to_thread(spotify_albums.get_album, album_id)
     if album_data is None:
         return {"error": "Not connected to Spotify"}
 
@@ -366,7 +367,7 @@ async def download_album(
         # Album genres are often empty; fetch from artist instead
         first_track = album_data["tracks"][0] if album_data["tracks"] else None
         if first_track:
-            artist_genres = sp.get_artist_genres(first_track.get("artist_id", ""))
+            artist_genres = await asyncio.to_thread(sp.get_artist_genres, first_track.get("artist_id", ""))
             if artist_genres:
                 album_genre = ", ".join(artist_genres[:3])
     else:
