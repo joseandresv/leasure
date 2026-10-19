@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     max_concurrent_downloads: int = 1
     # False for throwaway/test servers: nothing is downloaded and pending tracks are not re-queued.
     download_worker_enabled: bool = True
+    # False for throwaway/test servers: Spotify, Qobuz and YouTube Music saved libraries are not read in the background.
+    saved_sync_enabled: bool = True
     artwork_size: int = 500
     # Look downloaded albums up on MusicBrainz, then Deezer, to show their full tracklists.
     album_info_lookups: bool = True

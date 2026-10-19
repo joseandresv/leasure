@@ -36,6 +36,7 @@ from services.yt_engine import CapDeferred, DownloadFailed, with_audio_suffix
 logger = logging.getLogger(__name__)
 
 DAILY_FILE = settings.data_dir / "qobuz_daily.json"
+EVENTS_FILE = settings.data_dir / "qobuz_events.jsonl"
 UPGRADES_DIR = settings.data_dir / "upgrades"
 MAX_SAMPLING_KHZ = 192.0
 TRACK_GAP_S: tuple[float, float] = (3.0, 8.0)
@@ -45,6 +46,9 @@ CDN_FAILURES_TO_OPEN = 3
 MIN_MATCH_SCORE_DOWNLOAD = 4.0
 MIN_MATCH_SCORE_UPGRADE = 5.0
 UPGRADE_LENGTH_TOLERANCE_S = 3.0
+ID_MODE_DURATION_S = 3.0
+# Fractions of the daily cap: "Download all" and FLAC upgrades each stop at their share, so clicks keep the rest.
+DAILY_SHARES = {"bulk": 0.6, "upgrade": 0.2}
 SKIP_REASONS = ("not_configured", "signed_out", "ineligible", "cap", "no_match",
                 "not_streamable", "unavailable", "cdn_unavailable")
 
@@ -116,6 +120,7 @@ class TrackSnapshot:
     artwork_url: str | None
     file_path: str | None
     quality: str
+    source: str = ""
 
 
 @dataclass(frozen=True)
@@ -136,6 +141,7 @@ class FlacFacts:
 
 
 _daily_lock = threading.Lock()
+_events_lock = threading.Lock()
 _breaker: dict = {"reason": None, "until": 0.0}
 _cdn_failures = 0
 _gap_lock = asyncio.Lock()
@@ -176,22 +182,47 @@ def daily_cap_reached() -> bool:
     return downloads_today() >= settings.qobuz_max_downloads_per_day
 
 
-def reserve_daily_slot() -> bool:
-    """Count one Qobuz stream against today's cap; False when the cap is used up."""
+def _today_by_kind(state: dict) -> dict[str, int]:
+    by_kind = state.get("by_kind") if state.get("date") == yt_engine.counter_date() else None
+    return {k: int(v) for k, v in by_kind.items()} if isinstance(by_kind, dict) else {}
+
+
+def used_today(kind: str) -> int:
+    """Streams today's counter recorded for `kind` (interactive | bulk | upgrade)."""
+    return _today_by_kind(_read_daily()).get(kind, 0)
+
+
+def daily_share(kind: str) -> int | None:
+    """Streams a day `kind` may use: its fraction of the daily cap; None for a kind without one (interactive)."""
+    fraction = DAILY_SHARES.get(kind)
+    return None if fraction is None else int(round(fraction * settings.qobuz_max_downloads_per_day, 6))
+
+
+def share_left(kind: str) -> int | None:
+    """Slots `kind` may still use today within its share; None for a kind without one (interactive)."""
+    share = daily_share(kind)
+    return None if share is None else max(0, share - used_today(kind))
+
+
+def reserve_daily_slot(kind: str = "interactive") -> bool:
+    """Count one Qobuz stream against today's cap and `kind`'s share; False when either is used up."""
     with _daily_lock:
         state = _read_daily()
-        count = _today_count(state)
-        if count >= settings.qobuz_max_downloads_per_day:
+        count, by_kind = _today_count(state), _today_by_kind(state)
+        share = daily_share(kind)
+        if count >= settings.qobuz_max_downloads_per_day or (share is not None and by_kind.get(kind, 0) >= share):
             return False
-        state.update(date=yt_engine.counter_date(), count=count + 1)
+        by_kind[kind] = by_kind.get(kind, 0) + 1
+        state.update(date=yt_engine.counter_date(), count=count + 1, by_kind=by_kind)
         secret_file.write_atomic(DAILY_FILE, json.dumps(state))
+        _append_event({"event": "stream", "kind": kind, "count": count + 1})
         return True
 
 
 def set_cooldown(seconds: float) -> None:
     with _daily_lock:
         state = _read_daily()
-        state.update(date=yt_engine.counter_date(), count=_today_count(state),
+        state.update(date=yt_engine.counter_date(), count=_today_count(state), by_kind=_today_by_kind(state),
                      cooldown_until=(datetime.now(UTC) + timedelta(seconds=seconds)).isoformat())
         secret_file.write_atomic(DAILY_FILE, json.dumps(state))
 
@@ -205,9 +236,55 @@ def cooldown_left() -> float:
     return max(0.0, (moment - datetime.now(UTC)).total_seconds()) if moment else 0.0
 
 
+# --- event log (data/qobuz_events.jsonl): every stream and every pushback, to size the cap from ---
+
+def _append_event(event: dict) -> None:
+    """One JSON line; a failed write is logged and never stops a download."""
+    line = json.dumps({"at": datetime.now(UTC).isoformat(timespec="seconds"), **event})
+    try:
+        with _events_lock, EVENTS_FILE.open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except OSError as e:
+        logger.warning("Could not append to %s: %s", EVENTS_FILE.name, e)
+
+
+def _recent_streams(now: datetime) -> tuple[int, int]:
+    """(stream events in the last hour, in the last 24 h) from the event log."""
+    hour = day = 0
+    try:
+        lines = EVENTS_FILE.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return 0, 0
+    for line in lines:
+        try:
+            event = json.loads(line)
+            age = now - datetime.fromisoformat(event["at"])
+        except (ValueError, KeyError, TypeError):
+            continue
+        if event.get("event") == "stream" and age <= timedelta(hours=24):
+            day += 1
+            hour += age <= timedelta(hours=1)
+    return hour, day
+
+
+def record_limit(status: int | str, where: str, *, retry_after: float | None = None, reason: str = "") -> None:
+    """Log one Qobuz pushback (a 429/403, or "breaker") at WARNING and append it to the event log."""
+    last_hour, last_day = _recent_streams(datetime.now(UTC))
+    event = {"event": "limit", "status": status, "where": where, "reason": qobuz_client.redact(reason),
+             "count": downloads_today(), "streams_last_hour": last_hour, "streams_last_24h": last_day}
+    if retry_after is not None:
+        event["retry_after"] = retry_after
+    logger.warning("Qobuz pushback: %s", json.dumps(event))
+    _append_event(event)
+
+
+qobuz_client.set_pushback_listener(record_limit)
+
+
 def _open_breaker(reason: str) -> None:
     _breaker.update(reason=reason, until=time.time() + BREAKER_OPEN_S)
     logger.warning("Qobuz paused for %d s: %s", BREAKER_OPEN_S, reason)
+    record_limit("breaker", "breaker", reason=reason)
 
 
 def _breaker_left() -> tuple[str | None, float]:
@@ -250,6 +327,17 @@ def _cap_exception(route: str) -> Exception:
                        retry_after_s=yt_engine.seconds_until_tomorrow())
 
 
+def _limit_exception(route: str, kind: str) -> Exception:
+    """The cap itself, or `kind`'s share of it, is used up for today."""
+    if daily_cap_reached() or share_left(kind) != 0:
+        return _cap_exception(route)
+    message = f"Today's Qobuz share for {'Download all' if kind == 'bulk' else 'FLAC upgrades'} is used up."
+    if route == "native":
+        return QobuzSkip("cap", message)
+    return CapDeferred(f"{message} This track stays queued and resumes tomorrow.",
+                       retry_after_s=yt_engine.seconds_until_tomorrow())
+
+
 async def _wait_track_gap() -> None:
     global _last_fetch_end
     async with _gap_lock:
@@ -266,7 +354,7 @@ def _fetch_ended() -> None:
     _last_fetch_end = time.monotonic()
 
 
-async def _gate(route: str) -> qobuz_session.StoredSession:
+async def _gate(route: str, kind: str = "interactive") -> qobuz_session.StoredSession:
     session = await asyncio.to_thread(qobuz_session.load)
     if session is None:
         raise QobuzSkip("not_configured")
@@ -278,13 +366,13 @@ async def _gate(route: str) -> qobuz_session.StoredSession:
     cooling = await asyncio.to_thread(cooldown_left)
     if cooling > 0:
         raise CapDeferred(COOLDOWN_MESSAGE, retry_after_s=cooling)
-    if await asyncio.to_thread(daily_cap_reached):
-        raise _cap_exception(route)
+    if await asyncio.to_thread(daily_cap_reached) or await asyncio.to_thread(share_left, kind) == 0:
+        raise await asyncio.to_thread(_limit_exception, route, kind)
     await _wait_track_gap()
     return session
 
 
-def _before_body_hook(route: str, expected_s: float | None):
+def _before_body_hook(route: str, kind: str, expected_s: float | None):
     """Thread-side, right before the CDN body is read: room on disk, then one cap slot."""
     def hook(_stream: FileUrl, content_length: int | None) -> None:
         size = content_length or int((expected_s or 600) * 192000 * 6)
@@ -292,8 +380,8 @@ def _before_body_hook(route: str, expected_s: float | None):
         for folder in (settings.download_dir, settings.library_dir):
             if shutil.disk_usage(folder).free < needed:
                 raise CapDeferred(DISK_MESSAGE, retry_after_s=DISK_FULL_RETRY_S)
-        if not reserve_daily_slot():
-            raise _cap_exception(route)
+        if not reserve_daily_slot(kind):
+            raise _limit_exception(route, kind)
     return hook
 
 
@@ -338,7 +426,25 @@ def _album_ratio(row: TrackSnapshot, track: QobuzTrack) -> float:
     return _ratio(_norm(row.album), _norm(track.album_title)) if row.album else 1.0
 
 
+def _id_mode(row: TrackSnapshot) -> bool:
+    """A Qobuz favorite: its id is the match, so there is no ISRC or text search and no title gate."""
+    return row.source == "qobuz" and bool(row.qobuz_id)
+
+
+def _passes_id_gates(row: TrackSnapshot, track: QobuzTrack) -> bool:
+    """Streamable, and within 3 s of the stored length (an id that now points at other audio fails)."""
+    if track.streamable is False:
+        raise QobuzSkip("not_streamable")
+    return not (row.duration_ms and track.duration_s) or \
+        abs(track.duration_s - row.duration_ms / 1000) <= ID_MODE_DURATION_S
+
+
 def _candidates(client: QobuzClient, row: TrackSnapshot) -> list[tuple[QobuzTrack, str]]:
+    if _id_mode(row):
+        try:
+            return [(client.get_track(row.qobuz_id), "id")]
+        except qobuz_client.QobuzNotFoundError:
+            return []
     if row.qobuz_id and row.qobuz_match_method in ("id", "isrc"):
         with contextlib.suppress(qobuz_client.QobuzNotFoundError):
             return [(client.get_track(row.qobuz_id), "id")]
@@ -360,8 +466,9 @@ def resolve_matches(client: QobuzClient, row: TrackSnapshot, *, strict: bool) ->
     """Up to three candidates that pass every gate, best first; QobuzSkip("no_match") when none does."""
     threshold = MIN_MATCH_SCORE_UPGRADE if strict else MIN_MATCH_SCORE_DOWNLOAD
     ranked: list[tuple[float, bool, QobuzMatch]] = []
+    id_mode = _id_mode(row)
     for track, method in _candidates(client, row):
-        ok, cleaned, _ = _passes_gates(row, track)
+        ok, cleaned = (_passes_id_gates(row, track), "") if id_mode else _passes_gates(row, track)[:2]
         if not ok:
             continue
         album = _album_ratio(row, track)
@@ -484,7 +591,7 @@ async def _call_qobuz(route: str, fingerprint: str, fn, *args):
     try:
         return await asyncio.to_thread(fn, *args)
     except _Damaged:
-        _note_cdn_failure()
+        await asyncio.to_thread(_note_cdn_failure)
         raise
     except (QobuzSkip, CapDeferred, DownloadFailed):
         raise
@@ -501,16 +608,16 @@ async def _call_qobuz(route: str, fingerprint: str, fn, *args):
         raise QobuzSkip("not_streamable") from None
     except (qobuz_client.QobuzAppError, qobuz_client.QobuzForbiddenError) as e:
         await asyncio.to_thread(qobuz_session.note_error, qobuz_client.redact(str(e)), fingerprint)
-        _open_breaker("unavailable")
+        await asyncio.to_thread(_open_breaker, "unavailable")
         raise _skip_or_defer(route, "unavailable", BREAKER_MESSAGE, BREAKER_OPEN_S) from None
     except (qobuz_client.QobuzDownloadError, qobuz_client.QobuzNetworkError) as e:
-        _note_cdn_failure()
+        await asyncio.to_thread(_note_cdn_failure)
         raise DownloadFailed(qobuz_client.redact(str(e)) or "The Qobuz download failed — retry.") from None
     except qobuz_client.QobuzError as e:
         raise DownloadFailed(qobuz_client.redact(str(e)) or "Qobuz did not answer as expected.") from None
 
 
-async def _run_fetch(route: str, session: qobuz_session.StoredSession, row: TrackSnapshot, staging: Path,
+async def _run_fetch(route: str, kind: str, session: qobuz_session.StoredSession, row: TrackSnapshot, staging: Path,
                      strict: bool) -> tuple[QobuzMatch, FlacFacts, FileUrl]:
     global _cdn_failures
     fingerprint = qobuz_session.token_fingerprint(session.user_auth_token)
@@ -518,7 +625,7 @@ async def _run_fetch(route: str, session: qobuz_session.StoredSession, row: Trac
     expected = row.duration_ms / 1000 or None
     try:
         fetched = await _call_qobuz(route, fingerprint, _fetch_verified, client, row, staging,
-                                    _before_body_hook(route, expected), strict)
+                                    _before_body_hook(route, kind, expected), strict)
         _cdn_failures = 0
         return fetched
     finally:
@@ -574,7 +681,8 @@ async def _snapshot(track_id: int) -> TrackSnapshot:
         return TrackSnapshot(id=track.id, title=track.title or "", artist=track.artist or "", album=track.album,
                              album_artist=track.album_artist, duration_ms=track.duration_ms or 0, isrc=track.isrc,
                              qobuz_id=track.qobuz_id, qobuz_match_method=track.qobuz_match_method,
-                             artwork_url=track.artwork_url, file_path=track.file_path, quality=track.quality)
+                             artwork_url=track.artwork_url, file_path=track.file_path, quality=track.quality,
+                             source=track.source or "")
 
 
 def _move(src: Path, dest: Path) -> None:
@@ -592,14 +700,15 @@ def _move_staged(staged: Path, dest: Path) -> None:
 
 # --- download -----------------------------------------------------------------------------
 
-async def qobuz_download(track_id: int) -> Path:
-    """Download a pending track's FLAC from Qobuz into the library. QobuzSkip | CapDeferred | DownloadFailed."""
+async def qobuz_download(track_id: int, *, kind: str = "interactive") -> Path:
+    """Download a pending track's FLAC from Qobuz into the library. QobuzSkip | CapDeferred | DownloadFailed.
+    `kind` is whose share of the daily cap the stream uses: interactive or bulk ("Download all")."""
     row = await _snapshot(track_id)
     route = "flac_lossless" if row.quality == "flac_lossless" else "native"
-    session = await _gate(route)
+    session = await _gate(route, kind)
     staging = settings.download_dir / str(track_id)
     try:
-        match, facts, stream = await _run_fetch(route, session, row, staging, strict=False)
+        match, facts, stream = await _run_fetch(route, kind, session, row, staging, strict=False)
         staged = staging / "source.flac"
         override = _cover_override(row, match.track)
         await _tag_staged(staged, track_id, override)
@@ -862,10 +971,10 @@ async def qobuz_upgrade(track_id: int) -> Path:
     old = Path(row.file_path)
     old_length = await asyncio.to_thread(_old_file_facts, old)
     shared = await _is_shared(track_id, old)
-    session = await _gate("upgrade")
+    session = await _gate("upgrade", "upgrade")
     staging = settings.download_dir / str(track_id)
     try:
-        match, facts, stream = await _run_fetch("upgrade", session, row, staging, strict=True)
+        match, facts, stream = await _run_fetch("upgrade", "upgrade", session, row, staging, strict=True)
         if abs(facts.length_s - old_length) > UPGRADE_LENGTH_TOLERANCE_S:
             raise QobuzSkip("no_match", UPGRADE_NO_MATCH)
         staged = staging / "source.flac"
@@ -1052,9 +1161,11 @@ async def queue_upgrades(session: AsyncSession, track_ids: list[int] | None, *, 
     return {"queued": queued, "skipped": skipped}
 
 
-async def gate_open() -> bool:
-    """Whether Qobuz work could start now (used to feed queued upgrades)."""
+async def gate_open(kind: str = "interactive") -> bool:
+    """Whether Qobuz work of `kind` could start now (used to feed queued upgrades and "Download all")."""
     session = await asyncio.to_thread(qobuz_session.usable)
     if session is None or _breaker_left()[0]:
         return False
-    return await asyncio.to_thread(cooldown_left) == 0 and not await asyncio.to_thread(daily_cap_reached)
+    if await asyncio.to_thread(cooldown_left) or await asyncio.to_thread(daily_cap_reached):
+        return False
+    return await asyncio.to_thread(share_left, kind) != 0

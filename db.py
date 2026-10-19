@@ -6,6 +6,7 @@ from datetime import datetime
 from sqlalchemy import Index, Integer, Numeric, String, event, inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+import models_saved  # noqa: F401 -- its tables must be on Base before create_all and the migration run
 from config import settings
 from models import Base
 
@@ -26,7 +27,7 @@ def _set_sqlite_pragmas(dbapi_connection, _record):
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA foreign_keys=ON")
     cursor.execute("PRAGMA journal_mode=WAL")
-    cursor.execute("PRAGMA busy_timeout=5000")
+    cursor.execute("PRAGMA busy_timeout=30000")
     cursor.close()
 
 

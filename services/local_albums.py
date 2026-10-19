@@ -198,13 +198,15 @@ async def load(session: AsyncSession, key: str) -> tuple[LocalAlbum, list[Track]
     return _summarise(key, done), rows
 
 
-async def find_key(session: AsyncSession, name: str, artist: str) -> tuple[str, bool] | None:
+async def find_key(session: AsyncSession, name: str, artist: str, *,
+                   albums: list[LocalAlbum] | None = None) -> tuple[str, bool] | None:
     """The local album a provider album (name, credit) is: (key, exact). Containment only by edition words
-    and only when exactly one local album of that artist fits."""
+    and only when exactly one local album of that artist fits. `albums` reuses a scan() the caller already has."""
     wanted = album_key(name, artist, artist)
     if wanted is None:
         return None
-    albums = await scan(session)
+    if albums is None:
+        albums = await scan(session)
     if any(album.key == wanted.key for album in albums):
         return wanted.key, True
     fits = [album.key for album in albums

@@ -13,8 +13,9 @@ def engines(monkeypatch):
     """Both engines replaced by recorders; `qobuz` decides what the Qobuz attempt does."""
     calls = {"qobuz": [], "youtube": [], "qobuz_outcome": Path("/library/q.flac")}
 
-    async def fake_qobuz(track_id):
+    async def fake_qobuz(track_id, kind="interactive"):
         calls["qobuz"].append(track_id)
+        calls.setdefault("kinds", []).append(kind)
         if isinstance(calls["qobuz_outcome"], Exception):
             raise calls["qobuz_outcome"]
         return calls["qobuz_outcome"]

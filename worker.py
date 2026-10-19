@@ -15,12 +15,14 @@ from services.ytdlp_opts import CookieSessionRefused
 logger = logging.getLogger(__name__)
 
 SCHEDULER_TICK_S = 30
-DOWNLOAD_PRIORITY, UPGRADE_PRIORITY = 0, 1
+# Clicks first, then the one "Download all" track in flight, then FLAC upgrades.
+DOWNLOAD_PRIORITY, BULK_PRIORITY, UPGRADE_PRIORITY = 0, 1, 2
+_PRIORITY_LABELS = {DOWNLOAD_PRIORITY: "download", BULK_PRIORITY: "Download all", UPGRADE_PRIORITY: "a FLAC upgrade"}
 
 
 class DownloadWorker:
     def __init__(self, max_concurrent: int = settings.max_concurrent_downloads):
-        # (priority, seq, track_id): new downloads go ahead of FLAC upgrades.
+        # (priority, seq, track_id)
         self.queue: asyncio.PriorityQueue[tuple[int, int, int]] = asyncio.PriorityQueue()
         self.max_concurrent = max_concurrent
         self._tasks: list[asyncio.Task] = []
@@ -76,15 +78,14 @@ class DownloadWorker:
         await asyncio.gather(*self._tasks, return_exceptions=True)
         logger.info("Download worker stopped")
 
-    async def enqueue(self, track_id: int, *, upgrade: bool = False):
+    async def enqueue(self, track_id: int, *, priority: int = DOWNLOAD_PRIORITY):
         """Queue a track once; a deferred track (manual Retry) goes back in at once."""
         if track_id in self._queued:
             return
         self._deferred.pop(track_id, None)
-        priority = UPGRADE_PRIORITY if upgrade else DOWNLOAD_PRIORITY
         self._queued[track_id] = priority
         self.queue.put_nowait((priority, next(self._seq), track_id))
-        logger.info("Enqueued track %d for %s", track_id, "a FLAC upgrade" if upgrade else "download")
+        logger.info("Enqueued track %d for %s", track_id, _PRIORITY_LABELS.get(priority, "download"))
 
     @property
     def queue_size(self) -> int:
@@ -102,15 +103,17 @@ class DownloadWorker:
         now = time.time()
         for track_id, (due, priority) in list(self._deferred.items()):
             if due <= now:
-                await self.enqueue(track_id, upgrade=priority == UPGRADE_PRIORITY)
+                await self.enqueue(track_id, priority=priority)
         await self.top_up_upgrades()
+        await self.top_up_bulk()
 
     async def top_up_upgrades(self):
-        """Feed queued FLAC upgrades, only while no download waits and only what today's Qobuz cap allows."""
-        if any(p == DOWNLOAD_PRIORITY for p in self._queued.values()) or not await qobuz_engine.gate_open():
+        """Feed queued FLAC upgrades, only while no click waits and only what today's cap and the upgrade share allow."""
+        if any(p == DOWNLOAD_PRIORITY for p in self._queued.values()) or not await qobuz_engine.gate_open("upgrade"):
             return
         cap_left = settings.qobuz_max_downloads_per_day - await asyncio.to_thread(qobuz_engine.downloads_today)
-        room = cap_left - sum(1 for p in self._queued.values() if p == UPGRADE_PRIORITY)
+        share_left = await asyncio.to_thread(qobuz_engine.share_left, "upgrade")
+        room = min(cap_left, share_left) - sum(1 for p in self._queued.values() if p == UPGRADE_PRIORITY)
         if room <= 0:
             return
         busy = set(self._queued) | set(self._deferred)
@@ -118,14 +121,23 @@ class DownloadWorker:
             ids = (await session.scalars(select(Track.id).where(Track.status == "done", Track.upgrade_state == "queued")
                                          .order_by(Track.id))).all()
         for track_id in [i for i in ids if i not in busy][:room]:
-            await self.enqueue(track_id, upgrade=True)
+            await self.enqueue(track_id, priority=UPGRADE_PRIORITY)
+
+    async def top_up_bulk(self):
+        """Hand the next "Download all" song to the queue when its lane allows one."""
+        from services import saved_bulk
+
+        try:
+            await saved_bulk.feed(self.enqueue)
+        except Exception:
+            logger.exception("Feeding the Download all lane failed")
 
     async def _worker(self, worker_id: int):
         while True:
-            _, _, track_id = await self.queue.get()
+            priority, _, track_id = await self.queue.get()
             self._queued.pop(track_id, None)
             try:
-                await self._process_track(worker_id, track_id)
+                await self._process_track(worker_id, track_id, priority)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -138,8 +150,10 @@ class DownloadWorker:
                     logger.exception("Worker %d could not record error for track %d", worker_id, track_id)
             finally:
                 self.queue.task_done()
+            if priority == BULK_PRIORITY:
+                await self.top_up_bulk()
 
-    async def _process_track(self, worker_id: int, track_id: int):
+    async def _process_track(self, worker_id: int, track_id: int, priority: int = DOWNLOAD_PRIORITY):
         logger.info("Worker %d processing track %d", worker_id, track_id)
 
         async with async_session() as session:
@@ -164,7 +178,7 @@ class DownloadWorker:
         except CapDeferred as e:
             # Not a failure of this track: it stays pending and the scheduler brings it back.
             await self._set_status(track_id, "pending", str(e))
-            self._deferred[track_id] = (time.time() + e.retry_after_s, DOWNLOAD_PRIORITY)
+            self._deferred[track_id] = (time.time() + e.retry_after_s, priority)
             logger.info("Track %d deferred for %.0f s: %s", track_id, e.retry_after_s, e)
             return
         except (DownloadFailed, CookieSessionRefused) as e:
@@ -183,6 +197,13 @@ class DownloadWorker:
         logger.info("Track %d downloaded to %s", track_id, result_path)
 
     async def _process_upgrade(self, track_id: int):
+        try:
+            await self._run_upgrade(track_id)
+        except Exception:
+            # Even recording the outcome failed: log only, never let _worker set status=error on a done track.
+            logger.exception("Could not record the FLAC upgrade outcome of track %d", track_id)
+
+    async def _run_upgrade(self, track_id: int):
         await self._set_upgrade(track_id, "downloading", None)
         try:
             path = await qobuz_engine.qobuz_upgrade(track_id)
@@ -191,7 +212,12 @@ class DownloadWorker:
             self._deferred[track_id] = (time.time() + e.retry_after_s, UPGRADE_PRIORITY)
             return
         except qobuz_engine.QobuzSkip as e:
-            await self._set_upgrade(track_id, "error", str(e), skip_reason=e.reason)
+            if e.reason == "no_match":
+                # Dismissed on the spot: the stored reason keeps it out of "Upgrade all".
+                logger.info("Track %d has no Qobuz match; upgrade dismissed", track_id)
+                await self._set_upgrade(track_id, None, None, skip_reason=e.reason)
+            else:
+                await self._set_upgrade(track_id, "error", str(e), skip_reason=e.reason)
             return
         except DownloadFailed as e:
             await self._set_upgrade(track_id, "error", qobuz_client.redact(str(e)))
@@ -203,7 +229,7 @@ class DownloadWorker:
             return
         logger.info("Track %d upgraded to %s", track_id, path)
 
-    async def _set_upgrade(self, track_id: int, state: str, error: str | None, *, skip_reason: str | None = None):
+    async def _set_upgrade(self, track_id: int, state: str | None, error: str | None, *, skip_reason: str | None = None):
         values = {"upgrade_state": state, "upgrade_error": error}
         if skip_reason:
             values["qobuz_skip_reason"] = skip_reason

@@ -14,6 +14,7 @@ from starlette.responses import JSONResponse
 from config import settings
 from db import async_session, init_db
 from services import album_info, qobuz_client
+from services.saved_sync import saved_sync
 from services.ytdlp_opts import ensure_deno_on_path
 from worker import download_worker
 
@@ -39,9 +40,12 @@ async def lifespan(app: FastAPI):
     async with async_session() as session:
         await album_info.rekey_stale_rows(session)
     await download_worker.start()
+    if settings.saved_sync_enabled:
+        await saved_sync.start()
     # The bound address belongs to uvicorn (--port), which logs it itself; settings.port may not be it.
     logger.info("Leasure ready")
     yield
+    await saved_sync.stop()
     await album_info.stop()
     await download_worker.stop()
     logger.info("Leasure shutdown complete")
@@ -85,7 +89,7 @@ templates.env.globals["platform"] = get_platform()
 templates.env.globals["device_path_placeholder"] = device_path_placeholder()
 
 # Register routers
-from routers import albums, art, device, downloads, library, music, qobuz, spotify, youtube  # noqa: E402
+from routers import albums, art, device, downloads, library, music, qobuz, saved, spotify, youtube  # noqa: E402
 
 app.include_router(music.router, prefix="/api/music", tags=["music"])
 app.include_router(spotify.router, prefix="/api/spotify", tags=["spotify"])
@@ -94,6 +98,7 @@ app.include_router(qobuz.router, prefix="/api/qobuz", tags=["qobuz"])
 app.include_router(downloads.router, prefix="/api/downloads", tags=["downloads"])
 app.include_router(library.router, prefix="/api/library", tags=["library"])
 app.include_router(albums.router, prefix="/api/albums", tags=["albums"])
+app.include_router(saved.router, prefix="/api/saved", tags=["saved"])
 app.include_router(device.router, prefix="/api/device", tags=["device"])
 app.include_router(art.router, prefix="/api/art", tags=["art"])
 

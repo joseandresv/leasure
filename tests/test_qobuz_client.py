@@ -739,3 +739,41 @@ def test_a_cdn_that_keeps_refusing_fails_after_one_new_url(tmp_path, status):
 
     assert (len(api.to("getFileUrl")), len(cdn.requests)) == (2, 2)
     assert list(tmp_path.glob("source.flac*")) == []
+
+
+def recorded_pushbacks(monkeypatch) -> list[tuple]:
+    seen: list[tuple] = []
+    monkeypatch.setattr(qc, "_pushback_listener",
+                        lambda status, where, *, retry_after, reason: seen.append((status, where, retry_after)))
+    return seen
+
+
+def test_an_api_429_is_reported_with_its_endpoint_and_retry_after(tmp_path, monkeypatch):
+    seen = recorded_pushbacks(monkeypatch)
+    with pytest.raises(qc.QobuzRateLimitError):
+        make_client(tmp_path, Routes({"track/search": [reply(429, headers={"Retry-After": "45"})]})).search_tracks("x")
+    assert seen == [(429, "track/search", 45.0)]
+
+
+def test_a_getfileurl_403_is_reported_although_it_reads_as_not_streamable(tmp_path, monkeypatch):
+    seen = recorded_pushbacks(monkeypatch)
+    with pytest.raises(qc.QobuzNotStreamableError):
+        make_client(tmp_path, Routes({"track/getFileUrl": [reply(403)]})).get_file_url("9", 27)
+    assert seen == [(403, "track/getFileUrl", None)]
+
+
+def test_cdn_refusals_are_reported(tmp_path, monkeypatch):
+    seen = recorded_pushbacks(monkeypatch)
+    cdn = FakeCdn(lambda r: httpx.Response(403), lambda r: httpx.Response(429, headers={"Retry-After": "60"}))
+    with pytest.raises(qc.QobuzDownloadError):
+        make_client(tmp_path, file_url_routes(), cdn=cdn).download("9", tmp_path / "source.flac")
+    assert seen == [(403, "cdn", None), (429, "cdn", 60.0)]
+
+
+def test_a_client_429_lands_in_the_engine_event_log(tmp_path):
+    from services import qobuz_engine
+
+    with pytest.raises(qc.QobuzRateLimitError):
+        make_client(tmp_path, Routes({"track/get": [reply(429, headers={"Retry-After": "30"})]})).get_track("9")
+    event = json.loads(qobuz_engine.EVENTS_FILE.read_text().splitlines()[-1])
+    assert (event["event"], event["status"], event["where"], event["retry_after"]) == ("limit", 429, "track/get", 30.0)

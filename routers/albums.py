@@ -16,6 +16,7 @@ from models import Track
 from routers.art import _allowed as proxy_allows
 from services import album_info, album_view, local_albums
 from services.artwork import sidecar_art_path
+from services.download_lock import DOWNLOAD_LOCK
 from services.formats import resolve_format
 from services.local_albums import LOOSE_KEY, LocalAlbum
 from worker import download_worker
@@ -28,7 +29,6 @@ STILL_LOOKING = "Still looking — reopen this album later."
 BAD_PIN_LINK = "Paste a MusicBrainz release link or a Deezer album link."
 SORTS = ("artist", "album", "year", "recent", "size")
 COVER_HEADERS = {"Cache-Control": "public, max-age=3600"}
-_download_lock = asyncio.Lock()
 
 
 def _is_htmx(request: Request) -> bool:
@@ -222,7 +222,7 @@ async def download_song(request: Request, key: str, disc: int, position: int, fo
                         session: AsyncSession = Depends(get_session)):
     """Queue one song of the stored release; the server builds the row, the client sends only the format."""
     _check_key(key)
-    async with _download_lock:
+    async with DOWNLOAD_LOCK:
         view = await album_view.load_group(session, key)
         if view is None:
             raise HTTPException(404, detail="This album is no longer in your library.")
@@ -246,7 +246,7 @@ async def download_missing(request: Request, key: str, format: str = Form("nativ
     _check_key(key)
     if key == LOOSE_KEY:
         raise HTTPException(409, detail="Loose songs have no album to complete.")
-    async with _download_lock:
+    async with DOWNLOAD_LOCK:
         view = await album_view.load_group(session, key)
         if view is None:
             raise HTTPException(404, detail="This album is no longer in your library.")

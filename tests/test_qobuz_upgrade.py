@@ -262,6 +262,7 @@ async def test_queue_upgrades_feeds_the_worker_only_what_the_cap_allows(db, clie
     from worker import download_worker
 
     monkeypatch.setattr(settings, "qobuz_max_downloads_per_day", 2)
+    monkeypatch.setitem(qobuz_engine.DAILY_SHARES, "upgrade", 1.0)
     ids = [await lossy_track(db, name=f"0{i} - T{i}.m4a", title=f"T{i}", track_number=i, upgrade_state=None)
            for i in range(1, 5)]
 

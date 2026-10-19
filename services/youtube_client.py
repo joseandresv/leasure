@@ -158,12 +158,12 @@ def _extract_headers_from_curl(curl_cmd: str) -> str:
     return "\n".join(headers)
 
 
-def get_playlists() -> list[dict] | None:
+def get_playlists(limit: int | None = 50) -> list[dict] | None:
     yt = get_client()
     if not yt:
         return None
     try:
-        result = yt.get_library_playlists(limit=50)
+        result = yt.get_library_playlists(limit=limit)
         return [
             {
                 "id": p["playlistId"],
@@ -475,12 +475,12 @@ def get_liked_songs(limit: int = 100) -> list[dict] | None:
         return None
 
 
-def get_library_albums(limit: int = 50) -> list[dict] | None:
+def get_library_albums(limit: int | None = 50, order: str | None = None) -> list[dict] | None:
     yt = get_client()
     if not yt:
         return None
     try:
-        result = yt.get_library_albums(limit=limit)
+        result = yt.get_library_albums(limit=limit, order=order)
         return [
             {
                 "id": a["browseId"],
@@ -493,6 +493,26 @@ def get_library_albums(limit: int = 50) -> list[dict] | None:
         ]
     except Exception as e:
         logger.error("Failed to get YT library albums: %s", e)
+        return None
+
+
+def get_library_subscriptions(limit: int | None = 50) -> list[dict] | None:
+    """Subscribed artists, listed under Artists in the Saved tab."""
+    yt = get_client()
+    if not yt:
+        return None
+    try:
+        result = yt.get_library_subscriptions(limit=limit)
+        return [
+            {
+                "id": a["browseId"],
+                "name": a.get("artist") or "",
+                "image_url": a["thumbnails"][-1]["url"] if a.get("thumbnails") else None,
+            }
+            for a in result if a.get("browseId")
+        ]
+    except Exception as e:
+        logger.error("Failed to get YT subscriptions: %s", e)
         return None
 
 

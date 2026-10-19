@@ -379,6 +379,25 @@ def parse_retry_after(value: str | None, *, now: float | None = None) -> float |
     return max(0.0, when.timestamp() - (time.time() if now is None else now))
 
 
+_pushback_listener: Callable[..., None] | None = None
+
+
+def set_pushback_listener(listener: Callable[..., None] | None) -> None:
+    """`listener(status, where, retry_after=, reason=)` hears every 429 and 403 Qobuz answers."""
+    global _pushback_listener
+    _pushback_listener = listener
+
+
+def _report_pushback(resp: httpx.Response, where: str, reason: str) -> None:
+    if _pushback_listener is None:
+        return
+    try:
+        _pushback_listener(resp.status_code, where, retry_after=parse_retry_after(resp.headers.get("retry-after")),
+                           reason=reason)
+    except Exception:
+        logger.warning("Could not record a Qobuz %s from %s", resp.status_code, where, exc_info=True)
+
+
 def register_secret(value: str | None) -> None:
     if value and len(value) >= 8:
         _secrets.add(value)
@@ -892,9 +911,9 @@ class QobuzClient:
             return self._json(resp)
         if app_retry and _names_app_id(resp) and self.app_credentials(refresh=True).app_id != app_id:
             return self._api(method, endpoint, params=params, file_url=file_url, app_retry=False)
-        self._raise_refusal(resp, file_url=file_url)
+        self._raise_refusal(resp, endpoint, file_url=file_url)
 
-    def _raise_refusal(self, resp: httpx.Response, *, file_url: bool = False) -> NoReturn:
+    def _raise_refusal(self, resp: httpx.Response, endpoint: str, *, file_url: bool = False) -> NoReturn:
         status = resp.status_code
         if status == 400:
             message = _api_message(resp)
@@ -912,13 +931,16 @@ class QobuzClient:
             raise QobuzError("Qobuz refused this request.", status=401)
         if status == 403:
             if file_url:
+                _report_pushback(resp, endpoint, "treated as not streamable (restricted)")
                 raise QobuzNotStreamableError(reason="restricted")
+            _report_pushback(resp, endpoint, "refused")
             if self._confirm_auth():
                 raise QobuzAuthError("Qobuz sign-in expired — sign in again.", status=401)
             raise QobuzForbiddenError("Qobuz is refusing this account or app right now.", status=403)
         if status == 404:
             raise QobuzNotFoundError("Qobuz has no such item.", status=404)
         if status == 429:
+            _report_pushback(resp, endpoint, "rate limited")
             raise QobuzRateLimitError("Qobuz asked Leasure to slow down.",
                                       retry_after=parse_retry_after(resp.headers.get("retry-after")))
         raise QobuzError("Qobuz refused this request.", status=status)
@@ -957,7 +979,7 @@ class QobuzClient:
         # A rejected signature says nothing about the unsigned 400 (a refused `limit`, say): raise that one.
         if len(answers) == 2 and answers[0].status_code == 400 and _is_signature_refusal(answers[1]):
             resp = answers[0]
-        self._raise_refusal(resp)
+        self._raise_refusal(resp, endpoint)
 
     def _pages(self, fetch: Callable[[int, int], QobuzPage], offset: int, page_cap: int) -> Iterator[QobuzPage]:
         """Pages until an empty page, `offset >= total` or `page_cap`. One 400 on a large page size steps
@@ -1117,8 +1139,11 @@ class QobuzClient:
                 self._update_app(login_shape=shape)
                 return user
             if resp.status_code == 429:
+                _report_pushback(resp, "user/login", f"rate limited (login shape {shape})")
                 raise QobuzRateLimitError("Qobuz asked Leasure to slow down.",
                                           retry_after=parse_retry_after(resp.headers.get("retry-after")))
+            if resp.status_code == 403:
+                _report_pushback(resp, "user/login", f"login shape {shape} refused")
             logger.info("Qobuz login shape %s answered HTTP %s", shape, resp.status_code)
             statuses.append(resp.status_code)
             app_rejected = app_rejected or (resp.status_code == 400 and "app_id" in _api_message(resp).lower())
@@ -1284,6 +1309,8 @@ class QobuzClient:
     def _fetch(self, stream, part, deadline, expected_duration_s, before_body, progress) -> tuple[int, int | None]:
         resp = self._open_cdn(stream.url)
         try:
+            if resp.status_code in (403, 429):
+                _report_pushback(resp, "cdn", "refused the stream" if resp.status_code == 403 else "rate limited")
             if resp.status_code in (403, 404, 410):
                 raise _RestartStream
             if resp.status_code != 200:

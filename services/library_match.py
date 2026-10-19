@@ -21,6 +21,7 @@ class TrackKeys:
     youtube_id: str | None = None
     spotify_uri: str | None = None
     isrc: str | None = None
+    qobuz_id: str | None = None
 
 
 SONG_STATUSES = ("done", "pending", "downloading", "error")
@@ -41,6 +42,12 @@ def _edition_free(text: str | None) -> str:
 
 def _song_key(title: str | None, artist: str | None) -> tuple[str, str]:
     return _edition_free(title), _primary_artist(artist)
+
+
+def song_group_key(title: str | None, artist: str | None) -> str:
+    """One text key for "the same song" across services and editions; ISRCs are not used, since not every service sends one."""
+    edition_free, primary = _song_key(title, artist)
+    return f"song:{edition_free}|{primary}"
 
 
 def _row_song_keys(title: str | None, artist: str | None, album_artist: str | None) -> set[tuple[str, str]]:
@@ -67,12 +74,13 @@ class LibraryIndex:
         self._by_youtube_id: dict[str, Track] = {}
         self._by_spotify_uri: dict[str, Track] = {}
         self._by_isrc: dict[str, Track] = {}
+        self._by_qobuz_id: dict[str, Track] = {}
         self._by_song: dict[tuple[str, str], list[Track]] = {}
         self._by_title: dict[str, list[Track]] = {}
         for row in rows:
             self._by_title.setdefault(_edition_free(row.title), []).append(row)
             for index, key in ((self._by_youtube_id, row.youtube_id), (self._by_spotify_uri, row.spotify_uri),
-                               (self._by_isrc, normalise_isrc(row.isrc))):
+                               (self._by_isrc, normalise_isrc(row.isrc)), (self._by_qobuz_id, row.qobuz_id)):
                 if key and _better(index.get(key), row):
                     index[key] = row
             for key in _row_song_keys(row.title, row.artist, row.album_artist):
@@ -88,7 +96,7 @@ class LibraryIndex:
                 or (keys.youtube_id and self._by_youtube_id.get(keys.youtube_id)) or None)
 
     def find(self, keys: TrackKeys) -> Track | None:
-        if row := self.by_source_id(keys):
+        if row := self.by_source_id(keys) or (keys.qobuz_id and self._by_qobuz_id.get(keys.qobuz_id)):
             return row
         if (isrc := normalise_isrc(keys.isrc)) and (row := self._by_isrc.get(isrc)):
             return row
@@ -131,6 +139,8 @@ async def library_index(session: AsyncSession, wanted: list[TrackKeys]) -> Libra
         clauses.append(Track.spotify_uri.in_(spotify_uris))
     if isrcs := {normalise_isrc(k.isrc) for k in wanted if normalise_isrc(k.isrc)}:
         clauses.append(Track.isrc.in_(isrcs))
+    if qobuz_ids := {k.qobuz_id for k in wanted if k.qobuz_id}:
+        clauses.append(Track.qobuz_id.in_(qobuz_ids))
     songs = {key for k in wanted if (key := _song_key(k.title, k.artist))[0]}
     titles = await session.execute(select(Track.id, Track.title, Track.artist, Track.album_artist))
     song_ids = [row.id for row in titles if _row_song_keys(row.title, row.artist, row.album_artist) & songs]

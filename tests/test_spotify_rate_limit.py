@@ -13,7 +13,8 @@ ALBUM_ID = "4OHNH3sDzIxnmUADXzv2kT"
 
 # Public functions that never reach the Web API (OAuth, token cache, pure helpers).
 NOT_WEB_API = {"get_auth_url", "handle_callback", "get_client", "is_connected", "rate_limit_seconds_left",
-               "is_rate_limited", "wait_text", "rate_limit_message", "release_year", "album_fields"}
+               "is_rate_limited", "wait_text", "rate_limit_message", "release_year", "album_fields", "calls_today",
+               "counting_as_sync"}
 
 
 class RecordingClient:

@@ -6,9 +6,13 @@ import math
 import os
 import random
 import tempfile
+import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 
 import requests
@@ -16,6 +20,7 @@ import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 
 from config import settings
+from services import secret_file
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +31,7 @@ FOLLOW_SCOPE = "user-follow-read"
 AUTH_SCOPES = f"{SCOPES} {FOLLOW_SCOPE}"
 CACHE_PATH = str(settings.data_dir / ".spotify_cache")
 RATE_LIMIT_PATH = settings.data_dir / "spotify_rate_limit.json"
+CALLS_PATH = settings.data_dir / "spotify_calls.json"
 REQUEST_TIMEOUT_S = 10
 # A 429 without a usable Retry-After still stops calls for a while instead of letting the next one through.
 MIN_RATE_LIMIT_S = 60
@@ -92,11 +98,51 @@ class _GuardedSpotify(spotipy.Spotify):
         if is_rate_limited():
             raise spotipy.SpotifyException(429, -1, f"{url}: not sent, Spotify is rate-limiting Leasure",
                                            headers={"Retry-After": str(math.ceil(rate_limit_seconds_left()))})
+        _count_call()
         try:
             return super()._internal_call(method, url, payload, params)
         except spotipy.SpotifyException as e:
             _note_rate_limit(e)
             raise
+
+
+_calls_lock = threading.Lock()
+_sync_call: ContextVar[bool] = ContextVar("spotify_sync_call", default=False)
+
+
+@contextmanager
+def counting_as_sync() -> Iterator[None]:
+    """Calls sent inside this block count against the library-reading share of the day."""
+    token = _sync_call.set(True)
+    try:
+        yield
+    finally:
+        _sync_call.reset(token)
+
+
+def _read_calls() -> dict:
+    try:
+        state = json.loads(CALLS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return state if isinstance(state, dict) and state.get("date") == date.today().isoformat() else {}
+
+
+def calls_today() -> dict:
+    """{"total", "sync"}: Web API calls sent today (local date), all of them and those of library reads."""
+    state = _read_calls()
+    return {"total": int(state.get("total") or 0), "sync": int(state.get("sync") or 0)}
+
+
+def _count_call() -> None:
+    with _calls_lock:
+        counts = calls_today()
+        counts["total"] += 1
+        counts["sync"] += _sync_call.get()
+        try:
+            secret_file.write_atomic(CALLS_PATH, json.dumps({"date": date.today().isoformat(), **counts}))
+        except OSError as e:
+            logger.warning("Could not save the Spotify call counter to %s: %s", CALLS_PATH, e)
 
 
 def rate_limit_seconds_left() -> float:
@@ -878,3 +924,23 @@ def follow_scope_status(client: spotipy.Spotify | None = None) -> str | None:
         logger.warning("Spotify follow-scope probe answered HTTP %s", e.http_status)
         return _follow_refusal(e) if e.http_status == 403 else "refused"
     return "granted"
+
+
+@_web_api()
+def saved_contains(kind: str, ids: list[str], client: spotipy.Spotify | None = None) -> list[bool] | None:
+    """Whether each of `ids` (at most 50) is still a liked song ("track") or saved album ("album").
+    None when Spotify does not answer it for this app (it may not in development mode)."""
+    sp = client or get_client()
+    if not sp:
+        return None
+    try:
+        answer = (sp.current_user_saved_tracks_contains(tracks=ids) if kind == "track"
+                  else sp.current_user_saved_albums_contains(albums=ids))
+    except spotipy.SpotifyException as e:
+        if e.http_status == 429:
+            raise
+        logger.info("Spotify saved-contains answered HTTP %s", e.http_status)
+        return None
+    if not isinstance(answer, list) or len(answer) != len(ids):
+        return None
+    return [value is True for value in answer]

@@ -1,12 +1,15 @@
 """Review fixes for the saved-library build step: anonymiser slugs, per-item 403s, signing per endpoint,
-page-size step-down, untested signing, null track fields, 429 without Retry-After, follow 403 labels."""
+page-size step-down, untested signing, null track fields, 429 without Retry-After, follow 403 labels,
+and the Spotify check's per-call diagnosis of network errors."""
 import json
 
 import httpx
 import pytest
+import requests
 import spotipy
+import urllib3
 
-from scripts import qobuz_check
+from scripts import qobuz_check, spotify_saved_check
 from services import qobuz_client as qc
 from services import qobuz_session
 from services import spotify_client as sp
@@ -158,3 +161,104 @@ def test_followed_artists_label_a_plain_403_refused_like_the_probe(monkeypatch, 
 
     assert sp.follow_scope_status(client=fake) == "refused"
     assert sp.fetch_followed_artists(client=fake).stopped == "refused"
+
+
+# --- spotify_saved_check diagnosis -----------------------------------------------------------------
+
+SECRET_URL = "https://api.spotify.com/v1/me/albums?limit=1&access_token=SECRET-TOKEN"
+
+
+def body_timeout() -> requests.ConnectionError:
+    """What requests raises when the response body stalls past the timeout."""
+    return requests.ConnectionError(urllib3.exceptions.ReadTimeoutError(None, SECRET_URL, "Read timed out."))
+
+
+def fail_first(fake, method: str, error: Exception, monkeypatch) -> list[int]:
+    limits: list[int] = []
+    answer = getattr(fake, method)
+
+    def flaky(limit=20, offset=0, **kwargs):
+        limits.append(limit)
+        if len(limits) == 1:
+            raise error
+        return answer(limit=limit, offset=offset, **kwargs)
+    monkeypatch.setattr(fake, method, flaky)
+    return limits
+
+
+def test_a_saved_albums_read_timeout_is_diagnosed_and_retried_once(spotify_script, capsys, monkeypatch):  # noqa: F811
+    limits = fail_first(spotify_script, "current_user_saved_albums", requests.ReadTimeout(SECRET_URL), monkeypatch)
+
+    code, out = run_spotify(capsys)
+
+    report = spotify_report(out)
+    diagnosis = report["diagnosis"]["albums"]
+    assert code == 1 and report["albums"]["status"] == "network_error"
+    assert diagnosis["error"] == "requests.exceptions.ReadTimeout" and diagnosis["timeout"] is True
+    assert diagnosis["http_status"] is None and isinstance(diagnosis["elapsed_s"], float)
+    assert report["albums_retry"] == {"limit": 1, "status": 200, "total": 312} and limits == [1, 1]
+    assert report["calls_sent"] == 10 and "elapsed_s" in report["diagnosis"]["albums_retry"]
+
+
+def test_a_playlists_timeout_is_retried_with_a_page_of_ten(spotify_script, capsys, monkeypatch):  # noqa: F811
+    limits = fail_first(spotify_script, "current_user_playlists", requests.ReadTimeout(SECRET_URL), monkeypatch)
+
+    _, out = run_spotify(capsys)
+
+    report = spotify_report(out)
+    assert limits == [50, spotify_saved_check.RETRY_PAGE_LIMIT] and report["playlists_retry"]["status"] == 200
+    assert report["playlists"]["status"] == "network_error"
+
+
+def test_a_body_read_timeout_inside_a_connection_error_counts_as_a_timeout(spotify_script, capsys):  # noqa: F811
+    spotify_script.fail["albums"] = body_timeout()
+
+    _, out = run_spotify(capsys)
+
+    diagnosis = spotify_report(out)["diagnosis"]["albums"]
+    assert diagnosis["error"] == "requests.exceptions.ConnectionError" and diagnosis["timeout"] is True
+    assert diagnosis["causes"] == ["urllib3.exceptions.ReadTimeoutError"]
+    assert "SECRET" not in out and "api.spotify.com" not in out and "timed out" not in out
+
+
+def test_a_connection_error_is_diagnosed_without_a_retry(spotify_script, capsys):  # noqa: F811
+    refused = urllib3.exceptions.NewConnectionError(None, f"{SECRET_URL}: Connection refused")
+    spotify_script.fail["albums"] = requests.ConnectionError(urllib3.exceptions.MaxRetryError(None, SECRET_URL, refused))
+
+    _, out = run_spotify(capsys)
+
+    report = spotify_report(out)
+    assert report["diagnosis"]["albums"]["causes"] == ["urllib3.exceptions.MaxRetryError",
+                                                       "urllib3.exceptions.NewConnectionError"]
+    assert report["diagnosis"]["albums"]["timeout"] is False and "albums_retry" not in report
+    assert spotify_script.calls.count("albums") == 1 and "SECRET" not in out
+
+
+def test_a_json_decode_error_is_named_without_the_body(spotify_script, capsys):  # noqa: F811
+    spotify_script.fail["playlists"] = requests.JSONDecodeError("Expecting value", "<html>Very Private Title</html>", 0)
+
+    code, out = run_spotify(capsys)
+
+    report = spotify_report(out)
+    assert code == 1 and report["playlists"]["status"] == "network_error"
+    assert report["diagnosis"]["playlists"]["error"] == "requests.exceptions.JSONDecodeError"
+    assert report["diagnosis"]["playlists"]["timeout"] is False and "Very Private" not in out
+
+
+def test_an_http_refusal_is_diagnosed_with_its_status_but_not_its_url(spotify_script, capsys):  # noqa: F811
+    spotify_script.fail["tracks"] = spotipy.SpotifyException(403, -1, f"{SECRET_URL}:\n Forbidden")
+
+    _, out = run_spotify(capsys)
+
+    report = spotify_report(out)
+    assert report["batch_tracks_status"] == 403 and report["diagnosis"]["batch_tracks"]["http_status"] == 403
+    assert "SECRET" not in out and "Forbidden" not in out
+
+
+def test_the_probe_sends_nothing_once_the_call_budget_is_spent():
+    probe = spotify_saved_check.Probe(sp.SyncPacer(sleep=lambda s: None))
+    probe.calls = spotify_saved_check.MAX_CALLS
+
+    status, _ = probe.call("extra", lambda: pytest.fail("no call expected"))
+
+    assert status == "skipped" and probe.calls == spotify_saved_check.MAX_CALLS

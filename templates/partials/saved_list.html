@@ -1,0 +1,58 @@
+{% from "macros/saved.html" import saved_banner, num, count_of, kind_word %}
+{# One page of the Saved list (swapped into #saved-list). Counts come from the cached
+   match ("counts as of"); the rows on the page are matched live. data-live is the text
+   saved.js writes to the page's live region after the swap. #}
+{% set f = listing.filters %}
+{% set kind = f.kind %}
+{% set rows = listing['items'] %}
+<div class="saved-list-body"
+     data-live="{% if rows %}Page {{ listing.page }} of {{ listing.pages }}, {{ count_of(rows | length, kind) }}{% else %}No {{ kind_word(kind) }} to show{% endif %}">
+    <div hidden hx-get="/api/saved/list" hx-include="#saved-filters" hx-vals='{"page": {{ listing.page }}}'
+         hx-trigger="saved:listchanged from:body" hx-target="#saved-list" hx-swap="innerHTML"></div>
+
+    <div class="saved-list-head">
+        <p class="saved-list-summary">
+            {% if listing.shown %}Showing {{ num(listing.first) }}–{{ num(listing.last) }} of {{ count_of(listing.shown, kind) }}{% if f.missing %} not downloaded yet{% endif %}.{% endif %}
+            {% if kind == 'track' and listing.total %}
+            {{ num(listing.in_library) }} in your library
+            {%- if listing.other_album %}, {{ num(listing.other_album) }} on another album{% endif %}
+            {%- if listing.queued %}, {{ num(listing.queued) }} queued{% endif %}
+            {%- if listing.counts_as_of %} (counts as of <time class="saved-local-time" datetime="{{ listing.counts_as_of }}">{{ listing.counts_as_of[11:16] }} UTC</time>){% endif %}.
+            {% endif %}
+        </p>
+        {% if kind != 'artist' and listing.missing %}
+        <button type="button" id="saved-download-all" class="outline saved-download-all"
+                hx-get="/api/saved/download/preview" hx-include="#saved-filters, #dl-format-deck"
+                hx-target="#music-detail" hx-swap="innerHTML"
+                data-opens-detail="Counting what is missing…" aria-keyshortcuts="Shift+D">
+            &#9660; {% if kind == 'track' %}Download all {{ num(listing.missing) }} missing…{% else %}Download the missing songs of {{ count_of(listing.missing, kind) }}…{% endif %}
+        </button>
+        {% endif %}
+    </div>
+
+    {% if rows %}
+    <div class="deck-wheel deck-wheel-v saved-wheel" role="listbox" aria-label="Saved {{ kind_word(kind) }}">
+        {% for item in rows %}{{ saved_banner(item) }}{% endfor %}
+    </div>
+    {% elif f.q %}
+    <p class="deck-empty">Nothing matches “{{ f.q }}”.</p>
+    {% elif f.missing and listing.total %}
+    <p class="deck-empty">Everything here is already in your library.</p>
+    {% else %}
+    <p class="deck-empty">Nothing saved here yet. The lines above show what Leasure has read from each service.</p>
+    {% endif %}
+
+    {% if listing.pages > 1 %}
+    <nav class="saved-pager" aria-label="Pages">
+        <button type="button" class="outline" data-page-nav="prev"
+                hx-get="/api/saved/list" hx-include="#saved-filters" hx-vals='{"page": {{ listing.page - 1 }}}'
+                hx-target="#saved-list" hx-swap="innerHTML" hx-sync="#saved-filters:replace"
+                aria-keyshortcuts="[" {% if listing.page <= 1 %}disabled{% endif %}>&#8249; Prev</button>
+        <span class="saved-pager-pos">Page {{ listing.page }} of {{ listing.pages }}</span>
+        <button type="button" class="outline" data-page-nav="next"
+                hx-get="/api/saved/list" hx-include="#saved-filters" hx-vals='{"page": {{ listing.page + 1 }}}'
+                hx-target="#saved-list" hx-swap="innerHTML" hx-sync="#saved-filters:replace"
+                aria-keyshortcuts="]" {% if listing.page >= listing.pages %}disabled{% endif %}>Next &#8250;</button>
+    </nav>
+    {% endif %}
+</div>

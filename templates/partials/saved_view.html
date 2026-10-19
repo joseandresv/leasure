@@ -1,0 +1,71 @@
+{# The Saved tab (inside #music-results): status strip, filters, and the paged list.
+   Every filter control lives in #saved-filters and asks for page 1; Prev/Next in the
+   list add their page. static/js/saved.js remembers the filters, binds the shortcuts
+   and announces page changes in #saved-page-live (outside the swapped list). #}
+{% set kind_labels = {'track': 'Songs', 'album': 'Albums', 'playlist': 'Playlists', 'artist': 'Artists'} %}
+{% set sort_labels = {'added': 'Date added (newest)', 'added_asc': 'Date added (oldest)', 'artist': 'Artist', 'title': 'Title'} %}
+{% set connected = {} %}
+{% for s in status.sources %}{% set _ = connected.update({s.source: s.connected}) %}{% endfor %}
+<div id="saved-view" class="saved-view">
+    {% include "partials/saved_status.html" %}
+
+    <form id="saved-filters" class="saved-filters" role="search" aria-label="Filter saved music"
+          hx-get="/api/saved/list" hx-target="#saved-list" hx-swap="innerHTML"
+          hx-trigger="submit, change, input from:#saved-q delay:300ms" hx-sync="this:replace">
+        <div class="saved-chip-row">
+            <fieldset class="saved-chips">
+                <legend class="sr-only">Service</legend>
+                <label class="saved-chip">
+                    <input type="radio" name="source" value="all" {% if filters.source == 'all' %}checked{% endif %}>
+                    <span>All</span>
+                </label>
+                {% for s in sources %}
+                <label class="saved-chip{% if not connected.get(s) %} is-off{% endif %}"
+                       {% if not connected.get(s) %}title="{{ labels[s] }} is not connected; showing what Leasure read before"{% endif %}>
+                    <input type="radio" name="source" value="{{ s }}" {% if filters.source == s %}checked{% endif %}>
+                    <span>{{ labels[s] }}</span>
+                </label>
+                {% endfor %}
+            </fieldset>
+            <fieldset class="saved-chips">
+                <legend class="sr-only">Type</legend>
+                {% for k in kinds %}
+                <label class="saved-chip">
+                    <input type="radio" name="kind" value="{{ k }}" {% if filters.kind == k %}checked{% endif %}>
+                    <span>{{ kind_labels.get(k, k) }}</span>
+                </label>
+                {% endfor %}
+            </fieldset>
+        </div>
+        <div class="saved-filter-row">
+            <label for="saved-q" class="sr-only">Filter by title, artist or album</label>
+            <input type="search" id="saved-q" name="q" value="{{ filters.q }}" autocomplete="off"
+                   placeholder="filter saved…" aria-keyshortcuts="/">
+            <label class="saved-sort">
+                <span>Sort</span>
+                <select name="sort">
+                    {% for s in sorts %}<option value="{{ s }}" {% if filters.sort == s %}selected{% endif %}>{{ sort_labels.get(s, s) }}</option>{% endfor %}
+                </select>
+            </label>
+        </div>
+        <div class="saved-toggle-row">
+            <label class="saved-check">
+                <input type="checkbox" name="missing" value="1" {% if filters.missing %}checked{% endif %} aria-keyshortcuts="n">
+                Not downloaded yet
+            </label>
+            <label class="saved-check" title="A song your library has on a different album counts as missing">
+                <input type="checkbox" name="other_album" value="1" {% if filters.other_album %}checked{% endif %}>
+                Count songs on other albums as missing
+            </label>
+            <label class="saved-check">
+                <input type="checkbox" name="removed" value="1" {% if filters.removed %}checked{% endif %}>
+                Show removed
+            </label>
+        </div>
+    </form>
+
+    <p id="saved-page-live" class="sr-only" aria-live="polite"></p>
+    <div id="saved-list" class="saved-list">
+        {% include "partials/saved_list.html" %}
+    </div>
+</div>

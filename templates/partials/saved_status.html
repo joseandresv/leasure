@@ -1,0 +1,113 @@
+{% from "macros/saved.html" import num, count_of, kind_word, lane_text %}
+{# Saved tab status strip: one LED line per service plus one per running Download all.
+   It polls only while status.poll_s says so (no live region: it would chatter); the
+   saved:queued listener re-reads it once after a download is queued. #}
+<section id="saved-status" class="saved-status" aria-label="Saved libraries">
+{% if status.poll_s %}
+<div hidden hx-get="/api/saved/status/html" hx-trigger="every {{ status.poll_s }}s"
+     hx-target="#saved-status" hx-swap="outerHTML"></div>
+{% endif %}
+<div hidden hx-get="/api/saved/status/html" hx-trigger="saved:queued from:body"
+     hx-target="#saved-status" hx-swap="outerHTML"></div>
+
+{% if refused %}
+<p class="saved-refused" role="alert">{{ refused.message }}
+    {%- if refused.resume_label and refused.reason not in ['daily_budget', 'running'] %} Try again after {{ refused.resume_label }}.{% endif %}</p>
+{% endif %}
+
+{% for s in status.sources %}
+{% set kinds = s.kinds | map(attribute='kind') | list %}
+{% set total = s.counts.values() | sum %}
+{% set running_kind = s.kinds | selectattr('state', 'equalto', 'running') | first %}
+{% set error_kind = s.kinds | selectattr('state', 'equalto', 'error') | first %}
+{% set can_refresh = s.connected and s.state in ['fresh', 'error', 'never'] and not (s.source == 'spotify' and s.state == 'never') %}
+<div class="saved-src saved-src--{{ 'blocked' if s.expired else s.state }}">
+    <span class="saved-led" aria-hidden="true"></span>
+    <span class="saved-src-name">{{ s.label }}</span>
+    <p class="saved-src-text">
+        {% if total %}<span class="saved-src-counts">{% for k in kinds %}{{ count_of(s.counts[k], k) }}{% if not loop.last %}, {% endif %}{% endfor %}.</span>{% endif %}
+        {% if s.source == 'qobuz' and s.expired %}
+            Qobuz sign-in expired: paste a new token on Home.{% if s.refreshed_label %} Showing favorites as of {{ s.refreshed_label }}.{% endif %}
+        {% elif s.state == 'running' %}
+            Reading {{ kind_word(running_kind.kind) if running_kind else 'your library' }}{% if s.phase_text %}: {{ s.phase_text }}{% endif %}…
+        {% elif s.state == 'not_connected' %}
+            {% if s.source == 'spotify' %}Spotify is not connected. <a href="/api/spotify/auth">Connect Spotify</a>
+            {% elif s.source == 'qobuz' %}Qobuz is not signed in. Sign in on Home.
+            {% else %}YouTube Music is not set up. Set it up on Home.{% endif %}
+            {% if total %}Showing what Leasure read before.{% endif %}
+        {% elif s.state == 'never' %}
+            {% if s.source == 'spotify' %}
+            Your Spotify library has not been read yet. Reading it takes about 190 Spotify requests (about 12 minutes,
+            and it may finish tomorrow because Leasure keeps Spotify use low).
+            {% else %}Not read yet; Leasure reads it by itself within a few minutes.{% endif %}
+        {% elif s.state == 'paused' %}
+            {% if s.blocked_reason == 'daily_budget' %}
+            Leasure has used today's Spotify allowance for library reading
+            {%- if s.calls_today %} ({{ s.calls_today.sync }} of {{ s.daily_sync_budget }} requests){% endif %}.
+            {% elif s.blocked_reason == 'rate_limited' %}{{ s.label }} is rate-limiting Leasure.
+            {% else %}Paused.{% endif %}
+            {% if s.resume_label %}It continues {{ s.resume_label }}.{% endif %}
+        {% elif s.state == 'blocked' %}
+            {% if s.blocked_reason == 'signed_out' %}{{ s.label }} sign-in expired; sign in again on Home.
+            {% elif s.blocked_reason == 'not_connected' %}{{ s.label }} did not answer as signed in; check its connection on Home.
+            {% elif s.blocked_reason == 'forbidden' %}{{ s.label }} is refusing Leasure right now; it tries again later.
+            {% else %}Some lists could not be read.{% endif %}
+            {% if s.resume_label %}It tries again {{ s.resume_label }}.{% endif %}
+        {% elif s.state == 'error' %}
+            The last read failed{% if error_kind and error_kind.last_error %}: {{ error_kind.last_error }}{% endif %}. Try ↻ again later.
+        {% else %}
+            {% if s.refreshed_label %}Refreshed {{ s.refreshed_label }}.{% endif %}
+        {% endif %}
+    </p>
+    <span class="saved-src-actions">
+        {% if s.source == 'spotify' and s.state == 'never' and s.connected %}
+        <button type="button" class="outline saved-first-read"
+                hx-post="/api/saved/refresh" hx-vals='{"source": "spotify", "full": "0"}'
+                hx-target="#saved-status" hx-swap="outerHTML" hx-disabled-elt="this">Read my Spotify library</button>
+        {% else %}
+        <button type="button" class="saved-refresh"
+                hx-post="/api/saved/refresh" hx-vals='{{ {"source": s.source, "full": "0"} | tojson }}'
+                hx-target="#saved-status" hx-swap="outerHTML" hx-disabled-elt="this"
+                aria-label="Read new {{ s.label }} saves now"
+                title="{{ 'Read new saves now' if can_refresh else ('Reading now' if s.running else 'Not available right now') }}"
+                {% if not can_refresh %}disabled{% endif %}>&#x21bb;</button>
+        {% if can_refresh and s.state != 'never' %}
+        <details class="saved-more">
+            <summary aria-label="More {{ s.label }} options">&#8943;</summary>
+            <div class="saved-more-menu">
+                <button type="button" class="outline"
+                        hx-post="/api/saved/refresh" hx-vals='{{ {"source": s.source, "full": "1"} | tojson }}'
+                        hx-target="#saved-status" hx-swap="outerHTML" hx-disabled-elt="this">Full refresh</button>
+                <small>Reads everything again and drops what you unsaved.</small>
+            </div>
+        </details>
+        {% endif %}
+        {% endif %}
+    </span>
+</div>
+{% if s.scope_missing %}
+<p class="saved-src-note">Followed artists need one more Spotify permission. <a href="/api/spotify/auth">Reconnect Spotify</a></p>
+{% endif %}
+{% if s.kinds_off %}
+<p class="saved-src-note">{{ s.label }} {{ s.kinds_off | map('replace', 'track', 'song') | join(' and ') }} saves could not be read in the expected way.
+    {% if s.source == 'qobuz' %}Run <code>python -m scripts.qobuz_check --favorites</code>.{% endif %}</p>
+{% endif %}
+{% endfor %}
+
+{% for b in status.batches | default([], true) %}
+<div class="saved-src saved-src--batch{% if b.state == 'paused' %} is-paused{% endif %}">
+    <span class="saved-led" aria-hidden="true"></span>
+    <span class="saved-src-name">Download all</span>
+    <p class="saved-src-text">
+        {{ b.scope }}: {{ num(b.done) }} of {{ num(b.total) }} done{% if b.failed %}, {{ num(b.failed) }} failed{% endif %}.
+        {{ lane_text(b) }}
+        {% if b.days_left_at_least %}At least {{ b.days_left_at_least }} {{ 'day' if b.days_left_at_least == 1 else 'days' }} left.{% endif %}
+    </p>
+    <span class="saved-src-actions">
+        <button type="button" class="outline saved-batch-open"
+                hx-get="/api/saved/batches/html" hx-target="#music-detail" hx-swap="innerHTML"
+                data-opens-detail="Loading Download all…">Details</button>
+    </span>
+</div>
+{% endfor %}
+</section>

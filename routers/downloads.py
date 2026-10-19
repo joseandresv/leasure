@@ -9,8 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db import get_session
 from models import Track
+from models_saved import SavedBatchItem
 from routers import device as device_router
-from services import qobuz_session
+from services import qobuz_session, saved_bulk
 from services.downloader import QOBUZ_ROUTED
 from worker import download_worker
 
@@ -43,10 +44,11 @@ def _route(track: Track, qobuz_ready: bool) -> str:
     return "qobuz_only" if track.quality == "flac_lossless" else "qobuz_first"
 
 
-def _queue_row(track: Track, qobuz_ready: bool) -> dict:
+def _queue_row(track: Track, qobuz_ready: bool, bulk: bool = False) -> dict:
     """A download, or a finished track's FLAC upgrade, as the queue shows it."""
     upgrade = track.status == "done" and track.upgrade_state in UPGRADE_QUEUE_STATES
     return {
+        "bulk": bulk and not upgrade,
         "id": track.id,
         "title": track.title,
         "artist": track.artist,
@@ -64,13 +66,22 @@ async def _qobuz_ready() -> bool:
 
 
 async def _queue_rows(session: AsyncSession) -> list[dict]:
-    """Everything the user still has to care about: downloading, then pending, then failed."""
+    """Everything the user still has to care about: downloading, then pending, then failed. A Download all
+    song's failure is listed with its batch instead."""
     stmt = select(Track).where(or_(Track.status.in_(QUEUE_STATUSES),
                                    and_(Track.status == "done", Track.upgrade_state.in_(UPGRADE_QUEUE_STATES))))
     result = await session.execute(stmt)
     ready = await _qobuz_ready()
-    rows = [_queue_row(t, ready) for t in result.scalars().all()]
+    batched = dict((await session.execute(select(SavedBatchItem.track_id, SavedBatchItem.state).where(
+        SavedBatchItem.track_id.is_not(None), SavedBatchItem.state.in_(("fed", "error"))))).all())
+    rows = [_queue_row(t, ready, t.id in batched) for t in result.scalars().all()
+            if not (t.status == "error" and batched.get(t.id) == "error")]
     return sorted(rows, key=lambda r: (_QUEUE_ORDER.get(r["status"], 3), r["id"]))
+
+
+def _in_flight(row: dict) -> bool:
+    """What the launcher waits for: a Download all song only while it downloads, not while it waits its turn."""
+    return row["status"] in ACTIVE_STATUSES and not (row["bulk"] and row["status"] == "pending")
 
 
 def _sync_running() -> bool:
@@ -82,14 +93,16 @@ async def queue_status(session: AsyncSession = Depends(get_session)):
     """Queue contents plus `active`: work in flight, which the desktop launcher waits on
     before it stops the server."""
     rows = await _queue_rows(session)
-    active = any(r["status"] in ACTIVE_STATUSES for r in rows) or _sync_running()
-    return {"queue_size": download_worker.queue_size, "active": active, "tracks": rows}
+    active = any(_in_flight(r) for r in rows) or _sync_running()
+    return {"queue_size": download_worker.queue_size, "active": active, "tracks": rows,
+            "batches": await saved_bulk.batch_summaries(session)}
 
 
 @router.get("/queue/html")
 async def queue_status_html(request: Request, session: AsyncSession = Depends(get_session)):
     return templates.TemplateResponse(request=request, name="partials/queue_status.html",
-                                      context={"tracks": await _queue_rows(session)})
+                                      context={"tracks": await _queue_rows(session),
+                                               "batches": await saved_bulk.batch_summaries(session)})
 
 
 @router.post("/retry/{track_id}")

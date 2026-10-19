@@ -14,6 +14,7 @@ from models import Playlist, PlaylistTrack, Track
 from services import oauth_state, spotify_albums
 from services import spotify_client as sp
 from services.formats import resolve_format
+from services.saved_sync import saved_sync
 from services.tracks import optional_int, refresh_album_track, upsert_track
 from worker import download_worker
 
@@ -185,6 +186,7 @@ async def callback(code: str = "", state: str = "", error: str = ""):
     except Exception as e:
         logger.warning("Spotify token exchange failed: %s", e)
         return RedirectResponse("/?spotify_error=token_exchange_failed")
+    await saved_sync.forget_scope_probe()
     return RedirectResponse("/")
 
 

@@ -14,6 +14,8 @@ os.environ["SPOTIFY_CLIENT_SECRET"] = ""
 os.environ["GOOGLE_CLIENT_ID"] = ""
 os.environ["ALLOWED_HOSTS"] = '["127.0.0.1","localhost","test"]'
 os.environ.setdefault("ALBUM_INFO_LOOKUPS", "false")
+os.environ["SAVED_SYNC_ENABLED"] = "false"
+os.environ["QOBUZ_MAX_DOWNLOADS_PER_DAY"] = "100"  # the owner's .env may lift the cap
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -74,7 +76,7 @@ def qobuz_isolation(monkeypatch):
         return 0, ""
 
     monkeypatch.setattr(secret_file, "_run", record)
-    for name in ("qobuz_session.json", "qobuz_check.json", "qobuz_daily.json", "qobuz_app.json"):
+    for name in ("qobuz_session.json", "qobuz_check.json", "qobuz_daily.json", "qobuz_app.json", "qobuz_events.jsonl"):
         (settings.data_dir / name).unlink(missing_ok=True)
     return calls
 
@@ -86,6 +88,23 @@ def fresh_download_worker():
 
     download_worker.__init__()
     return download_worker
+
+
+@pytest.fixture(autouse=True)
+def fresh_bulk_lane():
+    """The Download all lane's pacing starts each test unset."""
+    from services import saved_bulk
+
+    saved_bulk.reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def fresh_saved_sync():
+    """The Saved scheduler singleton starts each test with no jobs and no rematch from an earlier event loop."""
+    from services.saved_sync import saved_sync
+
+    saved_sync.__init__()
+    return saved_sync
 
 
 @pytest.fixture(autouse=True)
@@ -120,6 +139,7 @@ async def db():
     """Fresh schema; tables are emptied after each test."""
     from db import async_session, engine, init_db
     from models import AlbumInfo, CardCopy, Playlist, PlaylistTrack, SupersededFile, SyncHistory, Track
+    from models_saved import SavedBatch, SavedBatchItem, SavedEntry, SavedItem, SavedSyncState
 
     db_file = Path(engine.url.database)
     assert_isolated_paths(db_file)
@@ -127,7 +147,8 @@ async def db():
     yield async_session
     assert_isolated_paths(db_file)
     async with async_session() as session:
-        for model in (PlaylistTrack, Playlist, SyncHistory, CardCopy, SupersededFile, AlbumInfo, Track):
+        for model in (SavedBatchItem, SavedBatch, SavedEntry, SavedItem, SavedSyncState, PlaylistTrack, Playlist, SyncHistory, CardCopy,
+                      SupersededFile, AlbumInfo, Track):
             await session.execute(delete(model))
         await session.commit()
 

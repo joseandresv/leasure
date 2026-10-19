@@ -38,8 +38,8 @@ _AUDIO_SUFFIXES = (".m4a", ".mp3", ".opus", ".ogg", ".webm", ".flac", ".wav")
 _NETWORK_MARKERS = ("urlopen error", "temporary failure in name resolution", "timed out", "timeout",
                     "connection reset", "network is unreachable", "failed to resolve", "getaddrinfo")
 _GONE_MARKERS = ("video unavailable", "private video", "removed by the uploader", "has been terminated")
-# Rows the album view created from MusicBrainz/Deezer facts: no provider id, found by searching.
-SEARCHABLE_SOURCES = frozenset({"musicbrainz", "deezer"})
+# Rows with no YouTube or Spotify id, found by searching: the album view's MusicBrainz/Deezer rows and Qobuz favorites.
+SEARCHABLE_SOURCES = frozenset({"musicbrainz", "deezer", "qobuz"})
 
 
 class DownloadFailed(RuntimeError):

@@ -1,0 +1,206 @@
+{# The Saved tab: banners, library-state chips and shared wording. Items are the dicts
+   services/saved_listing.item_context() builds; nothing here is | safe. #}
+{% from "macros/components.html" import quality_badge, badge %}
+
+{% macro num(value) -%}{{ '{:,}'.format(value or 0) }}{%- endmacro %}
+
+{% macro source_label(source) -%}
+{{ {'spotify': 'Spotify', 'qobuz': 'Qobuz', 'youtube': 'YT Music'}.get(source, source) }}
+{%- endmacro %}
+
+{% macro kind_word(kind, count=2) -%}
+{%- set words = {'track': ('song', 'songs'), 'album': ('album', 'albums'),
+                 'playlist': ('playlist', 'playlists'), 'artist': ('artist', 'artists')}.get(kind, (kind, kind)) -%}
+{{ words[0] if count == 1 else words[1] }}
+{%- endmacro %}
+
+{% macro count_of(value, kind) -%}{{ num(value) }} {{ kind_word(kind, value) }}{%- endmacro %}
+
+{% macro duration_text(ms) -%}
+{%- if ms %}{{ ms // 60000 }}:{{ '%02d' % ((ms // 1000) % 60) }}{% endif -%}
+{%- endmacro %}
+
+{% macro wait_text(seconds) -%}
+{%- if seconds is none or seconds <= 0 -%}now
+{%- elif seconds < 60 -%}in under a minute
+{%- elif seconds < 3600 -%}in {{ (seconds / 60) | round(0, 'ceil') | int }} min
+{%- else -%}in {{ seconds // 3600 }} h {{ (seconds % 3600) // 60 }} min{%- endif -%}
+{%- endmacro %}
+
+{% macro source_tags(item) -%}
+{% for s in item.sources | unique %}<span class="saved-tag saved-tag--{{ s }}">{{ source_label(s) }}</span>{% endfor %}
+{%- endmacro %}
+
+{# Songs on a saved album or playlist that the library has, as "7/12" (✓ when complete). #}
+{% macro collection_progress(item) -%}
+{%- if item.track_count and item.count_in_library is not none -%}
+<span class="saved-tag saved-tag--count{% if item.count_in_library >= item.track_count %} is-complete{% endif %}"
+      title="{{ item.count_in_library }} of {{ item.track_count }} songs in your library">
+    {%- if item.count_in_library >= item.track_count %}&check; {% endif %}{{ item.count_in_library }}/{{ item.track_count }}</span>
+{%- endif -%}
+{%- endmacro %}
+
+{# Qobuz quality of a favorite, and whether Qobuz can stream it at all. #}
+{% macro qobuz_tags(item) -%}
+{%- if item.qobuz_hires %}<span class="saved-tag saved-tag--hires" title="Qobuz has it in {{ item.qobuz_hires }}">&#9733;{{ item.qobuz_hires }}</span>{% endif -%}
+{%- if item.qobuz_streamable is sameas false %}<span class="saved-tag saved-tag--warn">not streamable</span>{% endif -%}
+{%- endmacro %}
+
+{# What the library has for a song (item or entry): the readout and detail rows share it. #}
+{% macro library_state(row, opener_target='#music-detail') -%}
+{%- set lib = row.library -%}
+{%- if lib and lib.state == 'library' -%}
+    {{ quality_badge(lib) }}
+    {% if lib.synced %}<span class="badge badge-done">On device</span>{% else %}<span class="badge badge-mp3">In library</span>{% endif %}
+{%- elif lib and lib.state == 'other_album' -%}
+    {{ quality_badge(lib) }}
+    {% if lib.local_album_key %}
+    <button type="button" class="album-link saved-elsewhere"
+            hx-get="/api/albums/{{ lib.local_album_key | urlencode }}/html" hx-target="{{ opener_target }}" hx-swap="innerHTML"
+            {% if opener_target == '#music-detail' %}data-opens-detail="Loading album…"{% endif %}>On {{ lib.album or 'another album' }}</button>
+    {% else %}<span class="badge badge-mp3">On another album</span>{% endif %}
+{%- elif lib and lib.state == 'queued' -%}
+    {{ badge(lib.status if lib.status in ['pending', 'downloading'] else 'queued') }}
+{%- elif lib and lib.state == 'error' -%}
+    {{ badge('error') }}
+{%- endif -%}
+{%- if row.in_batch %}<span class="saved-tag saved-tag--batch">In Download all</span>{% endif -%}
+{%- endmacro %}
+
+{# A song can be queued unless the library has it, it is on its way, or it cannot be read. #}
+{% macro song_downloadable(item) -%}
+{{- 'yes' if item.readable and not (item.library and item.library.state in ['library', 'queued']) else '' -}}
+{%- endmacro %}
+
+{% macro unreadable_note(item) -%}
+{%- if item.kind == 'playlist' -%}{{ source_label(item.source) }} does not let Leasure read this playlist
+{%- elif item.qobuz_streamable is sameas false -%}Qobuz can't stream this song
+{%- elif item.source == 'spotify' -%}A local file on Spotify; there is nothing to download
+{%- else -%}Leasure can't read this item{%- endif -%}
+{%- endmacro %}
+
+{# Song download button. Only the saved-item id is posted: the server reads the rest from the snapshot. #}
+{% macro song_download(item, format_select='#dl-format-deck', classes='outline dl-btn deck-dl-btn') -%}
+{%- set other = item.library and item.library.state == 'other_album' -%}
+<button type="button" class="{{ classes }}" data-saved-download
+        hx-post="/api/saved/download/item/{{ item.id }}"
+        hx-include="{{ format_select }}"
+        {% if other %}hx-vals='{"other_album": "1"}'{% endif %}
+        hx-target="this" hx-swap="outerHTML" hx-indicator="this" hx-disabled-elt="this"
+        {% if other %}title="Download it again for this album"{% endif %}>
+    &#9660; {{ 'Download anyway' if other else 'Download' }}
+</button>
+{%- endmacro %}
+
+{# The readout action of a saved album or playlist: open it, and queue what is missing.
+   More than the confirm limit answers with the confirmation instead of queuing. #}
+{% macro collection_actions(item) -%}
+<button type="button" class="outline deck-open-btn"
+        hx-get="/api/saved/item/{{ item.id }}/html" hx-target="#music-detail" hx-swap="innerHTML"
+        data-opens-detail="Loading {{ kind_word(item.kind, 1) }}…">&#9656; Open</button>
+{% if item.kind != 'artist' and item.readable %}
+{%- set known = item.track_count and item.count_in_library is not none -%}
+{%- set missing = (item.track_count - item.count_in_library) if known else none -%}
+{% if missing is none or missing > 0 %}
+<button type="button" class="outline saved-dl-missing" data-saved-download
+        hx-post="/api/saved/download/item/{{ item.id }}" hx-include="#dl-format-deck"
+        hx-target="#music-detail" hx-swap="innerHTML" hx-disabled-elt="this"
+        data-opens-detail="Checking what is missing…">
+    &#9660; {{ 'Download ' ~ missing ~ ' missing' if missing else 'Download missing' }}
+</button>
+{% endif %}
+{% endif %}
+{%- endmacro %}
+
+{# One row of the Saved wheel: the same DOM contract as track_banner (rhythm-deck.js reads
+   the data-* and clones the two templates into the NOW SELECTED readout). #}
+{% macro saved_banner(item) %}
+{% set is_track = item.kind == 'track' %}
+{% set lib = item.library %}
+{% set owned = is_track and lib and lib.state == 'library' %}
+{% set complete = not is_track and item.track_count and item.count_in_library is not none and item.count_in_library >= item.track_count %}
+{% set subtitle = (item.artist or '') ~ (' · ' ~ item.album if is_track and item.album else '') %}
+<button type="button" role="option"
+        class="deck-banner deck-banner-row saved-banner{% if not item.readable %} is-unreadable{% endif %}{% if item.removed %} is-removed{% endif %}"
+        data-id="{{ item.id }}" data-kind="{{ item.kind }}"
+        data-title="{{ item.title }}"
+        data-artist="{{ item.artist or ('Artist' if item.kind == 'artist' else '') }}"
+        data-album="{{ item.album or '' if is_track else '' }}"
+        data-year="{{ item.year or '' }}" data-genre=""
+        data-duration="{{ duration_text(item.duration_ms) }}"
+        data-trk="{{ item.track_number or item.track_count or '' }}"
+        data-image="{{ item.image_url or '' }}"
+        data-source="{% for s in item.sources | unique %}{{ source_label(s) }}{% if not loop.last %} + {% endif %}{% endfor %}"
+        {% if item.position %}aria-posinset="{{ item.position }}"{% endif %}
+        {% if item.setsize %}aria-setsize="{{ item.setsize }}"{% endif %}>
+    <span class="deck-banner-art">
+        {% if item.image_url %}<img src="{{ item.image_url }}" loading="lazy" alt="">
+        {% else %}<span class="deck-banner-noart">{% if item.kind == 'playlist' %}&#9776;{% elif item.kind == 'artist' %}&#9883;{% else %}&#9835;{% endif %}</span>{% endif %}
+        {% if owned or complete %}<span class="deck-banner-tick">&check;</span>{% endif %}
+    </span>
+    <span class="deck-banner-label">
+        <span class="deck-banner-title">{{ item.title }}</span>
+        {% if subtitle %}<span class="deck-banner-artist">{{ subtitle }}</span>{% endif %}
+    </span>
+    <span class="saved-banner-meta">
+        {{ source_tags(item) }}
+        {% if is_track and lib %}
+            {% if lib.state == 'library' %}<span class="saved-tag saved-tag--own">{{ 'On device' if lib.synced else 'In library' }}</span>
+            {% elif lib.state == 'other_album' %}<span class="saved-tag saved-tag--elsewhere">Other album</span>
+            {% elif lib.state == 'queued' %}<span class="saved-tag saved-tag--queued">{{ 'Downloading' if lib.status == 'downloading' else 'Queued' }}</span>
+            {% elif lib.state == 'error' %}<span class="saved-tag saved-tag--error">Error</span>{% endif %}
+        {% endif %}
+        {% if item.in_batch %}<span class="saved-tag saved-tag--batch">In Download all</span>{% endif %}
+        {{ collection_progress(item) }}
+        {{ qobuz_tags(item) }}
+        {% if item.removed %}<span class="saved-tag saved-tag--removed">removed</span>{% endif %}
+        {% if item.added_label %}<span class="saved-added">added {{ item.added_label }}</span>{% endif %}
+    </span>
+    {% if is_track and lib and lib.local_album_key %}
+    <template class="deck-banner-album">
+        <button type="button" class="deck-album-btn"
+                hx-get="/api/albums/{{ lib.local_album_key | urlencode }}/html" hx-target="#music-detail" hx-swap="innerHTML"
+                data-opens-detail="Loading album…" aria-label="Open album in your library: {{ lib.album or item.album or '' }}">
+            <span aria-hidden="true">&#9656;</span> {{ lib.album or item.album or 'Album' }}
+        </button>
+    </template>
+    {% endif %}
+    <template class="deck-banner-db">
+        {% if is_track %}
+            {{ library_state(item) }}
+            {{ qobuz_tags(item) }}
+            {% if item.removed %}<span class="saved-tag saved-tag--removed">no longer saved</span>{% endif %}
+            {% if not item.readable %}<span class="deck-db-meta">{{ unreadable_note(item) }}</span>
+            {% elif song_downloadable(item) %}{{ song_download(item) }}{% endif %}
+        {% else %}
+            {{ collection_actions(item) }}
+            {{ collection_progress(item) }}
+            {% if not item.readable %}<span class="deck-db-meta">{{ unreadable_note(item) }}</span>{% endif %}
+            {% if item.local_album_key %}
+            <button type="button" class="album-link saved-library-link"
+                    hx-get="/api/albums/{{ item.local_album_key | urlencode }}/html" hx-target="#music-detail" hx-swap="innerHTML"
+                    data-opens-detail="Loading album…">Library album</button>
+            {% endif %}
+        {% endif %}
+    </template>
+</button>
+{% endmacro %}
+
+{# The Download all lane in one sentence: why the next song waits, and when it starts. #}
+{% macro lane_text(batch) -%}
+{%- set lane = batch.lane or {} -%}
+{%- set blocked = {'absent': 'Qobuz is not signed in; sign in on Home.',
+                   'signed_out': 'Qobuz sign-in expired; paste a new token on Home.',
+                   'paused': 'Qobuz downloads are paused.',
+                   'cooldown': 'Qobuz asked Leasure to slow down; it continues by itself.',
+                   'cap': "Today's Qobuz downloads are used up; it continues tomorrow.",
+                   'share': "Today's Download all share is used up; it continues tomorrow.",
+                   'youtube_cap': "Today's YouTube downloads are used up; it continues tomorrow."} -%}
+{%- if batch.state == 'paused' -%}Paused.
+{%- elif batch.state == 'expanding' and batch.albums_to_read -%}Reading the songs of {{ count_of(batch.albums_to_read, 'album') }} first.
+{%- elif lane.status == 'fed' or lane.status == 'busy' -%}A song is downloading now.
+{%- elif lane.status in ['gap', 'hourly'] -%}Next song {{ wait_text(batch.next_in_s) }}{% if lane.status == 'hourly' %} ({{ lane.per_hour }} an hour at most){% endif %}.
+{%- elif lane.status == 'hours' -%}Downloads only between {{ lane.hours }}.
+{%- elif lane.status == 'blocked' -%}{{ blocked.get(lane.blocked, 'Waiting until downloads are possible again.') }}
+{%- else -%}Waiting for its turn.{%- endif -%}
+{%- endmacro %}
