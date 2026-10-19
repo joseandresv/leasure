@@ -125,7 +125,50 @@ document.addEventListener('click', function(event) {
     });
 });
 
+// The album view's own actions replace the whole view. htmx does not swap refusals:
+// a 409 that carries the re-rendered view with its notice is shown; a refused release
+// link is explained under the link field instead of a generic toast.
+document.addEventListener('htmx:beforeSwap', function(event) {
+    const target = event.detail.target;
+    if (!target || !target.classList || !target.classList.contains('album-view')) return;
+    const status = event.detail.xhr.status;
+    if (status === 409 && String(event.detail.serverResponse).includes('class="album-view"')) {
+        event.detail.shouldSwap = true;
+        event.detail.isError = false;
+        return;
+    }
+    const path = (event.detail.pathInfo && event.detail.pathInfo.requestPath) || '';
+    const slot = /\/info\/pin$/.test(path) && target.querySelector('.album-pin-error');
+    if (status < 400 || !slot) return;
+    slot.textContent = status === 400
+        ? 'Paste a MusicBrainz release link or a Deezer album link.'
+        : 'Album info could not be changed right now. Try again in a minute.';
+    event.detail.isError = false;
+});
+
 /* ── Cover art ── */
+
+// A cover that fails to load (sidecar gone, remote cover refused) shows the empty
+// record instead of a broken image. error events do not bubble, hence the capture.
+document.addEventListener('error', function(event) {
+    const img = event.target;
+    if (!(img instanceof HTMLImageElement) || !img.hasAttribute('data-cover-fallback')) return;
+    img.removeAttribute('data-cover-fallback');
+    img.removeAttribute('data-vibrant');
+    img.src = '/static/img/placeholder.svg';
+}, true);
+
+// The Albums grid loads once; a lookup that settles may have saved a release cover,
+// so that album's card asks for its cover again (a 404 still falls back above).
+document.addEventListener('album-info:ready', function(event) {
+    const key = event.detail && event.detail.key;
+    if (typeof key !== 'string' || !key) return;
+    const covers = document.querySelectorAll('.lib-album-card[data-album-key="' + CSS.escape(key) + '"] .lib-album-cover img');
+    covers.forEach(function(img) {
+        img.setAttribute('data-cover-fallback', '');
+        img.src = '/api/albums/' + encodeURIComponent(key) + '/cover?t=' + Date.now();
+    });
+});
 
 // Covers on CDNs that send no CORS header fail to load as WebGL textures or
 // crossorigin images; the server re-serves them from our origin. Hosts known to
@@ -232,6 +275,7 @@ function syncCountSegments(data, hasErrors) {
         if (data.skipped) segs.push({ n: data.skipped }, ' already on the card');
     }
     if (data.playlists) segs.push(' · ', { n: data.playlists }, ' playlists generated');
+    if (data.covers_written > 0) segs.push(' · ', { n: data.covers_written }, ' album covers written');
     if (data.removed) segs.push(' · ', { n: data.removed }, ' old copies removed');
     if (data.kept) segs.push(' · ', { n: data.kept }, ' old copies kept');
     return segs;
@@ -408,6 +452,12 @@ function startSync(e) {
                 var kept = keptCopyLines(data.kept_paths);
                 if (kept.length) {
                     box.appendChild(syncErrorDetails(kept, data.kept + ' old copies kept on the card', false));
+                }
+                if (data.reminder) {
+                    var reminder = document.createElement('p');
+                    reminder.className = 'sync-reminder';
+                    reminder.textContent = data.reminder;
+                    box.appendChild(reminder);
                 }
                 status.appendChild(box);
 

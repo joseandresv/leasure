@@ -1,0 +1,220 @@
+{% from "macros/components.html" import format_selector, badge, quality_badge, duration %}
+{# The local album view: the album as the library has it, with the release tracklist
+   from MusicBrainz/Deezer merged in when one is stored. Listeners are siblings inside
+   the root, never attributes on it, so row buttons inherit no hx-target. #}
+{% set info = info | default({}, true) %}
+{% set urls = urls | default({}, true) %}
+{% set tracks = tracks | default([], true) %}
+{% set is_loose = album.kind == 'loose' %}
+{% set view_id = 'album-view-' ~ key %}
+{% set format_id = 'dl-format-album-' ~ key %}
+{% set placeholder = '/static/img/placeholder.svg' %}
+{% set release_known = tracks | selectattr('on_release') | list | length > 0 %}
+{% set offers_downloads = downloads_allowed and tracks | selectattr('download_url') | list | length > 0 %}
+<section class="album-view" id="{{ view_id }}" data-album-key="{{ key }}">
+
+{% if urls.self %}
+<div hidden hx-get="{{ urls.self }}"
+     hx-trigger="album-info:ready[detail.key=='{{ key }}'] from:body, qobuz:queued[this.closest('dialog')?.open] from:body"
+     hx-target="#{{ view_id }}" hx-select="#{{ view_id }}" hx-swap="outerHTML"></div>
+{% endif %}
+{% if info.should_ensure and urls.ensure %}
+<div hidden hx-post="{{ urls.ensure }}" hx-trigger="load" hx-swap="none"></div>
+{% endif %}
+{% if (info.should_ensure or info.pending) and urls.status %}
+<div hidden hx-get="{{ urls.status }}" hx-trigger="every 2s"
+     hx-target="#{{ view_id }} .album-info-status" hx-swap="innerHTML"></div>
+{% endif %}
+
+<div class="album-hero" {% if album.image_url %}style="--hero-bg-url: url('{{ album.image_url }}')"{% endif %}>
+    <div class="album-hero-content">
+        <img src="{{ album.image_url or placeholder }}" alt="" class="album-art"
+             {%- if album.image_url %} data-vibrant data-cover-fallback{% endif %}>
+        <div class="album-meta">
+            <h3>{{ album.name }}</h3>
+            <p>{{ album.artist | default('', true) }}</p>
+
+            {% set facts = [] %}
+            {% if album.release_date or album.year %}{% set _ = facts.append(album.release_date or album.year) %}{% endif %}
+            {% if album.label %}{% set _ = facts.append(album.label) %}{% endif %}
+            {% if album.total_tracks %}{% set _ = facts.append(album.total_tracks ~ (' track' if album.total_tracks == 1 else ' tracks')) %}{% endif %}
+            {% if multi_disc %}{% set _ = facts.append(album.total_discs ~ ' discs') %}{% endif %}
+            {% if album.total_duration_ms %}
+                {% set minutes = (album.total_duration_ms / 60000) | round | int %}
+                {% set _ = facts.append((minutes // 60) ~ ' h ' ~ (minutes % 60) ~ ' min' if minutes >= 60 else minutes ~ ' min') %}
+            {% endif %}
+            {% if facts %}
+            <ul class="album-facts">{% for fact in facts %}<li>{{ fact }}</li>{% endfor %}</ul>
+            {% endif %}
+            {% if album.genres %}<small class="album-genres">{{ album.genres[:3] | join(', ') }}</small>{% endif %}
+
+            {% set local_count = album.local_count | default(0, true) %}
+            <div class="album-own">
+                <span class="album-own-count">
+                    {%- if is_loose -%}{{ local_count }} {{ 'song' if local_count == 1 else 'songs' }} without an album
+                    {%- elif album.total_tracks -%}{{ local_count }} of {{ album.total_tracks }} in your library
+                    {%- else -%}{{ local_count }} {{ 'song' if local_count == 1 else 'songs' }} in your library{%- endif -%}
+                </span>
+                {% if release_known and not is_loose %}
+                <div class="album-own-meter" role="img"
+                     aria-label="{{ local_count }} of {{ album.total_tracks or tracks | length }} songs in your library">
+                    {% for track in tracks if track.on_release %}
+                    <span class="is-{{ track.state }}" title="{{ track.release_position or loop.index }}. {{ track.name }}"></span>
+                    {% endfor %}
+                </div>
+                {% endif %}
+            </div>
+
+            {% if info.can_enrich %}
+            {% if info.status == 'found' and info.source_label %}
+            <p class="album-credit">
+                {%- if info.source_url -%}
+                <a href="{{ info.source_url }}" target="_blank" rel="noopener noreferrer">Album info from {{ info.source_label }}</a>
+                {%- else -%}Album info from {{ info.source_label }}{%- endif -%}
+            </p>
+            {% if info.artist_warning %}<small class="album-warn">This release credits a different artist.</small>{% endif %}
+            {% endif %}
+            <span class="album-info-status" role="status" aria-live="polite">
+                {%- if info.pending -%}Looking up album info…
+                {%- elif info.mismatch -%}Album info may not match your songs.
+                {%- elif info.status == 'busy' -%}Lookups are busy, try again in a minute.
+                {%- elif info.status == 'not_found' -%}No album info found online; showing your library's songs.
+                {%- elif info.status == 'error' -%}Album info is unavailable right now.
+                {%- endif -%}
+            </span>
+            {% endif %}
+
+            {% if offers_downloads or bulk_download_allowed %}
+            <div class="album-actions">
+                {{ format_selector('album-' ~ key) }}
+                {% if bulk_download_allowed and urls.download_missing %}
+                <button type="button" class="outline"
+                        hx-post="{{ urls.download_missing }}"
+                        hx-include="#{{ format_id }}"
+                        hx-target="closest .album-view" hx-swap="outerHTML"
+                        hx-disabled-elt="this"
+                        hx-confirm="Download {{ album.missing_count }} {{ 'song' if album.missing_count == 1 else 'songs' }} into '{{ album.name }}'?">
+                    Download missing ({{ album.missing_count }})
+                </button>
+                {% endif %}
+            </div>
+            {% endif %}
+
+            {% if upgrade_possible and upgrade_track_ids %}
+            <div id="qobuz-upgrade-album-slot" hx-get="/api/qobuz/upgrade/button/html"
+                 hx-vals='{{ {"scope": "album", "track_ids": upgrade_track_ids | join(",")} | tojson }}'
+                 hx-trigger="load, qobuz:changed from:body" hx-swap="innerHTML"></div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+{% if notice %}<p class="detail-notice" role="status">{{ notice }}</p>{% endif %}
+{% if retry_url %}
+<button type="button" class="album-link album-retry" hx-get="{{ retry_url }}"
+        hx-target="closest .modal-body" hx-swap="innerHTML">
+    {{ 'Try Spotify again' if '/spotify/' in retry_url else 'Try again' }}
+</button>
+{% endif %}
+
+{% if info.can_enrich %}
+<details class="album-info-tools">
+    <summary>Album info</summary>
+    {% if info.status == 'found' %}
+    <dl class="album-info-facts">
+        {% if info.release_title %}<dt>Release</dt><dd>{{ info.release_title }}</dd>{% endif %}
+        {% if album.label %}<dt>Label</dt><dd>{{ album.label }}</dd>{% endif %}
+        {% if album.catalog_number %}<dt>Catalog number</dt><dd>{{ album.catalog_number }}</dd>{% endif %}
+        {% if album.barcode %}<dt>Barcode</dt><dd>{{ album.barcode }}</dd>{% endif %}
+        {% if album.media_format %}<dt>Format</dt><dd>{{ album.media_format }}</dd>{% endif %}
+        {% if info.pinned %}<dt>Match</dt><dd>Chosen by you</dd>
+        {% elif info.confidence is number %}<dt>Match</dt><dd>{{ (info.confidence * 100) | round | int }}% sure</dd>{% endif %}
+        {% if info.fetched_at %}<dt>Looked up</dt><dd>{{ info.fetched_at[:10] }}</dd>{% endif %}
+    </dl>
+    {% elif info.status == 'not_found' and info.retry_at %}
+    <p class="detail-note">Leasure looks again after {{ info.retry_at[:10] }}, or now with Refresh.</p>
+    {% endif %}
+    <div class="album-info-actions">
+        {% if urls.refresh_info %}
+        <button type="button" class="outline" hx-post="{{ urls.refresh_info }}"
+                hx-target="closest .album-view" hx-swap="outerHTML" hx-disabled-elt="this">Refresh album info</button>
+        {% endif %}
+        {% if info.status == 'found' and urls.reject_info %}
+        <button type="button" class="outline" hx-post="{{ urls.reject_info }}"
+                hx-target="closest .album-view" hx-swap="outerHTML" hx-disabled-elt="this"
+                hx-confirm="Forget this match and look again?">Not this album</button>
+        {% endif %}
+    </div>
+    {% if urls.pin_info %}
+    <form class="album-pin" hx-post="{{ urls.pin_info }}" hx-target="closest .album-view" hx-swap="outerHTML">
+        <label for="album-pin-{{ key }}">Know the right release? Paste its MusicBrainz or Deezer link.</label>
+        <div class="album-pin-row">
+            <input type="url" name="url" id="album-pin-{{ key }}" required
+                   placeholder="https://musicbrainz.org/release/…">
+            <button type="submit" class="outline">Use this release</button>
+        </div>
+        <small class="album-pin-error" role="alert"></small>
+    </form>
+    {% endif %}
+</details>
+{% endif %}
+
+{% set groups = tracks | groupby('disc_number', default=1) if multi_disc else [(none, tracks)] %}
+<div class="album-view-tracks">
+{% for disc, rows in groups %}
+    {% if disc %}<h4 class="album-disc-head">Disc {{ disc }}</h4>{% endif %}
+    {% for track in rows %}
+    {% set state = track.state | default('local' if track.download_status == 'done' else 'missing', true) %}
+    <div class="track-row album-row album-row--{{ state }}"
+         {%- if state == 'missing' and track.download_url %}
+         hx-on::after-swap="if (event.target.matches('.badge-downloading')) { this.classList.replace('album-row--missing', 'album-row--queued'); this.querySelector('.album-row-missing').textContent = 'Queued'; }"
+         {%- endif %}>
+        <span class="track-num">{{ track.track_number or '–' }}</span>
+        <div class="track-info">
+            <div class="track-title">{{ track.name }}</div>
+            <div class="track-artist">{{ track.artist | default('', true) }}</div>
+            {% if state == 'missing' %}
+            <small class="album-row-note album-row-missing">Not in your library</small>
+            {% elif state == 'elsewhere' and track.elsewhere %}
+            <button type="button" class="album-link album-row-note"
+                    hx-get="/api/albums/{{ track.elsewhere.key | urlencode }}/html"
+                    hx-target="closest .modal-body" hx-swap="innerHTML">
+                {%- if track.elsewhere.key == 'loose' -%}Also in your library as a loose song
+                {%- else -%}Also in your library on {{ track.elsewhere.album }}{%- endif -%}
+            </button>
+            {% endif %}
+            {% if track.on_release is sameas false %}<small class="album-row-note">Bonus — not on this release</small>{% endif %}
+        </div>
+        <span class="track-duration">{{ duration(track.duration_ms) }}</span>
+        <span class="album-row-state">
+        {% if state == 'local' %}
+            {{ quality_badge(track.db) }}
+            {{ badge('done') }}
+            {% if track.db and track.db.upgrade_revertible %}
+            <button type="button" class="outline dl-btn upgrade-undo"
+                    hx-post="/api/qobuz/upgrade/revert/{{ track.db.id }}" hx-target="this" hx-swap="outerHTML"
+                    hx-disabled-elt="this"
+                    hx-confirm="Put the previous file back? The FLAC is set aside and the next sync swaps the card copy back.">Undo FLAC</button>
+            {% endif %}
+        {% elif state == 'queued' %}
+            {{ badge(track.download_status if track.download_status in ['pending', 'downloading'] else 'queued') }}
+        {% elif state == 'error' %}
+            {{ badge('error') }}
+            {% if track.download_url %}
+            <button type="button" class="outline dl-btn"
+                    hx-post="{{ track.download_url }}" hx-include="#{{ format_id }}"
+                    hx-target="this" hx-swap="outerHTML" hx-indicator="this">Retry</button>
+            {% endif %}
+        {% elif state == 'missing' and track.download_url %}
+            <button type="button" class="outline dl-btn"
+                    hx-post="{{ track.download_url }}" hx-include="#{{ format_id }}"
+                    hx-target="this" hx-swap="outerHTML" hx-indicator="this">Download</button>
+        {% endif %}
+        </span>
+    </div>
+    {% endfor %}
+{% endfor %}
+{% if not tracks %}<p class="detail-note">No songs to show for this album.</p>{% endif %}
+</div>
+
+</section>

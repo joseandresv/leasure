@@ -34,6 +34,7 @@ MISS_TTL = timedelta(days=7)
 RECORDING_INC = "genres+artist-credits+release-groups"
 # The isrc resource rejects genres/release-groups with HTTP 400; it only browses to recordings.
 ISRC_INC = "artist-credits"
+RELEASE_INC = "recordings+isrcs+artist-credits+labels+release-groups+genres+media"
 
 _LUCENE_SPECIALS = re.compile(r'([+\-&|!(){}\[\]^"~*?:\\/])')
 
@@ -71,9 +72,35 @@ async def genres_for_track(*, isrc: str | None, title: str, artist: str, album: 
     return genres
 
 
+class MusicBrainzUnavailable(Exception):
+    """MusicBrainz could not answer (rate limit, outage, transport error): not the same as "no match"."""
+
+    def __init__(self, status: int | None, detail: str = ""):
+        super().__init__(f"MusicBrainz unavailable ({status or detail or 'no answer'})")
+        self.status = status
+        self.detail = detail
+
+
 async def get(path: str, params: dict[str, Any]) -> dict | None:
     """One MusicBrainz request under the app's shared User-Agent and rate limit; None on any non-200 answer."""
     return await _get(path, params)
+
+
+async def get_checked(path: str, params: dict[str, Any]) -> dict | None:
+    """Like get(), but only a 404 is None; any other failure raises MusicBrainzUnavailable."""
+    try:
+        resp = await _fetch(path, params)
+        if resp.status_code == 200:
+            return resp.json()
+    except (httpx.HTTPError, ValueError) as e:
+        raise MusicBrainzUnavailable(None, e.__class__.__name__) from None
+    if resp.status_code == 404:
+        return None
+    raise MusicBrainzUnavailable(resp.status_code)
+
+
+def lucene(text: str) -> str:
+    return _lucene(text)
 
 
 async def _genres_by_isrc(isrc: str) -> list[str]:
@@ -186,8 +213,8 @@ async def _throttle() -> None:
         _last_request = time.monotonic()
 
 
-async def _get(path: str, params: dict[str, Any]) -> dict | None:
-    """One rate-limited MusicBrainz request; None on any non-200 answer."""
+async def _fetch(path: str, params: dict[str, Any]) -> httpx.Response:
+    """One rate-limited MusicBrainz request, retried once after a 503."""
     query = {**params, "fmt": "json"}
     headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
     async with httpx.AsyncClient(timeout=TIMEOUT, headers=headers) as client:
@@ -197,11 +224,17 @@ async def _get(path: str, params: dict[str, Any]) -> dict | None:
             if resp.status_code == 503 and attempt == 0:
                 await _sleep(RETRY_AFTER)
                 continue
-            if resp.status_code != 200:
-                logger.debug("MusicBrainz %s answered HTTP %s", path, resp.status_code)
-                return None
-            return resp.json()
-    return None
+            return resp
+    return resp
+
+
+async def _get(path: str, params: dict[str, Any]) -> dict | None:
+    """One rate-limited MusicBrainz request; None on any non-200 answer."""
+    resp = await _fetch(path, params)
+    if resp.status_code != 200:
+        logger.debug("MusicBrainz %s answered HTTP %s", path, resp.status_code)
+        return None
+    return resp.json()
 
 
 def _cache_path() -> Path:

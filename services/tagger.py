@@ -101,7 +101,12 @@ TAGGABLE_SUFFIXES = (".mp3", ".flac", ".m4a", ".mp4", ".opus", ".ogg")
 async def _prepare_cover(artwork_url: str | None) -> bytes | None:
     if not artwork_url:
         return None
-    data = await artwork.fetch_artwork(artwork_url)
+    if artwork_url.startswith("/"):
+        # The album view points a new song at a sibling's sidecar or the album's cached cover.
+        local = await artwork.local_cover_path(artwork_url)
+        data = await asyncio.to_thread(local.read_bytes) if local else None
+    else:
+        data = await artwork.fetch_artwork(artwork_url)
     if data is None:
         return None
     return await asyncio.to_thread(artwork.prepare_cover, data, settings.artwork_size)

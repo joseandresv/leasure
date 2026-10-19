@@ -403,6 +403,7 @@ The H2 is a portable HiFi music player that reads music from a micro SD card. Le
 - `.m3u8` files (UTF-8 with BOM, CRLF) must be at the **root** of the SD card
 - Paths inside are relative to the SD root with forward slashes (e.g., `Artist/Album/01 - Track.mp3`)
 - The H2 shows these under its Explorer, not the Playlists category
+- On a Rockbox card they go to `/Playlists` instead (see below)
 
 ### Folder structure
 
@@ -410,7 +411,43 @@ Artist folders go directly at the SD card root. No `MUSIC/` prefix is needed. Th
 
 ### Filename sanitization
 
-All filenames are sanitized for FAT32 compatibility (no `\/:*?"<>|` or control characters, Windows reserved names such as `CON`/`NUL` are prefixed, max 200 chars).
+All filenames are sanitized for FAT32 compatibility (no `\/:*?"<>|` or control characters, Windows reserved names such as `CON`/`NUL` are prefixed, max 200 chars). A whole card path is also capped at 250 UTF-8 bytes (Rockbox's limit); see "Path length" below.
+
+## Using Leasure with Rockbox (dual boot)
+
+The H2 can dual-boot [Rockbox](https://www.rockbox.org/) through the AIGO Eros Q native port. Before installing it, check the H2 / Eros Q device page on https://www.rockbox.org/ to confirm that the port supports your player's **hardware revision**. Leasure does not install Rockbox; it only prepares the card for it.
+
+### Try it on a spare FAT32 card
+
+Rockbox cannot read exFAT, and most larger cards ship formatted exFAT. Format a spare card as FAT32, install Rockbox on it as rockbox.org describes, then sync it with Leasure. Keep your current card for the stock firmware. Bluetooth only works on the stock firmware, so boot stock when you want Bluetooth.
+
+### What Leasure does differently on a Rockbox card
+
+A card with a `/.rockbox` folder is detected automatically as a Rockbox card; the Device page and the sync preview show "Rockbox card" (otherwise "Stock H2"). On a Rockbox card Leasure:
+
+- never lists, imports, changes or deletes anything in `/.rockbox`. The same holds on every card for `System Volume Information`, `$RECYCLE.BIN`, `.Trash-*` and macOS's `.Trashes`, `.Spotlight-V100` and `.fseventsd`
+- writes playlists to `/Playlists/<name>.m3u8` (UTF-8, starting with `#EXTM3U`, absolute `/Artist/Album/...` paths). They are still recorded in `.leasure-playlists.json`, so only Leasure's own playlists are ever removed. A playlist you saved on the player under the same name is never overwritten: the sync reports it and leaves it as it is
+- puts a `cover.jpg` (baseline JPEG, at most 500 px) in each album folder. Leasure records its own covers in `.leasure-covers.json` and never overwrites or deletes a `cover.jpg` it did not write
+- warns in the sync preview when the card is not FAT32 (when the filesystem can be read; on WSL2 it is asked from Windows)
+- keeps the same artist/album/track layout, the per-track `.jpg`/`.lrc` sidecars and the same tags as on stock. A progressive sidecar in the library is re-encoded as baseline JPEG first; an unnumbered track titled "Cover" gets no sidecar, since it would be the album's `cover.jpg`
+
+Files of 4 GB or more are skipped on a FAT32 card, and on a Rockbox card whose filesystem cannot be read (FAT32 cannot hold them). An exFAT stock card takes them.
+
+### Path length
+
+Card paths are capped at 250 UTF-8 bytes from the card root, 255 per folder or file name (Rockbox's limit). Only names over the limit are shortened, always the same way, with a short `~abc123` tag that keeps two long names apart. An artist folder name over 200 bytes, or artist plus album folder names over 210, are shortened for every track of the album, so an album always stays in one folder; after that only a title that still does not fit is shortened. Every path of up to 209 bytes is exactly what it was before (the longest in a typical library is well under that), so existing files on a card are not renamed.
+
+### Formats
+
+`.m4a` (AAC), Opus, FLAC and MP3 all play in Rockbox, and its database reads their tags. No conversion is needed.
+
+### After each sync: refresh the database
+
+On the player: Settings → General Settings → Database → Initialize Now, or turn on Auto Update, so new songs appear in the Database. The sync preview and result remind you on a Rockbox card.
+
+### Back to stock
+
+Removing `/.rockbox` turns the card back into a stock card: the next sync moves Leasure's playlists back to the card root and leaves `/Playlists` alone. Leasure's `cover.jpg` files stay until their album leaves the library.
 
 ## Development
 

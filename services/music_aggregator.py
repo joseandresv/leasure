@@ -360,13 +360,13 @@ def get_unified_albums() -> list[dict]:
     return merged
 
 
-def known_spotify_album(album_id: str) -> dict | None:
-    """{"name", "artist"} of a Spotify album the cached album list or recent tracks mention, without asking Spotify."""
+def known_album(provider: str, album_id: str) -> dict | None:
+    """{"name", "artist"} of a provider album the cached album list or recent tracks mention, without asking the provider."""
     for album in _albums_cache["data"] or []:
-        if any(s["provider"] == "spotify" and s.get("id") == album_id for s in album.get("sources", [])):
+        if any(s["provider"] == provider and s.get("id") == album_id for s in album.get("sources", [])):
             return {"name": album["name"], "artist": album.get("artist") or ""}
     for track in _recent_cache["data"] or []:
-        if track.get("album_ref") == {"provider": "spotify", "id": album_id} and track.get("album"):
+        if track.get("album_ref") == {"provider": provider, "id": album_id} and track.get("album"):
             return {"name": track["album"], "artist": track.get("album_artist") or track.get("artist") or ""}
     return None
 

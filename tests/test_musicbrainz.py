@@ -247,3 +247,83 @@ async def test_search_shares_the_throttled_musicbrainz_client(mb, monkeypatch):
 
     assert calls == [("/release", {"query": "discovery", "limit": 5})]
     assert result["albums"][0]["id"] == "mb:rel-1"
+
+
+# --- get_checked: album lookups tell "unavailable" apart from "not found" ---
+
+REAL_GET_CHECKED = musicbrainz.get_checked
+
+
+@pytest.fixture
+def mb_http(monkeypatch):
+    """Answers MusicBrainz requests from a list of (status, json) or exceptions; records the requests."""
+    import httpx
+
+    answers: list = []
+    requests: list[httpx.Request] = []
+    real_client = httpx.AsyncClient
+
+    def handler(request):
+        requests.append(request)
+        answer = answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        status, body = answer
+        return httpx.Response(status, json=body)
+
+    async def no_sleep(seconds):
+        return None
+
+    monkeypatch.setattr(musicbrainz.httpx, "AsyncClient",
+                        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
+    monkeypatch.setattr(musicbrainz, "_sleep", no_sleep)
+    monkeypatch.setattr(musicbrainz, "_last_request", 0.0)
+    return answers, requests
+
+
+async def test_get_checked_returns_the_json(mb_http):
+    answers, requests = mb_http
+    answers.append((200, {"releases": []}))
+
+    assert await REAL_GET_CHECKED("/release/", {"query": "q"}) == {"releases": []}
+    assert requests[0].headers["user-agent"] == musicbrainz.USER_AGENT
+    assert requests[0].url.params["fmt"] == "json"
+
+
+async def test_get_checked_is_none_for_a_404(mb_http):
+    mb_http[0].append((404, {"error": "Not Found"}))
+
+    assert await REAL_GET_CHECKED("/release/x", {}) is None
+
+
+@pytest.mark.parametrize("answers, status", [
+    ([(429, {})], 429), ([(503, {}), (503, {})], 503), ([(500, {})], 500), ([(400, {})], 400)])
+async def test_get_checked_raises_when_musicbrainz_cannot_answer(mb_http, answers, status):
+    mb_http[0].extend(answers)
+
+    with pytest.raises(musicbrainz.MusicBrainzUnavailable) as error:
+        await REAL_GET_CHECKED("/release/", {})
+
+    assert error.value.status == status and len(mb_http[1]) == len(answers)
+
+
+async def test_get_checked_retries_a_503_once(mb_http):
+    mb_http[0].extend([(503, {}), (200, {"ok": True})])
+
+    assert await REAL_GET_CHECKED("/release/", {}) == {"ok": True}
+
+
+async def test_get_checked_raises_on_a_transport_error(mb_http):
+    import httpx
+
+    mb_http[0].append(httpx.ConnectError("down"))
+
+    with pytest.raises(musicbrainz.MusicBrainzUnavailable):
+        await REAL_GET_CHECKED("/release/", {})
+
+
+async def test_get_still_returns_none_for_any_failure(mb_http):
+    mb_http[0].extend([(429, {}), (404, {})])
+
+    assert await musicbrainz.get("/release/", {}) is None
+    assert await musicbrainz.get("/release/x", {}) is None

@@ -1,5 +1,6 @@
 """Which library row a provider track already is, under any key it carries, so no second copy is offered."""
 
+import re
 from dataclasses import dataclass
 
 from sqlalchemy import or_, select
@@ -22,13 +23,20 @@ class TrackKeys:
     isrc: str | None = None
 
 
+SONG_STATUSES = ("done", "pending", "downloading", "error")
+# "Dreams - LP Version", "Song (Explicit Version)": the same recording under a release-format label.
+_BENIGN_VERSION_SUFFIX = re.compile(r"\s*(?:\(|\[|\s[-–—]\s)\s*(?:(?:lp|original|explicit|clean|album|single|standard)\s+)+"
+                                    r"version\s*[)\]]?\s*$")
+
+
 def _primary_artist(artist: str | None) -> str:
     return normalize_title((artist or "").split(",")[0])
 
 
 def _edition_free(text: str | None) -> str:
     """Spotify's "X - Remastered 2011" and YouTube's "X (2011 Remaster)" compare equal."""
-    return normalize_title(BENIGN_VERSION.sub(" ", (text or "").casefold())) or normalize_title(text)
+    lowered = _BENIGN_VERSION_SUFFIX.sub("", (text or "").casefold())
+    return normalize_title(BENIGN_VERSION.sub(" ", lowered)) or normalize_title(text)
 
 
 def _song_key(title: str | None, artist: str | None) -> tuple[str, str]:
@@ -60,7 +68,9 @@ class LibraryIndex:
         self._by_spotify_uri: dict[str, Track] = {}
         self._by_isrc: dict[str, Track] = {}
         self._by_song: dict[tuple[str, str], list[Track]] = {}
+        self._by_title: dict[str, list[Track]] = {}
         for row in rows:
+            self._by_title.setdefault(_edition_free(row.title), []).append(row)
             for index, key in ((self._by_youtube_id, row.youtube_id), (self._by_spotify_uri, row.spotify_uri),
                                (self._by_isrc, normalise_isrc(row.isrc))):
                 if key and _better(index.get(key), row):
@@ -69,7 +79,7 @@ class LibraryIndex:
                 songs = self._by_song.setdefault(key, [])
                 if row not in songs:
                     songs.append(row)
-        for songs in self._by_song.values():
+        for songs in (*self._by_song.values(), *self._by_title.values()):
             songs.sort(key=lambda row: row.status != "done")
 
     def by_source_id(self, keys: TrackKeys) -> Track | None:
@@ -86,6 +96,30 @@ class LibraryIndex:
         albums = (keys.album, *keys.album_aliases)
         return next((row for row in self._by_song.get(song, []) if song[0] and not _isrc_conflict(isrc, row)
                      and any(_same_album(album, row.album) for album in albums)), None)
+
+
+    def find_song(self, title: str, artists: set[str], duration_ms: int | None) -> Track | None:
+        """The song under any album (or none): same edition-free title, one of `artists` as its primary
+        artist or album artist, within 10 s when both durations are known. Done rows first."""
+        wanted = {_primary_artist(artist) for artist in artists if artist} - {""}
+        for row in self._by_title.get(_edition_free(title), []):
+            if row.status not in SONG_STATUSES:
+                continue
+            if not {_primary_artist(row.artist), _primary_artist(row.album_artist)} & wanted:
+                continue
+            if duration_ms and row.duration_ms and abs(duration_ms - row.duration_ms) > 10_000:
+                continue
+            return row
+        return None
+
+
+async def song_index(session: AsyncSession, titles: set[str]) -> LibraryIndex:
+    """Rows whose edition-free title is one of `titles` (already edition-free), for find_song."""
+    candidates = await session.execute(select(Track.id, Track.title))
+    ids = [row.id for row in candidates if _edition_free(row.title) in titles]
+    if not ids:
+        return LibraryIndex([])
+    return LibraryIndex(list((await session.scalars(select(Track).where(Track.id.in_(ids)))).all()))
 
 
 async def library_index(session: AsyncSession, wanted: list[TrackKeys]) -> LibraryIndex:
@@ -105,18 +139,3 @@ async def library_index(session: AsyncSession, wanted: list[TrackKeys]) -> Libra
     if not clauses:
         return LibraryIndex([])
     return LibraryIndex(list((await session.scalars(select(Track).where(or_(*clauses)))).all()))
-
-
-async def library_album(session: AsyncSession, album: str, artist: str) -> list[Track]:
-    """The library's songs of `album` by `artist` (album artist or track artist), in disc and track order."""
-    wanted_album, wanted_artist = normalize_title(album), _primary_artist(artist)
-    if not wanted_album:
-        return []
-    candidates = await session.execute(select(Track.id, Track.album, Track.artist, Track.album_artist))
-    ids = [row.id for row in candidates
-           if normalize_title(row.album) == wanted_album
-           and (not wanted_artist or wanted_artist in {_primary_artist(row.artist), _primary_artist(row.album_artist)})]
-    if not ids:
-        return []
-    rows = await session.scalars(select(Track).where(Track.id.in_(ids)))
-    return sorted(rows.all(), key=lambda t: (t.disc_number or 1, t.track_number or 0, t.title.casefold()))

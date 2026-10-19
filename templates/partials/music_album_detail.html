@@ -1,13 +1,10 @@
-{% from "macros/components.html" import format_selector, badge, quality_badge, duration, album_detail_url %}
-{# provider "library": the album rebuilt from the songs already downloaded, shown while
-   no provider can supply the tracklist. Its rows have no source to download from. #}
-{% set library_view = provider == 'library' %}
+{% from "macros/components.html" import format_selector, badge, quality_badge, duration %}
 {% set offer = namespace(missing=false, rows=false) %}
 {% for track in tracks if track.download_status not in ['done', 'pending', 'downloading'] %}
     {% set offer.missing = true %}
-    {% if track.download_status != 'error' and (track.sources or not library_view) %}{% set offer.rows = true %}{% endif %}
+    {% if track.download_status != 'error' %}{% set offer.rows = true %}{% endif %}
 {% endfor %}
-{% set download_all = not is_playlist and not library_view and offer.missing %}
+{% set download_all = not is_playlist and offer.missing %}
 
 <div class="album-hero" {% if album.image_url %}style="--hero-bg-url: url('{{ album.image_url }}')"{% endif %}>
     <div class="album-hero-content">
@@ -20,7 +17,7 @@
             {% if album.release_date %}<small>{{ album.release_date }}</small>{% endif %}
             {% if album.year %}<small>{{ album.year }}</small>{% endif %}
             {% if album.description %}<small>{{ album.description }}</small>{% endif %}
-            <small>{{ tracks | length }} tracks{% if library_view %} in your library{% endif %}</small>
+            <small>{{ tracks | length }} tracks</small>
 
             <!-- Source badges (revealed only in detail view) -->
             <div class="source-badges">
@@ -76,7 +73,7 @@
 
 {% if notice %}<p class="detail-notice" role="status">{{ notice }}</p>{% endif %}
 
-<div hidden hx-get="{% if library_view %}{{ album_detail_url('spotify', album_id, album.name, album.artist) }}{% else %}/api/music/{{ 'playlist' if is_playlist else 'album' }}/{{ provider | urlencode }}/{{ album_id | urlencode }}{% endif %}"
+<div hidden hx-get="/api/music/{{ 'playlist' if is_playlist else 'album' }}/{{ provider | urlencode }}/{{ album_id | urlencode }}"
      hx-trigger="qobuz:queued[this.closest('dialog').open] from:body"
      hx-target="#album-tracks" hx-select="#album-tracks" hx-swap="outerHTML"></div>
 {# A provider error page has no rows; keep the old ones rather than swapping in nothing. #}
@@ -97,9 +94,6 @@
     {{ badge(track.download_status) }}
     {% elif track.download_status == 'error' %}
     {{ badge('error') }}
-    {% elif library_view and not track.sources %}
-    {{ quality_badge(track.db) }}
-    <small class="detail-note">Not downloaded</small>
     {% else %}
     {% set src = track.sources[0] if track.sources else {} %}
     {# In a playlist the enclosing "album" is the playlist itself, so the track's own

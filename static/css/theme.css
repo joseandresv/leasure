@@ -2232,3 +2232,172 @@ dialog header button:hover { color: var(--text-primary); }
             mask-image: radial-gradient(circle var(--sphere-r) at -1000px -1000px,
         transparent 0 calc(var(--sphere-r) - 2px), #000 var(--sphere-r));
 }
+
+
+/* ============================================
+   Library albums — the Albums grid and the local album view.
+   Card and link buttons restate the type the global and .carousel-panel button
+   rules set (same specificity, so these must stay after them).
+   ============================================ */
+.lib-albums-controls { display: flex; flex-wrap: wrap; gap: var(--space-sm); margin-bottom: var(--space-sm); }
+.lib-albums-controls input[type="search"] { flex: 1 1 14rem; width: auto; min-width: 0; }
+.lib-albums-controls select { flex: 0 0 auto; width: auto; }
+.lib-albums-total { color: var(--text-muted); margin-bottom: var(--space-sm); }
+
+.lib-album-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
+    gap: var(--space-md) var(--space-sm);
+}
+button.lib-album-card {
+    display: flex; flex-direction: column; align-items: stretch; gap: 2px;
+    min-width: 0; min-height: 0; padding: 6px;
+    background: none; border: 1px solid transparent; box-shadow: none;
+    font: inherit; font-family: var(--font-ui); text-transform: none; letter-spacing: normal;
+    text-align: left; color: var(--text-primary);
+}
+button.lib-album-card:hover, button.lib-album-card:focus-visible {
+    background: linear-gradient(180deg, rgba(31, 107, 255, 0.1), transparent);
+    border-color: rgba(56, 214, 255, 0.35);
+    color: var(--text-primary);
+}
+button.lib-album-card:focus-visible { outline: 1px solid var(--accent-blue); outline-offset: 2px; }
+.lib-album-cover {
+    display: block; aspect-ratio: 1 / 1; margin-bottom: 4px; overflow: hidden;
+    border-radius: var(--radius-sm);
+    border: 1px solid rgba(56, 214, 255, 0.18);
+    background: var(--bg-dark);
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.5);
+}
+.lib-album-cover img { display: block; width: 100%; height: 100%; object-fit: cover; }
+/* Every song FLAC: the cover gets the amber LED rim the lossless badge uses. */
+.lib-album-card.is-lossless .lib-album-cover {
+    border-color: rgba(255, 140, 0, 0.55);
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.5), 0 0 10px var(--accent-amber-glow);
+}
+.lib-album-name, .lib-album-artist { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lib-album-name { font-size: 0.82rem; font-weight: 600; }
+.lib-album-artist { font-size: 0.74rem; color: var(--text-secondary); }
+.lib-album-stats {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 2px;
+    font-family: var(--font-mono); font-size: 0.68rem; color: var(--text-muted);
+}
+.carousel-panel .lib-album-stats .badge { font-size: 0.62rem; padding: 0 0.35rem; }
+.lib-albums-more { grid-column: 1 / -1; justify-self: center; }
+
+/* Text-like button: an album name in a table row, a cross-link inside the album view. */
+button.album-link {
+    display: inline; min-height: 0; padding: 0;
+    background: none; border: none; box-shadow: none; border-radius: 2px;
+    font: inherit; text-transform: none; letter-spacing: normal; text-align: left;
+    color: inherit;
+    text-decoration: underline; text-decoration-color: rgba(56, 214, 255, 0.3);
+    text-underline-offset: 3px;
+}
+button.album-link:hover, button.album-link:focus-visible {
+    background: none; color: var(--accent-blue); text-decoration-color: currentColor;
+}
+button.album-link:focus-visible { outline: 1px solid var(--accent-blue); outline-offset: 2px; }
+button.album-link:active { box-shadow: none; transform: none; }
+.album-retry { margin-bottom: var(--space-sm); color: var(--accent-blue); }
+
+.album-facts {
+    display: flex; flex-wrap: wrap; gap: 2px var(--space-sm);
+    list-style: none; padding: 0; margin: 0 0 var(--space-xs);
+    font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-secondary);
+}
+.album-facts li + li::before { content: '/'; margin-right: var(--space-sm); color: var(--text-muted); }
+.carousel-panel .album-facts li { font-size: 0.75rem; }
+.album-genres { color: var(--text-muted); }
+
+/* How much of the release you own: one cell per release track, lit when the song is
+   in your library — the progress bar's foot-meter cells, read left to right. */
+.album-own { margin: var(--space-sm) 0 var(--space-xs); max-width: 30rem; }
+.album-own-count {
+    font-family: var(--font-display); font-size: 0.78rem; font-weight: 600; letter-spacing: 0.04em;
+    color: var(--text-primary);
+}
+.album-own-meter {
+    display: flex; gap: 2px; height: 12px; margin-top: 5px; padding: 2px;
+    background: #05080f; border: 1px solid #000; border-radius: 2px;
+    box-shadow: var(--shadow-inset);
+}
+.album-own-meter > span { flex: 1 1 0; min-width: 2px; background: rgba(56, 214, 255, 0.07); }
+.album-own-meter > .is-local { background: var(--album-accent); box-shadow: 0 0 6px var(--album-accent-soft); }
+.album-own-meter > .is-elsewhere { background: var(--album-accent-soft); }
+.album-own-meter > .is-queued { background: var(--accent-amber); }
+.album-own-meter > .is-error { background: var(--color-error); }
+
+/* .album-meta p is the artist line's style; the credit is a quiet footnote. */
+.album-meta .album-credit {
+    margin: var(--space-xs) 0 0; font-family: var(--font-ui); font-size: 0.75rem; font-weight: 400;
+    color: var(--text-secondary);
+}
+.album-credit a { color: var(--text-secondary); text-decoration: underline; text-decoration-color: rgba(142, 160, 192, 0.4); }
+.album-credit a:hover { color: var(--accent-blue); }
+.album-warn { display: block; color: var(--color-warning); }
+.album-info-status { display: block; margin-top: var(--space-xs); font-size: 0.8rem; color: var(--text-secondary); }
+.album-info-status:empty { display: none; }
+
+.album-info-tools { margin-bottom: var(--space-sm); }
+.album-info-tools > summary { justify-content: flex-start; gap: var(--space-xs); cursor: pointer; }
+.album-info-tools > summary::before { content: '▸'; }
+.album-info-tools[open] > summary::before { transform: rotate(90deg); }
+.album-info-facts {
+    display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px var(--space-md);
+    margin: 0 0 var(--space-sm); font-size: 0.8rem;
+}
+.album-info-facts dt { color: var(--text-muted); }
+.album-info-facts dd { margin: 0; overflow-wrap: anywhere; }
+.album-info-actions { display: flex; flex-wrap: wrap; gap: var(--space-sm); margin-bottom: var(--space-sm); }
+.album-pin label { margin-bottom: var(--space-xs); }
+.album-pin-row { display: flex; gap: var(--space-sm); }
+.album-pin-row input { flex: 1 1 auto; min-width: 0; }
+.album-pin-row button { flex: none; }
+.album-pin-error { display: block; color: var(--color-error); }
+.album-pin-error:empty { display: none; }
+
+.album-disc-head {
+    margin: var(--space-md) 0 0; padding: 0 var(--space-sm) 4px;
+    font-family: var(--font-display); font-size: 0.75rem; font-weight: 600; letter-spacing: 0.08em;
+    color: var(--accent-blue);
+    border-bottom: 1px solid rgba(56, 214, 255, 0.2);
+}
+.album-disc-head:first-child { margin-top: 0; }
+.album-row-state {
+    display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--space-xs);
+    flex-shrink: 0; max-width: 55%;
+}
+.album-row-note {
+    display: block; max-width: 100%;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    font-size: 0.72rem; color: var(--text-muted);
+}
+.carousel-panel .album-row-note { font-size: 0.72rem; }
+button.album-row-note { display: block; color: var(--text-secondary); }
+.album-row--missing .track-title, .album-row--elsewhere .track-title { color: var(--text-secondary); }
+.album-row--missing .track-num { opacity: 0.55; }
+.album-row--missing { border-left: 2px dashed rgba(90, 106, 134, 0.45); }
+
+
+/* --- Rockbox card support: card profile label, preview notes, database reminder --- */
+
+.card-profile {
+    display: inline-block;
+    margin-left: var(--space-xs);
+    padding: 0 0.4rem;
+    border: 1px solid rgba(142, 160, 192, 0.35);
+    border-radius: var(--radius-sm);
+    font-size: 0.9em;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+.card-profile-rockbox { color: var(--accent-blue); border-color: rgba(56, 214, 255, 0.45); }
+.sync-card { margin-bottom: var(--space-xs); }
+.sync-card-note, .card-protected { margin-bottom: var(--space-sm); color: var(--text-secondary); }
+.sync-reminder {
+    margin: var(--space-sm) 0 0;
+    padding-top: var(--space-sm);
+    border-top: 1px solid rgba(142, 160, 192, 0.2);
+    color: var(--text-secondary);
+}

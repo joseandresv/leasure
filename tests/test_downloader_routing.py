@@ -104,3 +104,19 @@ async def test_retrying_a_finished_track_is_refused(client, db):
 
     assert resp.status_code == 409
     assert (await get_track(db, track_id)).status == "done"
+
+
+async def test_an_album_view_row_without_ids_falls_back_to_a_youtube_search(db, engines):
+    engines["qobuz_outcome"] = QobuzSkip("no_match")
+    track_id = await seed_track(db, quality="native", youtube_id=None, source="musicbrainz")
+
+    assert await downloader.download_track(track_id) == Path("/library/y.m4a")
+    assert engines["youtube"] == [track_id]
+
+
+async def test_a_provider_row_without_ids_still_needs_a_source(db, engines):
+    engines["qobuz_outcome"] = QobuzSkip("no_match")
+    track_id = await seed_track(db, quality="native", youtube_id=None, source="youtube")
+
+    with pytest.raises(DownloadFailed, match="no Spotify or YouTube source"):
+        await downloader.download_track(track_id)

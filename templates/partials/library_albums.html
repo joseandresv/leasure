@@ -1,0 +1,48 @@
+{# The Library's Albums grid. The first page brings the grid; "Show more" pages swap
+   their cards in place of the button, inside the same grid. #}
+{% set albums = albums | default([], true) %}
+{% set total = total | default(albums | length, true) %}
+{% set first_page = not offset %}
+{% if first_page %}
+<p class="lib-albums-total" role="status">
+    {%- if total and q %}{{ total }} {{ 'album' if total == 1 else 'albums' }} match “{{ q }}”
+    {%- elif total %}{{ total }} {{ 'album' if total == 1 else 'albums' }}
+    {%- elif q %}No albums match “{{ q }}”.
+    {%- else %}No albums yet. Songs you download show up here, grouped by album.{% endif -%}
+</p>
+<div class="lib-album-grid">
+{% endif %}
+{% for a in albums %}
+    {% set mix = a.quality_mix | default([], true) %}
+    <button type="button" class="lib-album-card{% if a.kind == 'loose' %} is-loose{% endif %}{% if a.all_lossless %} is-lossless{% endif %}"
+            hx-get="/api/albums/{{ a.key | urlencode }}/html" hx-target="#library-detail" hx-swap="innerHTML"
+            data-opens-detail="Loading album…" data-album-key="{{ a.key }}">
+        <span class="lib-album-cover">
+            <img src="{{ a.cover_url or '/static/img/placeholder.svg' }}" alt="" loading="lazy"
+                 {%- if a.cover_url %} data-cover-fallback{% endif %}>
+        </span>
+        <span class="lib-album-name">{{ a.name }}</span>
+        <span class="lib-album-artist">{{ a.artist | default('', true) }}{% if a.year %}, {{ a.year }}{% endif %}</span>
+        <span class="lib-album-stats"
+              {%- if mix %} title="{% for m in mix %}{{ m.count }} {{ m.label }}{{ ', ' if not loop.last }}{% endfor %}"{% endif %}>
+            <span>{{ a.track_count }}{% if a.total_tracks and a.kind != 'loose' %}/{{ a.total_tracks }}{% endif %} {{ 'song' if a.track_count == 1 and not a.total_tracks else 'songs' }}</span>
+            {% for m in mix[:2] %}
+            {% set label = m.label | string %}
+            <span class="badge {{ 'badge-lossless' if label.startswith('FLAC') else 'badge-native' if label.startswith('AAC') or label.startswith('Opus') else 'badge-mp3' }}">{{ label }}</span>
+            {% endfor %}
+            {% if mix | length > 2 %}<span>+{{ mix | length - 2 }}</span>{% endif %}
+        </span>
+    </button>
+{% endfor %}
+{% if next_offset %}
+    <button type="button" class="outline load-more-btn lib-albums-more"
+            hx-get="/api/albums/html"
+            hx-vals='{{ {"offset": next_offset, "limit": limit | default(120, true)} | tojson }}'
+            hx-include="#library-albums-q, #library-albums-sort"
+            hx-target="this" hx-swap="outerHTML">
+        Show more albums ({{ next_offset }} of {{ total }} shown)
+    </button>
+{% endif %}
+{% if first_page %}
+</div>
+{% endif %}

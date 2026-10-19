@@ -1,4 +1,4 @@
-"""Spotify album links carry name and artist; the album detail renders notices and the library view."""
+"""Spotify album links carry name and artist; the album detail renders notices."""
 import html as html_lib
 import json
 import re
@@ -72,51 +72,8 @@ def test_album_detail_without_notice_has_none():
     assert "detail-notice" not in _detail()
 
 
-def _library_detail() -> str:
-    done = {"name": "Somebody Told Me", "artist": "The Killers", "track_number": 2, "sources": [],
-            "download_status": "done", "db": {"id": 7, "quality": "aac_256", "format": "m4a"}}
-    missing = {"name": "Jenny", "artist": "The Killers", "track_number": 3, "sources": [],
-               "download_status": None, "db": None}
-    return _detail(provider="library", album_id="4uLU6hMCjMI75M1A2tKUQC", tracks=[done, missing],
-                   notice="The full tracklist will be available when Spotify answers again.")
-
-
 def _actions_tag(markup: str) -> str:
     return re.search(r'<div class="album-actions"[^>]*>', markup).group(0)
-
-
-def test_library_view_offers_no_downloads():
-    markup = _library_detail()
-
-    assert "Download All" not in markup
-    assert "/api/music/download/" not in markup
-
-
-def test_library_view_keeps_a_hidden_format_selector_for_refreshed_rows():
-    markup = _library_detail()
-
-    assert 'id="dl-format-detail"' in markup and " hidden" in _actions_tag(markup)
-
-
-def test_library_view_shows_the_format_selector_when_a_row_is_downloadable():
-    row = {"name": "Jenny", "sources": [{"provider": "spotify", "id": "t", "uri": "spotify:track:t"}],
-           "download_status": None, "db": None}
-
-    markup = _detail(provider="library", tracks=[row])
-
-    assert "hidden" not in _actions_tag(markup) and "dl-btn" in markup and "Download All" not in markup
-
-
-def test_library_view_shows_the_quality_readout():
-    markup = _library_detail()
-
-    assert "AAC 256" in markup and "Downloaded" in markup and "Not downloaded" in markup
-
-
-def test_library_view_refreshes_from_spotify_with_name_and_artist():
-    refresh = re.search(r'<div hidden hx-get="([^"]*)"', _library_detail()).group(1)
-
-    assert html_lib.unescape(refresh) == "/api/music/album/spotify/4uLU6hMCjMI75M1A2tKUQC?name=Hot+Fuss&artist=The+Killers"
 
 
 def test_spotify_detail_still_offers_download_all():
@@ -158,3 +115,10 @@ def test_plain_album_download_all_sends_no_stand_in():
     markup = _detail(provider="youtube", tracks=[_row(None)])
 
     assert "spotify_album_id" not in markup
+
+
+def test_the_server_side_album_url_carries_the_name_for_youtube_too():
+    from services.album_view import album_detail_url
+
+    assert album_detail_url("youtube", "MPREb_x", "Hot Fuss", "The Killers") == (
+        "/api/music/album/youtube/MPREb_x?name=Hot+Fuss&artist=The+Killers")

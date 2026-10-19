@@ -7,8 +7,9 @@ the album artist's folder) sit on the card twice: the H2 scans the whole card, s
 them twice. This deletes each file of the report's stale_card_copies, with its .jpg/.lrc,
 only when the library track that replaces it is on the card at its new path with the library
 file's size and no library track syncs to the old path. Without --apply it only lists what it
-would delete. The card must be a volume Leasure detects; nothing else on it is touched, but
-playlists Leasure does not manage that name a removed file are listed (they will miss it).
+would delete. The card must be a volume Leasure detects; nothing else on it is touched (never
+anything under /.rockbox or the OS's system folders), but playlists Leasure does not manage that
+name a removed file are listed (they will miss it).
 """
 
 import argparse

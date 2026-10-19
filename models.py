@@ -184,3 +184,43 @@ class SupersededFile(Base):
     head_sha256: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     last_removed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class AlbumInfo(Base):
+    """Album facts fetched once from MusicBrainz or Deezer for a local album group: a read-only
+    overlay that is never written back to tracks, tags, sidecars or file names."""
+    __tablename__ = "album_info"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    album_key: Mapped[str] = mapped_column(String(40), unique=True, index=True)
+    key_version: Mapped[str] = mapped_column(String(4))
+    key_album_raw: Mapped[str] = mapped_column(String(500))
+    key_artist_raw: Mapped[str] = mapped_column(String(500))
+    status: Mapped[str] = mapped_column(String(12))                       # found | not_found | error
+    source: Mapped[str | None] = mapped_column(String(16), nullable=True)  # musicbrainz | deezer
+    source_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    release_group_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    pinned: Mapped[bool] = mapped_column(Boolean, default=False)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    match_overlap: Mapped[float | None] = mapped_column(Float, nullable=True)
+    match_position_fit: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rejected_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    title: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    artist: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    release_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    catalog_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    barcode: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    country: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    media_format: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    total_tracks: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_discs: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cover_url: Mapped[str | None] = mapped_column(Text, nullable=True)     # fetched server-side only
+    genres_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tracks_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    payload_version: Mapped[int] = mapped_column(Integer, default=1)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime)
+    retry_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

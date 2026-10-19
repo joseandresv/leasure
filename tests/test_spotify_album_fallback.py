@@ -110,16 +110,23 @@ def youtube_finds_nothing(monkeypatch):
     return search
 
 
+class Rendered(list):
+    def __init__(self):
+        super().__init__()
+        self.names: list[str] = []
+
+
 @pytest.fixture
 def rendered(monkeypatch):
     """The context of every album-detail template the music router renders."""
     from routers import music as music_router
 
-    contexts: list[dict] = []
+    contexts = Rendered()
     real = music_router.templates.TemplateResponse
 
     def spy(*args, **kwargs):
         contexts.append(kwargs["context"])
+        contexts.names.append(kwargs["name"])
         return real(*args, **kwargs)
 
     monkeypatch.setattr(music_router.templates, "TemplateResponse", spy)
@@ -256,11 +263,48 @@ async def test_with_no_youtube_match_the_album_opens_from_the_library(
     resp = await client.get(URL, params=HOT_FUSS_PARAMS)
 
     context = rendered[-1]
-    assert resp.status_code == 200
+    assert resp.status_code == 200 and rendered.names[-1] == "partials/album_view.html"
     assert context["provider"] == "library" and context["album_id"] == ALBUM_ID
     assert [t["name"] for t in context["tracks"]] == ["Jenny Was a Friend of Mine", "Mr. Brightside"]
     assert context["tracks"][1]["db"]["id"] == kept and context["tracks"][1]["download_status"] == "done"
-    assert "full tracklist will be available when Spotify answers again" in context["notice"]
+    assert context["notice"].endswith("so this shows your library's copy of this album.")
+    assert context["retry_url"] == f"{URL}?name=Hot+Fuss&artist=The+Killers"
+
+
+async def test_a_deluxe_spotify_album_opens_the_librarys_standard_copy_and_says_so(
+        client, db, rate_limited, no_spotify, youtube_finds_nothing, rendered):
+    await seed(db)
+
+    await client.get(URL, params={"name": "Hot Fuss (Deluxe Edition)", "artist": "The Killers"})
+
+    assert rendered[-1]["notice"].endswith("Showing your library's 'Hot Fuss'.")
+
+
+async def test_an_unanswered_youtube_album_opens_the_librarys_copy(client, db, monkeypatch, rendered):
+    from routers import music as music_router
+
+    monkeypatch.setattr(music_router.yt, "get_album_tracks", lambda bid: None)
+    agg._albums_cache["data"] = [{"name": "Hot Fuss", "artist": "The Killers",
+                                  "sources": [{"provider": "youtube", "id": "MPREb_hot"}]}]
+    await seed(db)
+
+    resp = await client.get("/api/music/album/youtube/MPREb_hot")
+
+    assert resp.status_code == 200 and rendered.names[-1] == "partials/album_view.html"
+    assert rendered[-1]["notice"] == "YouTube Music did not answer, so this shows your library's copy."
+    assert [t["name"] for t in rendered[-1]["tracks"]] == ["Mr. Brightside"]
+
+
+async def test_a_deck_album_youtube_cannot_find_opens_from_the_library(client, db, monkeypatch, rendered):
+    from routers import music as music_router
+
+    monkeypatch.setattr(music_router, "find_youtube_album", lambda *args: None)
+    await seed(db)
+
+    await client.get("/api/music/album/resolve", params={"title": "Mr. Brightside", "artist": "The Killers",
+                                                         "album": "Hot Fuss"})
+
+    assert rendered.names[-1] == "partials/album_view.html" and rendered[-1]["notice"] == "Found in your library."
 
 
 async def test_nothing_found_anywhere_says_spotify_is_rate_limiting(

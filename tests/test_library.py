@@ -73,3 +73,23 @@ async def test_tracks_list_in_album_artist_album_disc_track_order(db, client):
     titles = [t["title"] for t in (await client.get("/api/library/tracks")).json()]
 
     assert titles == ["d1t1", "d1t2", "unnumbered", "d2t1", "b1"]
+
+
+async def test_library_rows_carry_their_album_key(db, client, monkeypatch):
+    from fastapi.responses import HTMLResponse
+
+    from routers import library
+    from services.local_albums import album_key
+
+    contexts = []
+    monkeypatch.setattr(library.templates, "TemplateResponse",
+                        lambda **kwargs: contexts.append(kwargs["context"]) or HTMLResponse(""))
+    async with db() as session:
+        session.add(Track(title="Mr. Brightside", artist="The Killers", album="Hot Fuss", status="done"))
+        session.add(Track(title="Stray", artist="X", album=None, status="done"))
+        await session.commit()
+
+    await client.get("/api/library/tracks/html")
+
+    keys = {row["title"]: row["album_key"] for row in contexts[0]["tracks"]}
+    assert keys == {"Mr. Brightside": album_key("Hot Fuss", None, "The Killers").key, "Stray": "loose"}

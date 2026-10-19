@@ -276,3 +276,43 @@ async def test_full_metadata_downloads_the_artwork_once(db, media_file, monkeypa
     sidecar = f.with_suffix(".jpg")
     assert sidecar.exists()
     assert ID3(f).getall("APIC")[0].data == sidecar.read_bytes()
+
+
+async def _refuse_fetch(url):
+    raise AssertionError(f"fetched {url}")
+
+
+async def test_a_siblings_sidecar_url_is_read_from_disk(db, monkeypatch):
+    from services.tagger import _prepare_cover
+
+    folder = settings.library_dir / "tagger-sidecar"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "01 - Song.jpg").write_bytes(_jpeg(64, 64))
+    monkeypatch.setattr(artwork, "fetch_artwork", _refuse_fetch)
+    async with db() as session:
+        track = _track(file_path=str(folder / "01 - Song.m4a"))
+        session.add(track)
+        await session.commit()
+
+    try:
+        cover = await _prepare_cover(f"/api/library/art/{track.id}")
+    finally:
+        shutil.rmtree(folder)
+
+    assert cover and cover[:2] == b"\xff\xd8"
+
+
+async def test_an_album_cover_url_is_read_from_the_cover_cache(monkeypatch):
+    from services.tagger import _prepare_cover
+
+    key = "a-" + "1" * 20
+    path = artwork.album_cover_path(key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(_jpeg(64, 64))
+    monkeypatch.setattr(artwork, "fetch_artwork", _refuse_fetch)
+
+    try:
+        assert await _prepare_cover(f"/api/albums/{key}/cover") is not None
+        assert await _prepare_cover(f"/api/albums/{'a-' + '2' * 20}/cover") is None
+    finally:
+        path.unlink()

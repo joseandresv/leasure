@@ -13,6 +13,7 @@ os.environ["SPOTIFY_CLIENT_ID"] = ""
 os.environ["SPOTIFY_CLIENT_SECRET"] = ""
 os.environ["GOOGLE_CLIENT_ID"] = ""
 os.environ["ALLOWED_HOSTS"] = '["127.0.0.1","localhost","test"]'
+os.environ.setdefault("ALBUM_INFO_LOOKUPS", "false")
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -87,11 +88,38 @@ def fresh_download_worker():
     return download_worker
 
 
+@pytest.fixture(autouse=True)
+def album_info_reset():
+    """No album-info job state or scan cache leaks between tests."""
+    from services import album_info, local_albums
+
+    album_info.reset_for_tests()
+    local_albums.clear_cache()
+    yield
+    album_info.reset_for_tests()
+    local_albums.clear_cache()
+
+
+@pytest.fixture(autouse=True)
+def no_album_network(monkeypatch):
+    """MusicBrainz/Deezer album lookups and album cover fetches fail loudly unless a test mocks them."""
+    from services import album_info, deezer, musicbrainz
+
+    def refuse(name):
+        async def unmocked(*args, **kwargs):
+            raise AssertionError(f"unmocked {name} call")
+        return unmocked
+
+    monkeypatch.setattr(musicbrainz, "get_checked", refuse("MusicBrainz"))
+    monkeypatch.setattr(deezer, "get_checked", refuse("Deezer"))
+    monkeypatch.setattr(album_info, "_fetch_cover", refuse("album cover"))
+
+
 @pytest_asyncio.fixture
 async def db():
     """Fresh schema; tables are emptied after each test."""
     from db import async_session, engine, init_db
-    from models import CardCopy, Playlist, PlaylistTrack, SupersededFile, SyncHistory, Track
+    from models import AlbumInfo, CardCopy, Playlist, PlaylistTrack, SupersededFile, SyncHistory, Track
 
     db_file = Path(engine.url.database)
     assert_isolated_paths(db_file)
@@ -99,7 +127,7 @@ async def db():
     yield async_session
     assert_isolated_paths(db_file)
     async with async_session() as session:
-        for model in (PlaylistTrack, Playlist, SyncHistory, CardCopy, SupersededFile, Track):
+        for model in (PlaylistTrack, Playlist, SyncHistory, CardCopy, SupersededFile, AlbumInfo, Track):
             await session.execute(delete(model))
         await session.commit()
 

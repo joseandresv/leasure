@@ -1,9 +1,15 @@
+import asyncio
+import hashlib
 import io
 import logging
+import os
+import re
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
 from PIL import Image
+from sqlalchemy import select
 
 from config import settings
 
@@ -13,6 +19,45 @@ logger = logging.getLogger(__name__)
 MAX_ARTWORK_BYTES = 5 * 1024 * 1024
 # Qobuz cover URLs are checked at the source; a redirect could leave that host.
 NO_REDIRECT_HOSTS = frozenset({"static.qobuz.com"})
+_LIBRARY_ART_URL = re.compile(r"/api/library/art/(\d+)")
+_ALBUM_COVER_URL = re.compile(r"/api/albums/(a-[0-9a-f]{20})/cover(?:\?.*)?")
+
+
+def sidecar_art_path(file_path: str | None) -> Path | None:
+    """The track's existing .jpg sidecar, only if it resolves inside the library dir. Blocking."""
+    if not file_path:
+        return None
+    try:
+        jpg = Path(file_path).with_suffix(".jpg").resolve()
+    except (OSError, ValueError):
+        return None
+    if not jpg.is_relative_to(settings.library_dir.resolve()) or not jpg.is_file():
+        return None
+    return jpg
+
+
+def library_art_url(track_id: int) -> str:
+    return f"/api/library/art/{track_id}"
+
+
+def album_cover_path(album_key: str) -> Path:
+    """Where the album view keeps a cover fetched for an album none of whose songs has a sidecar."""
+    return settings.data_dir / "album-covers" / f"{album_key}.jpg"
+
+
+async def local_cover_path(url: str) -> Path | None:
+    """The file behind one of the app's own cover URLs (a track's sidecar or an album cover), if it exists."""
+    if match := _LIBRARY_ART_URL.fullmatch(url):
+        from db import async_session
+        from models import Track
+
+        async with async_session() as session:
+            file_path = await session.scalar(select(Track.file_path).where(Track.id == int(match[1])))
+        return await asyncio.to_thread(sidecar_art_path, file_path)
+    if match := _ALBUM_COVER_URL.fullmatch(url):
+        path = album_cover_path(match[1])
+        return path if await asyncio.to_thread(path.is_file) else None
+    return None
 
 
 def _client(follow_redirects: bool) -> httpx.AsyncClient:
@@ -61,8 +106,47 @@ def prepare_cover(data: bytes, size: int | None = None) -> bytes | None:
         if side > size:
             img = img.resize((size, size), Image.Resampling.LANCZOS)
         buf = io.BytesIO()
-        img.convert("RGB").save(buf, "JPEG", quality=90)
+        # Baseline, not progressive: Rockbox cannot decode progressive JPEG.
+        img.convert("RGB").save(buf, "JPEG", quality=90, progressive=False, optimize=False)
         return buf.getvalue()
     except Exception as e:
         logger.warning("Unusable artwork image (%d bytes): %s", len(data), e)
         return None
+
+
+def _is_baseline(source, max_side: int | None = None) -> bool:
+    try:
+        with Image.open(source) as img:
+            return (img.format == "JPEG" and not (img.info.get("progressive") or img.info.get("progression"))
+                    and (max_side is None or max(img.size) <= max_side))
+    except Exception:
+        return False
+
+
+def is_baseline_jpeg(data: bytes) -> bool:
+    """True for a JPEG that is not progressive (the only kind Rockbox can show)."""
+    return _is_baseline(io.BytesIO(data))
+
+
+def rockbox_sidecar(path: Path, size: int, create: bool = True) -> Path:
+    """The file to copy to a Rockbox card for the sidecar art `path`: `path` itself when it is a baseline JPEG
+    of at most `size` px, else its baseline copy cached in data/card-cache/covers (made when missing unless
+    `create` is False; `path` when none can be made). `path` is never written. Blocking."""
+    if _is_baseline(path, size):
+        return path
+    data = path.read_bytes()
+    cached = settings.data_dir / "card-cache" / "covers" / f"{hashlib.sha256(data).hexdigest()}-{size}.jpg"
+    if cached.is_file():
+        return cached
+    baseline = prepare_cover(data, size) if create else None
+    if baseline is None:
+        return path
+    cached.parent.mkdir(parents=True, exist_ok=True)
+    part = cached.with_name(f"{cached.name}.part")
+    try:
+        part.write_bytes(baseline)
+        os.replace(part, cached)
+    except BaseException:
+        part.unlink(missing_ok=True)
+        raise
+    return cached

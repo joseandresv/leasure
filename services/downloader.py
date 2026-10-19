@@ -5,7 +5,7 @@ from pathlib import Path
 from db import async_session
 from models import Track
 from services import qobuz_engine, yt_engine
-from services.yt_engine import CapDeferred, DownloadFailed
+from services.yt_engine import SEARCHABLE_SOURCES, CapDeferred, DownloadFailed
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,8 @@ async def download_track(track_id: int) -> Path:
         if not track:
             raise DownloadFailed("This track is no longer in the library.")
         quality = track.quality
-        has_source = bool(track.spotify_uri or track.youtube_id)
+        has_source = bool(track.spotify_uri or track.youtube_id) or (
+            track.source in SEARCHABLE_SOURCES and bool(track.title and track.artist))
 
     if quality not in KNOWN_REQUESTS:
         raise DownloadFailed(UNKNOWN_REQUEST_MESSAGE)

@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db import get_session
 from models import Playlist, PlaylistTrack, Track
-from services import library_match, spotify_albums
+from services import album_view, library_match, local_albums, spotify_albums
 from services import spotify_client as sp
 from services import youtube_client as yt
 from services.formats import resolve_format
@@ -24,7 +24,7 @@ from services.music_aggregator import (
     get_unified_playlists,
     get_unified_recent,
     get_unique_artists,
-    known_spotify_album,
+    known_album,
 )
 from services.search import search_all
 from services.tracks import optional_int, refresh_album_track, upsert_track
@@ -176,7 +176,8 @@ async def album_resolve(
     if title or album:
         browse_id = await asyncio.to_thread(find_youtube_album, title, artist, album, duration_ms)
     if not browse_id:
-        return HTMLResponse("<p>No matching album found on YouTube Music.</p>")
+        view = await _library_view(request, session, "", album, artist, notice="Found in your library.")
+        return view or HTMLResponse("<p>No matching album found on YouTube Music.</p>")
     return await _album_detail_response(request, "youtube", browse_id, session)
 
 
@@ -225,63 +226,32 @@ async def _album_rows(session: AsyncSession, provider: str, album: dict, tracks:
     return rows
 
 
-def _library_row(track: Track) -> dict:
-    sources = []
-    if track.spotify_uri:
-        sources.append({"provider": "spotify", "id": track.spotify_uri.rsplit(":", 1)[-1],
-                        "uri": track.spotify_uri, "artist_id": ""})
-    if track.youtube_id:
-        sources.append({"provider": "youtube", "id": track.youtube_id})
-    return {
-        "id": sources[0]["id"] if sources else None,
-        "name": track.title,
-        "artist": track.artist,
-        "track_number": track.track_number,
-        "disc_number": track.disc_number,
-        "duration_ms": track.duration_ms or 0,
-        "uri": track.spotify_uri or "",
-        "isrc": track.isrc,
-        "album_artist": track.album_artist,
-        "year": track.year,
-        "total_tracks": track.total_tracks,
-        "sources": sources,
-        "download_status": track.status,
-        "db": track.quality_readout(),
-    }
-
-
-def _library_album(rows: list[Track], name: str) -> dict:
-    first = rows[0]
-    return {
-        "name": first.album or name,
-        "artist": first.album_artist or first.artist,
-        "album_artist": first.album_artist,
-        "image_url": next((t.artwork_url for t in rows if t.artwork_url), None),
-        "year": first.year,
-        "total_tracks": first.total_tracks or len(rows),
-        "total_discs": first.total_discs,
-    }
-
-
 def _render_album(request: Request, provider: str, album_id: str, album: dict, tracks: list[dict], **extra):
     context = {"album": album, "tracks": tracks, "provider": provider, "album_id": album_id,
                **{key: value for key, value in extra.items() if value}}
     return templates.TemplateResponse(request=request, name="partials/music_album_detail.html", context=context)
 
 
-def _album_name(album_id: str, name: str, artist: str) -> tuple[str, str]:
-    if not name.strip() and (known := known_spotify_album(album_id)):
+def _album_name(album_id: str, name: str, artist: str, provider: str = "spotify") -> tuple[str, str]:
+    if not name.strip() and (known := known_album(provider, album_id)):
         name, artist = known["name"], known["artist"]
     return name.strip(), artist.strip()
 
 
-async def _library_album_response(request: Request, album_id: str, session: AsyncSession, name: str, artist: str,
-                                  *, unavailable_as: str, notice: str | None = None):
-    rows = await library_match.library_album(session, name, artist) if name else []
-    if not rows:
-        return _unavailable("Album", unavailable_as)
-    return _render_album(request, "library", album_id, _library_album(rows, name),
-                         [_library_row(t) for t in rows], notice=notice)
+async def _library_view(request: Request, session: AsyncSession, album_id: str, name: str, artist: str,
+                        notice: str | None = None, retry_url: str | None = None):
+    """The local album view of the library's copy of (name, artist), or None when the library has none."""
+    found = await local_albums.find_key(session, name, artist) if name else None
+    if found is None:
+        return None
+    key, exact = found
+    context = await album_view.build_context(session, key, album_id=album_id, notice=notice, retry_url=retry_url)
+    if context is None:
+        return None
+    if not exact:
+        shown = f"Showing your library's '{context['album']['name']}'."
+        context["notice"] = f"{context['notice']} {shown}" if context.get("notice") else shown
+    return templates.TemplateResponse(request=request, name="partials/album_view.html", context=context)
 
 
 async def _spotify_album_fallback(request: Request, album_id: str, session: AsyncSession, name: str, artist: str):
@@ -294,10 +264,11 @@ async def _spotify_album_fallback(request: Request, album_id: str, session: Asyn
         rows = await _album_rows(session, "youtube", data["album"], data["tracks"], (name,))
         return _render_album(request, "youtube", browse_id, data["album"], rows,
                              **_youtube_stand_in({"id": album_id, "name": name}))
-    return await _library_album_response(
-        request, album_id, session, name, artist, unavailable_as="spotify",
-        notice=f"{_spotify_down()}, so this shows the songs already in your library. "
-               "The full tracklist will be available when Spotify answers again.")
+    view = await _library_view(
+        request, session, album_id, name, artist,
+        notice=f"{_spotify_down()}, so this shows your library's copy of this album.",
+        retry_url=album_view.album_detail_url("spotify", album_id, name, artist))
+    return view or _unavailable("Album", "spotify")
 
 
 async def _album_detail_response(request: Request, provider: str, album_id: str, session: AsyncSession,
@@ -309,9 +280,13 @@ async def _album_detail_response(request: Request, provider: str, album_id: str,
             return await _spotify_album_fallback(request, album_id, session, name, artist)
     elif provider == "youtube":
         data = await asyncio.to_thread(yt.get_album_tracks, album_id)
+        if not data:
+            view = await _library_view(request, session, album_id, *_album_name(album_id, name, artist, "youtube"),
+                                       notice="YouTube Music did not answer, so this shows your library's copy.")
+            return view or _unavailable("Album", provider)
     elif provider == "library":
-        return await _library_album_response(request, album_id, session, *_album_name(album_id, name, artist),
-                                             unavailable_as="library")
+        view = await _library_view(request, session, album_id, *_album_name(album_id, name, artist))
+        return view or _unavailable("Album", "library")
 
     if not data:
         return _unavailable("Album", provider)

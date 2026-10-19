@@ -18,7 +18,15 @@
             <td style="font-family: var(--font-mono); color: var(--text-muted);">{{ t.track_number or '-' }}</td>
             <td>{{ t.title }}</td>
             <td>{{ t.artist }}</td>
-            <td>{{ t.album or '-' }}</td>
+            <td>
+                {%- if t.album_key -%}
+                <button type="button" class="album-link"
+                        hx-get="/api/albums/{{ t.album_key | urlencode }}/html" hx-target="#library-detail"
+                        hx-swap="innerHTML" data-opens-detail="Loading album…">
+                    {{- 'Loose song' if t.album_key == 'loose' else t.album -}}
+                </button>
+                {%- else -%}{{ t.album or '-' }}{%- endif -%}
+            </td>
             <td>
                 {{ quality_badge(t) }}
                 {% if t.upgrade_state == 'error' and t.upgrade_error %}

@@ -85,6 +85,7 @@ async def test_files_and_new_folders_take_whole_clusters_on_the_card(client, db,
 @pytest.mark.asyncio
 async def test_a_file_too_large_for_fat32_is_skipped(client, db, fake_device, tmp_path, monkeypatch):
     monkeypatch.setattr(device_router, "_MAX_CARD_FILE_BYTES", 1000)
+    monkeypatch.setattr(device_router, "card_filesystem", lambda path: "fat")
     await _add(db, _write(tmp_path / "lib" / "Big.flac", 2000), "Big")
 
     done = await _sync(client, fake_device)
@@ -94,8 +95,23 @@ async def test_a_file_too_large_for_fat32_is_skipped(client, db, fake_device, tm
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("fs", ["exfat", None])
+async def test_a_file_over_the_fat32_limit_is_copied_to_a_stock_card_that_is_not_fat32(client, db, fake_device,
+                                                                                      tmp_path, monkeypatch, fs):
+    monkeypatch.setattr(device_router, "_MAX_CARD_FILE_BYTES", 1000)
+    monkeypatch.setattr(device_router, "card_filesystem", lambda path: fs)
+    await _add(db, _write(tmp_path / "lib" / "Big.flac", 2000), "Big")
+
+    done = await _sync(client, fake_device)
+
+    assert done["errors"] == [] and done["copied"] == 1
+
+
+@pytest.mark.asyncio
 async def test_a_path_too_long_for_windows_is_skipped(client, db, fake_device, tmp_path, monkeypatch):
     monkeypatch.setattr(device_router, "get_platform", lambda: "wsl2")
+    # build_device_path caps card paths at 250 bytes now, so only a lower limit still trips the precheck.
+    monkeypatch.setattr(device_router, "_MAX_CARD_PATH", 200)
     title = "T" * 195
     async with db() as session:
         session.add(Track(title=title, artist="A" * 40, album="B" * 40, track_number=1, status="done",
@@ -124,6 +140,7 @@ def diff_context(monkeypatch):
 @pytest.mark.asyncio
 async def test_the_diff_shows_space_and_the_old_copies(client, db, fake_device, tmp_path, monkeypatch, diff_context):
     monkeypatch.setattr(device_router, "_MAX_CARD_FILE_BYTES", 5000)
+    monkeypatch.setattr(device_router, "card_filesystem", lambda path: "fat")
     monkeypatch.setattr(device_router, "_cluster_bytes", lambda target: 1)
     old = _write(tmp_path / "lib" / "Song.m4a", 3000)
     track = await _add(db, old, "Song")

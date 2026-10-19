@@ -4,6 +4,15 @@
 {% set kept_reasons = {"changed_on_card": "changed on the card — remove by hand if unwanted",
                        "path_in_use": "another track uses this path",
                        "waiting": "waits for the FLAC copy"} %}
+{% if profile %}
+<p class="sync-card">Card: <strong>{{ "Rockbox card" if profile == "rockbox" else "Stock H2" }}</strong></p>
+{% if profile == "rockbox" %}
+<p class="sync-card-note">Playlists go to {{ playlist_dir | default("/Playlists") }}; each album folder gets a cover.jpg; /.rockbox is never touched.</p>
+{% endif %}
+{% endif %}
+{% if fs_warning %}
+<p class="sync-warning" role="alert">{{ fs_warning }}</p>
+{% endif %}
 <div style="margin-bottom: var(--space-md);">
     <strong>{{ to_add | length }}</strong> to add &middot;
     <strong>{{ already_synced | length }}</strong> already on device &middot;
@@ -101,5 +110,8 @@
     </div>
     {% endfor %}
 </details>
+{% endif %}
+{% if db_reminder %}
+<p class="sync-reminder">{{ db_reminder }}</p>
 {% endif %}
 {% endif %}

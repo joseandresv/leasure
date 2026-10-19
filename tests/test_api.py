@@ -638,7 +638,7 @@ async def test_the_legacy_sync_counts_as_a_running_sync_for_eject(client, db, fa
     await _add_track(db, title="Song", artist="A", album="B", status="done", file_path=str(src), format="mp3")
     seen = []
 
-    def copy_while_checking(src, target, track):
+    def copy_while_checking(src, target, track, profile):
         seen.append(device_router._sync_running_to(str(fake_device)))
         return [device_router._Written("audio", "A/B/Song.mp3", src, True)]
 
@@ -672,7 +672,7 @@ async def test_an_album_refresh_during_a_sync_is_not_marked_synced_by_it(client,
             row.track_number, row.file_path, row.synced_at = 3, str(tmp_path / "03 - Refreshed.m4a"), None
             await session.commit()
 
-    def copy_then_refresh(src, target, track):
+    def copy_then_refresh(src, target, track, profile):
         if track.id == refreshed.id:
             asyncio.run_coroutine_threadsafe(album_download_renumbers(), loop).result(5)
         return [device_router._Written("audio", f"A/B/{src.name}", src, True)]

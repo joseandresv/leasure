@@ -17,11 +17,12 @@ import re
 import tempfile
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
+from typing import NoReturn
 
 import httpx
 
@@ -40,9 +41,13 @@ CHUNK_SIZE = 1024**2
 MAX_CDN_REDIRECTS = 5
 LOGIN_SHAPES = ("header", "form", "query")
 LOWER_FORMAT = {27: 7, 7: 6}
+FAVORITE_TYPES = ("tracks", "albums", "artists")
+LIBRARY_PAGE_SIZE, LIBRARY_FALLBACK_PAGE_SIZE = 500, 100
+LIBRARY_PAGE_CAP = 50
 
 APP_ERROR_MESSAGE = "Qobuz changed its web player and Leasure cannot sign requests right now."
 NETWORK_ERROR_MESSAGE = "Could not reach Qobuz — check the network connection."
+SHAPE_ERROR_MESSAGE = "Qobuz answered in a shape Leasure does not know."
 CDN_ERROR_MESSAGE = "The Qobuz download failed on the network — retry later."
 
 _BUNDLE_URL_RE = re.compile(r'<script src="(/resources/(\d+\.\d+\.\d+-[a-z]\d{3})/bundle\.js)"')
@@ -81,6 +86,7 @@ class QobuzRateLimitError(QobuzError):
 
 
 class QobuzNotFoundError(QobuzError): ...
+class QobuzShapeError(QobuzError): ...
 
 
 NOT_STREAMABLE_MESSAGES = {
@@ -135,6 +141,7 @@ class AppCredentials:
     bundle_version: str | None = None
     login_shape: str | None = None
     fetched_at: str = ""
+    favorites_signed: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -169,6 +176,7 @@ class QobuzTrack:
     streamable: bool | None
     hires_streamable: bool | None
     cover_url: str | None
+    favorited_at: int | None = None
     raw: dict = field(default_factory=dict, repr=False, compare=False)
 
     @property
@@ -176,6 +184,60 @@ class QobuzTrack:
         if self.version and self.version.casefold() not in self.title.casefold():
             return f"{self.title} ({self.version})"
         return self.title
+
+
+@dataclass(frozen=True)
+class QobuzAlbum:
+    id: str
+    title: str
+    version: str | None
+    artist: str
+    upc: str | None
+    tracks_count: int | None
+    media_count: int | None
+    duration_s: int | None
+    year: int | None
+    max_bit_depth: int | None
+    max_sampling_rate: float | None
+    streamable: bool | None
+    hires_streamable: bool | None
+    cover_url: str | None
+    favorited_at: int | None = None
+    raw: dict = field(default_factory=dict, repr=False, compare=False)
+
+
+@dataclass(frozen=True)
+class QobuzArtist:
+    id: str
+    name: str
+    albums_count: int | None
+    image_url: str | None
+    favorited_at: int | None = None
+    raw: dict = field(default_factory=dict, repr=False, compare=False)
+
+
+@dataclass(frozen=True)
+class QobuzPlaylist:
+    id: str
+    name: str
+    tracks_count: int | None
+    owner_id: str | None
+    owner_name: str | None
+    updated_at: int | None
+    is_public: bool | None
+    is_collaborative: bool | None
+    raw: dict = field(default_factory=dict, repr=False, compare=False)
+
+
+@dataclass(frozen=True)
+class QobuzPage:
+    """One page of a list answer. `raw_count` counts every item sent, parsed or not: paging advances by it."""
+    items: list
+    total: int | None
+    offset: int
+    limit: int | None
+    raw_count: int
+    raw: dict = field(default_factory=dict, repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -250,6 +312,12 @@ def normalise_isrc(value: str | None) -> str | None:
 def request_signature(track_id: str, format_id: int, timestamp: str, secret: str) -> str:
     raw = f"trackgetFileUrlformat_id{format_id}intentstreamtrack_id{track_id}{timestamp}{secret}"
     return hashlib.md5(raw.encode("utf-8")).hexdigest()
+
+
+def library_signature(endpoint: str, timestamp: str, secret: str) -> str:
+    """md5(object + method + ts + secret) with no parameters, as qobuz-dl signs favorite/getUserFavorites.
+    Unverified for the other library endpoints."""
+    return hashlib.md5(f"{endpoint.replace('/', '')}{timestamp}{secret}".encode()).hexdigest()
 
 
 def parse_bundle_url(login_html: str) -> tuple[str, str]:
@@ -477,8 +545,88 @@ def _parse_track(item: dict) -> QobuzTrack | None:
         streamable=_bool(item.get("streamable")),
         hires_streamable=_bool(item.get("hires_streamable")),
         cover_url=_safe_cover_url(cover),
+        favorited_at=_int(item.get("favorited_at")),
         raw=item,
     )
+
+
+def _year(value) -> int | None:
+    return _int(value[:4]) if isinstance(value, str) and len(value) >= 4 else None
+
+
+def _image_url(image) -> str | None:
+    image = image if isinstance(image, dict) else {}
+    return _safe_cover_url(image.get("large") or image.get("small") or image.get("thumbnail"))
+
+
+def _id(value) -> str | None:
+    return str(value) if value not in (None, "") and isinstance(value, int | str) else None
+
+
+def _parse_album(item: dict) -> QobuzAlbum | None:
+    if not isinstance(item, dict) or _id(item.get("id")) is None:
+        return None
+    artist = item.get("artist") if isinstance(item.get("artist"), dict) else {}
+    return QobuzAlbum(
+        id=_id(item["id"]),
+        title=_text(item.get("title")) or "",
+        version=_text(item.get("version")),
+        artist=_text(artist.get("name")) or "",
+        upc=_text(item.get("upc")),
+        tracks_count=_int(item.get("tracks_count")),
+        media_count=_int(item.get("media_count")),
+        duration_s=_int(item.get("duration")),
+        year=_year(item.get("release_date_original")),
+        max_bit_depth=_int(item.get("maximum_bit_depth")),
+        max_sampling_rate=_khz(item.get("maximum_sampling_rate")),
+        streamable=_bool(item.get("streamable")),
+        hires_streamable=_bool(item.get("hires_streamable")),
+        cover_url=_image_url(item.get("image")),
+        favorited_at=_int(item.get("favorited_at")),
+        raw=item,
+    )
+
+
+def _parse_artist(item: dict) -> QobuzArtist | None:
+    if not isinstance(item, dict) or _id(item.get("id")) is None:
+        return None
+    return QobuzArtist(id=_id(item["id"]), name=_text(item.get("name")) or "",
+                       albums_count=_int(item.get("albums_count")), image_url=_image_url(item.get("image")),
+                       favorited_at=_int(item.get("favorited_at")), raw=item)
+
+
+def _parse_playlist(item: dict) -> QobuzPlaylist | None:
+    if not isinstance(item, dict) or _id(item.get("id")) is None:
+        return None
+    owner = item.get("owner") if isinstance(item.get("owner"), dict) else {}
+    return QobuzPlaylist(id=_id(item["id"]), name=_text(item.get("name")) or "",
+                         tracks_count=_int(item.get("tracks_count")), owner_id=_id(owner.get("id")),
+                         owner_name=_text(owner.get("name")), updated_at=_int(item.get("updated_at")),
+                         is_public=_bool(item.get("is_public")), is_collaborative=_bool(item.get("is_collaborative")),
+                         raw=item)
+
+
+_FAVORITE_PARSERS = {"tracks": _parse_track, "albums": _parse_album, "artists": _parse_artist}
+
+
+def _page(data: dict, key: str, parse: Callable[[dict], object], offset: int) -> QobuzPage:
+    block = data.get(key)
+    if not isinstance(block, dict) or not isinstance(block.get("items"), list):
+        raise QobuzShapeError(SHAPE_ERROR_MESSAGE)
+    items = block["items"]
+    return QobuzPage(items=[p for p in map(parse, items) if p is not None], total=_int(block.get("total")),
+                     offset=offset, limit=_int(block.get("limit")), raw_count=len(items), raw=data)
+
+
+def _is_signature_refusal(resp: httpx.Response) -> bool:
+    if resp.status_code != 400:
+        return False
+    message = _api_message(resp).lower()
+    return "signature" in message or "request_sig" in message
+
+
+def _is_parameter_refusal(error: QobuzError) -> bool:
+    return type(error) is QobuzError and error.status == 400
 
 
 def _parse_file_url(data: dict, requested_format_id: int) -> FileUrl:
@@ -526,6 +674,14 @@ def _check_cdn_url(url: str) -> httpx.URL:
     if u.scheme != "https" or u.port is not None or u.userinfo or not host.endswith(CDN_HOST_SUFFIXES):
         raise QobuzDownloadError("Qobuz sent the file from an unexpected host.")
     return u
+
+
+def _names_app_id(resp: httpx.Response) -> bool:
+    """A 400 that blames the app_id (and not the signature): the web player may have a new one."""
+    if resp.status_code != 400:
+        return False
+    lowered = _api_message(resp).lower()
+    return "app_id" in lowered and "signature" not in lowered and "request_sig" not in lowered
 
 
 def _api_message(resp: httpx.Response) -> str:
@@ -584,6 +740,9 @@ class QobuzClient:
         self._app: AppCredentials | None = None
         self._scraped_here = False
         self._auth_confirmed: bool | None = None
+        self._library_signed: dict[str, bool] = {}
+        self.library_attempts: tuple[tuple[str, int], ...] = ()
+        self.library_page_size = LIBRARY_PAGE_SIZE
         headers = {"User-Agent": USER_AGENT}
         self._api_http = httpx.Client(base_url=API_BASE, headers=headers, follow_redirects=False,
                                       timeout=api_timeout, transport=transport)
@@ -653,7 +812,8 @@ class QobuzClient:
         return AppCredentials(app_id=app_id, secrets=secrets, secret=secret,
                               bundle_version=data.get("bundle_version") if isinstance(data.get("bundle_version"), str) else None,
                               login_shape=shape if shape in LOGIN_SHAPES else None,
-                              fetched_at=str(data.get("fetched_at") or ""))
+                              fetched_at=str(data.get("fetched_at") or ""),
+                              favorites_signed=_bool(data.get("favorites_signed")))
 
     def _scrape(self, previous: AppCredentials | None) -> AppCredentials:
         global _last_scrape_at
@@ -667,7 +827,8 @@ class QobuzClient:
             secret=previous.secret if same_app and previous.secret in secrets else None,
             bundle_version=version,
             login_shape=previous.login_shape if same_app else None,
-            fetched_at=_utc_iso())
+            fetched_at=_utc_iso(),
+            favorites_signed=previous.favorites_signed if same_app else None)
         logger.info("Qobuz app credentials scraped (bundle %s, %d secrets)", version, len(secrets))
         self._persist(app)
         return app
@@ -686,7 +847,8 @@ class QobuzClient:
 
     def _persist(self, app: AppCredentials) -> None:
         payload = {"app_id": app.app_id, "secrets": list(app.secrets), "secret": app.secret,
-                   "bundle_version": app.bundle_version, "login_shape": app.login_shape, "fetched_at": app.fetched_at}
+                   "bundle_version": app.bundle_version, "login_shape": app.login_shape, "fetched_at": app.fetched_at,
+                   "favorites_signed": app.favorites_signed}
         try:
             self._write_text(self._app_cache_path, json.dumps(payload, indent=2))
         except OSError as e:
@@ -726,17 +888,20 @@ class QobuzClient:
              app_retry: bool = True) -> dict:
         app_id = self.app_credentials().app_id
         resp = self._send(method, endpoint, params=params)
-        status = resp.status_code
-        if status == 200:
+        if resp.status_code == 200:
             return self._json(resp)
+        if app_retry and _names_app_id(resp) and self.app_credentials(refresh=True).app_id != app_id:
+            return self._api(method, endpoint, params=params, file_url=file_url, app_retry=False)
+        self._raise_refusal(resp, file_url=file_url)
+
+    def _raise_refusal(self, resp: httpx.Response, *, file_url: bool = False) -> NoReturn:
+        status = resp.status_code
         if status == 400:
             message = _api_message(resp)
             lowered = message.lower()
-            if "signature" in lowered or "request_sig" in lowered:
+            if _is_signature_refusal(resp):
                 raise _SignatureRejected(APP_ERROR_MESSAGE, status=400)
             if "app_id" in lowered:
-                if app_retry and self.app_credentials(refresh=True).app_id != app_id:
-                    return self._api(method, endpoint, params=params, file_url=file_url, app_retry=False)
                 raise QobuzAppError(APP_ERROR_MESSAGE, status=400)
             raise QobuzError(_sanitise(message), status=400)
         if status == 401:
@@ -757,6 +922,137 @@ class QobuzClient:
             raise QobuzRateLimitError("Qobuz asked Leasure to slow down.",
                                       retry_after=parse_retry_after(resp.headers.get("retry-after")))
         raise QobuzError("Qobuz refused this request.", status=status)
+
+    def _library_get(self, endpoint: str, params: dict) -> dict:
+        """GET for the user's favorites and playlists. The first call to each endpoint goes unsigned, and
+        a 400/401/403 there is retried once signed with the secret getFileUrl proved (never the other
+        candidates), so with a proven secret a refusal of the unsigned call costs no login. The mode that
+        answered is kept per endpoint for the rest of this client and remembered in the app cache as
+        `favorites_signed`."""
+        app = self.app_credentials()
+        if endpoint not in self._library_signed:
+            modes = [False, True] if app.secret else [False]
+        else:
+            modes = [self._library_signed[endpoint] and bool(app.secret)]
+        attempts: list[tuple[str, int]] = []
+        answers: list[httpx.Response] = []
+        try:
+            for signed in modes:
+                sent = dict(params)
+                if signed:
+                    ts = str(int(time.time()))
+                    sent.update(request_ts=ts, request_sig=library_signature(endpoint, ts, app.secret))
+                resp = self._send("GET", endpoint, params=sent)
+                attempts.append(("signed" if signed else "unsigned", resp.status_code))
+                answers.append(resp)
+                if resp.status_code == 200:
+                    self._library_signed[endpoint] = signed
+                    self._update_app(favorites_signed=signed)
+                    return self._json(resp)
+                if resp.status_code not in (400, 401, 403):
+                    break
+        finally:
+            self.library_attempts = tuple(attempts)
+        logger.info("Qobuz %s refused (%s)", endpoint, ", ".join(f"{m} {s}" for m, s in attempts))
+        # A rejected signature says nothing about the unsigned 400 (a refused `limit`, say): raise that one.
+        if len(answers) == 2 and answers[0].status_code == 400 and _is_signature_refusal(answers[1]):
+            resp = answers[0]
+        self._raise_refusal(resp)
+
+    def _pages(self, fetch: Callable[[int, int], QobuzPage], offset: int, page_cap: int) -> Iterator[QobuzPage]:
+        """Pages until an empty page, `offset >= total` or `page_cap`. One 400 on a large page size steps
+        down to LIBRARY_FALLBACK_PAGE_SIZE for this client."""
+        for _ in range(page_cap):
+            try:
+                page = fetch(self.library_page_size, offset)
+            except QobuzError as e:
+                if not _is_parameter_refusal(e) or self.library_page_size <= LIBRARY_FALLBACK_PAGE_SIZE:
+                    raise
+                logger.info("Qobuz refused page size %s; using %s", self.library_page_size, LIBRARY_FALLBACK_PAGE_SIZE)
+                self.library_page_size = LIBRARY_FALLBACK_PAGE_SIZE
+                page = fetch(self.library_page_size, offset)
+            yield page
+            offset += page.raw_count
+            if not page.raw_count or (page.total is not None and offset >= page.total):
+                return
+
+    @_network_guard(QobuzNetworkError, NETWORK_ERROR_MESSAGE)
+    def favorite_ids(self) -> dict[str, list[str]]:
+        """Favorite ids per type present in the answer. Paging and limits are unknown: compare each list's
+        length with favorites(type).total before trusting it as complete."""
+        data = self._library_get("favorite/getUserFavoriteIds", {"user_id": self.user_id})
+        ids = {kind: [i for i in map(_id, data[kind]) if i] for kind in FAVORITE_TYPES if isinstance(data.get(kind), list)}
+        if not ids:
+            raise QobuzShapeError(SHAPE_ERROR_MESSAGE)
+        return ids
+
+    @_network_guard(QobuzNetworkError, NETWORK_ERROR_MESSAGE)
+    def favorites(self, kind: str, *, limit: int = LIBRARY_PAGE_SIZE, offset: int = 0) -> QobuzPage:
+        """One page of favorite tracks, albums or artists (QobuzTrack / QobuzAlbum / QobuzArtist)."""
+        if kind not in FAVORITE_TYPES:
+            raise ValueError(f"unknown Qobuz favorite type {kind!r}")
+        data = self._library_get("favorite/getUserFavorites",
+                                 {"user_id": self.user_id, "type": kind, "limit": limit, "offset": offset})
+        return _page(data, kind, _FAVORITE_PARSERS[kind], offset)
+
+    def iter_favorites(self, kind: str, *, offset: int = 0, page_cap: int = LIBRARY_PAGE_CAP) -> Iterator[QobuzPage]:
+        return self._pages(lambda limit, at: self.favorites(kind, limit=limit, offset=at), offset, page_cap)
+
+    @_network_guard(QobuzNetworkError, NETWORK_ERROR_MESSAGE)
+    def user_playlists(self, *, limit: int = LIBRARY_PAGE_SIZE, offset: int = 0,
+                       owner_filter: str | None = None) -> QobuzPage:
+        """One page of the user's playlists; `owner_filter` "owner" | "subscriber" is unverified."""
+        params: dict = {"limit": limit, "offset": offset}
+        if owner_filter is not None:
+            params["filter"] = owner_filter
+        return _page(self._library_get("playlist/getUserPlaylists", params), "playlists", _parse_playlist, offset)
+
+    def iter_user_playlists(self, *, offset: int = 0, page_cap: int = LIBRARY_PAGE_CAP) -> Iterator[QobuzPage]:
+        return self._pages(lambda limit, at: self.user_playlists(limit=limit, offset=at), offset, page_cap)
+
+    @_network_guard(QobuzNetworkError, NETWORK_ERROR_MESSAGE)
+    def playlist(self, playlist_id: str, *, limit: int = LIBRARY_PAGE_SIZE,
+                 offset: int = 0) -> tuple[QobuzPlaylist, QobuzPage]:
+        data = self._library_get("playlist/get",
+                                 {"playlist_id": playlist_id, "extra": "tracks", "limit": limit, "offset": offset})
+        playlist = _parse_playlist(data)
+        if playlist is None:
+            raise QobuzShapeError(SHAPE_ERROR_MESSAGE)
+        return playlist, _page(data, "tracks", _parse_track, offset)
+
+    def iter_playlist_tracks(self, playlist_id: str, *, offset: int = 0,
+                             page_cap: int = LIBRARY_PAGE_CAP) -> Iterator[QobuzPage]:
+        return self._pages(lambda limit, at: self.playlist(playlist_id, limit=limit, offset=at)[1], offset, page_cap)
+
+    @_network_guard(QobuzNetworkError, NETWORK_ERROR_MESSAGE)
+    def album_page(self, album_id: str, *, limit: int = LIBRARY_PAGE_SIZE,
+                   offset: int = 0) -> tuple[QobuzAlbum, QobuzPage]:
+        """album/get; its track items carry no `album`, so each is parsed with the parent album filled in."""
+        data = self._api("GET", "album/get", params={"album_id": album_id, "limit": limit, "offset": offset})
+        album = _parse_album(data)
+        if album is None:
+            raise QobuzShapeError(SHAPE_ERROR_MESSAGE)
+        parent = {k: v for k, v in data.items() if k != "tracks"}
+        page = _page(data, "tracks", lambda item: _parse_track(
+            {**item, "album": item.get("album") or parent} if isinstance(item, dict) else item), offset)
+        return album, page
+
+    def get_album(self, album_id: str, *, page_cap: int = LIBRARY_PAGE_CAP) -> tuple[QobuzAlbum, list[QobuzTrack]]:
+        """The album and its whole tracklist, paging with `offset` while `total` is larger than what came."""
+        album, page = self.album_page(album_id)
+        tracks, offset = list(page.items), page.raw_count
+        for _ in range(page_cap - 1):
+            if not page.raw_count or page.total is None or offset >= page.total:
+                break
+            page = self.album_page(album_id, offset=offset)[1]
+            seen = {t.id for t in tracks}
+            fresh = [t for t in page.items if t.id not in seen]
+            # Unverified that album/get honours `offset`: a page with nothing new ends the read.
+            if not fresh:
+                break
+            tracks += fresh
+            offset += page.raw_count
+        return album, tracks
 
     @staticmethod
     def _json(resp: httpx.Response) -> dict:

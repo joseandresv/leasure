@@ -1,6 +1,5 @@
 import asyncio
 from collections import Counter, defaultdict
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
@@ -8,30 +7,14 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from config import settings
 from db import get_session
 from models import Track
+from services.artwork import library_art_url, sidecar_art_path
+from services.local_albums import LOOSE_KEY, album_key
 from services.tagger import primary_artist
 
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
-
-
-def sidecar_art_path(file_path: str | None) -> Path | None:
-    """The track's existing .jpg sidecar, only if it resolves inside the library dir. Blocking."""
-    if not file_path:
-        return None
-    try:
-        jpg = Path(file_path).with_suffix(".jpg").resolve()
-    except (OSError, ValueError):
-        return None
-    if not jpg.is_relative_to(settings.library_dir.resolve()) or not jpg.is_file():
-        return None
-    return jpg
-
-
-def library_art_url(track_id: int) -> str:
-    return f"/api/library/art/{track_id}"
 
 
 def sidecar_art_url(tracks: list[tuple[int, str | None]], tries: int = 3) -> str | None:
@@ -115,6 +98,11 @@ async def list_tracks(
     ]
 
 
+def _row_album_key(track: Track) -> str:
+    key = album_key(track.album, track.album_artist, track.artist)
+    return key.key if key else LOOSE_KEY
+
+
 @router.get("/tracks/html")
 async def list_tracks_html(
     request: Request,
@@ -128,6 +116,7 @@ async def list_tracks_html(
                                       context={"tracks": [
                                           {"id": t.id, "title": t.title, "artist": t.artist,
                                            "album": t.album, "track_number": t.track_number,
+                                           "album_key": _row_album_key(t),
                                            "synced_at": t.synced_at, **t.quality_readout()}
                                           for t in tracks
                                       ]})

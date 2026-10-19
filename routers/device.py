@@ -20,13 +20,35 @@ from sqlalchemy import delete, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from config import settings
 from db import async_session, get_session
 from models import CardCopy, Playlist, PlaylistTrack, SupersededFile, SyncHistory, Track, utc_now
-from services import wsl_mount
-from services.device import build_device_path, detect_devices, detect_stale_wsl2, resolve_sync_target
+from services import artwork, wsl_mount
+from services.covers import COVER_NAME, MAX_COVER_PX, CoverResult, sweep_album_covers, write_album_covers
+from services.device import (
+    CARD_PROFILE_ROCKBOX,
+    CARD_PROFILE_STOCK,
+    ROCKBOX_DB_REMINDER,
+    build_device_path,
+    card_filesystem,
+    card_profile,
+    detect_devices,
+    detect_stale_wsl2,
+    inside_real_dirs,
+    is_protected_card_path,
+    remove_empty_card_dirs,
+    resolve_sync_target,
+    rockbox_fs_warning,
+    safe_card_rel,
+    sidecar_rel,
+)
 from services.platform import device_path_placeholder, get_platform
 from services.playlist import (
+    PLAYLIST_DIR_ROCKBOX,
+    ForeignPlaylistError,
     generate_m3u,
+    playlist_dir,
+    prepare_playlist_dir,
     record_generated_playlists,
     sanitize_playlist_stem,
     sweep_orphan_playlists,
@@ -39,7 +61,6 @@ templates.env.globals["platform"] = get_platform()
 templates.env.globals["device_path_placeholder"] = device_path_placeholder()
 
 DEVICE_AUDIO_EXTS = {".mp3", ".flac", ".wav", ".ape", ".dsf", ".dff", ".ogg", ".m4a", ".opus"}
-SYSTEM_FOLDER_NAMES = ("$RECYCLE.BIN", "System Volume Information", ".Trash-1000")
 
 
 def _is_accessible(path: Path) -> bool:
@@ -251,8 +272,12 @@ def _device_rel_path(track: Track, ext: str) -> str:
                              total_discs=track.total_discs)
 
 
+def _audio_rel_path(track: Track) -> str:
+    return _device_rel_path(track, Path(track.file_path).suffix.lstrip("."))
+
+
 def _album_order_key(track: Track) -> tuple:
-    album_dir = PurePosixPath(_device_rel_path(track, "x")).parent.as_posix().casefold()
+    album_dir = PurePosixPath(_audio_rel_path(track)).parent.as_posix().casefold()
     return (album_dir, track.disc_number or 1, track.track_number or 10**6, (track.title or "").casefold(), track.id)
 
 
@@ -338,20 +363,42 @@ class _Written:
     copied: bool
 
 
-def _track_files(src: Path, track: Track) -> list[tuple[str, Path, str]]:
-    """(kind, library file, card rel path) of the audio file and the sidecars it has, audio first."""
-    files = [("audio", src, _device_rel_path(track, src.suffix.lstrip(".")))]
+def _rockbox_art(sidecar: Path, create: bool) -> Path:
+    """Rockbox shows <track>.jpg before cover.jpg and cannot decode progressive JPEG: the card gets a cached
+    baseline copy of such a sidecar, and the library file stays as it is."""
+    try:
+        return artwork.rockbox_sidecar(sidecar, min(settings.artwork_size, MAX_COVER_PX), create=create)
+    except OSError as e:
+        logger.warning("Could not make a baseline JPEG of %s: %s", sidecar, e)
+        return sidecar
+
+
+def _track_files(src: Path, track: Track, profile: str = CARD_PROFILE_STOCK,
+                 cache_art: bool = False) -> list[tuple[str, Path, str]]:
+    """(kind, source file, card rel path) of the audio file and the sidecars it has, audio first.
+    On a Rockbox card a sidecar that would be the album's cover.jpg (an unnumbered track titled "Cover")
+    is left out: the album's cover.jpg takes its place. Its other art sidecars come from the baseline
+    cache (made when missing only with `cache_art`)."""
+    audio_rel = _device_rel_path(track, src.suffix.lstrip("."))
+    files = [("audio", src, audio_rel)]
     for kind in ("jpg", "lrc"):
         sidecar = src.with_suffix(f".{kind}")
+        rel = sidecar_rel(audio_rel, f".{kind}")
+        if profile == CARD_PROFILE_ROCKBOX and PurePosixPath(rel).name.casefold() == COVER_NAME:
+            continue
         if sidecar.exists():
-            files.append((kind, sidecar, _device_rel_path(track, kind)))
+            if kind == "jpg" and profile == CARD_PROFILE_ROCKBOX:
+                sidecar = _rockbox_art(sidecar, cache_art)
+            files.append((kind, sidecar, rel))
     return files
 
 
-def _copy_track(src: Path, target: Path, track: Track) -> list[_Written]:
+def _copy_track(src: Path, target: Path, track: Track, profile: str = CARD_PROFILE_STOCK) -> list[_Written]:
     """Copy the audio file plus its .jpg/.lrc sidecars, skipping files the card already
     holds unchanged. Runs in a worker thread. The audio file comes first."""
-    files = _track_files(src, track)
+    files = _track_files(src, track, profile, cache_art=True)
+    if any(is_protected_card_path(rel) for _, _, rel in files):
+        raise ValueError("protected card path")
     (target / files[0][2]).parent.mkdir(parents=True, exist_ok=True)
     return [_Written(kind, rel, file_src, _copy_file(file_src, target / rel)) for kind, file_src, rel in files]
 
@@ -376,9 +423,10 @@ def _card_copy_values(written: list[_Written], track_id: int, card_id: str, know
     return rows
 
 
-def _sync_track(src: Path, target: Path, track: Track, card_id: str, known: dict) -> tuple[int | None, list[dict]]:
+def _sync_track(src: Path, target: Path, track: Track, card_id: str, known: dict,
+                profile: str = CARD_PROFILE_STOCK) -> tuple[int | None, list[dict]]:
     """Copy one track (thread-side): the audio bytes written (None when already current) and its CardCopy values."""
-    written = _copy_track(src, target, track)
+    written = _copy_track(src, target, track, profile)
     audio = written[0]
     return (audio.src.stat().st_size if audio.copied else None), _card_copy_values(written, track.id, card_id, known)
 
@@ -436,7 +484,13 @@ def _cluster_bytes(target: Path) -> int:
     return _DEFAULT_CLUSTER_BYTES
 
 
-def _plan_space(target: Path, tracks: list[Track]) -> _SpacePlan:
+def _fat_file_limit(target: Path) -> bool:
+    """True on a FAT32 card, and on a Rockbox card whose filesystem cannot be read (Rockbox reads FAT32 only)."""
+    fs = card_filesystem(str(target))
+    return fs == "fat" or (fs is None and card_profile(target) == CARD_PROFILE_ROCKBOX)
+
+
+def _plan_space(target: Path, tracks: list[Track], profile: str = CARD_PROFILE_STOCK) -> _SpacePlan:
     """Walk the files in sync order (thread-side). A replaced file still occupies the card while its
     .leasure-part copy is written, and the superseded copies the cleanup removes afterwards are not credited."""
     plan = _SpacePlan(free_bytes=_free_bytes(target))
@@ -448,16 +502,21 @@ def _plan_space(target: Path, tracks: list[Track]) -> _SpacePlan:
 
     new_dirs: set[str] = set()
     used = peak = 0
+    fat_limit: bool | None = None
     for track in tracks:
         src = Path(track.file_path)
         if not src.is_file():
             continue
-        files = _track_files(src, track)
+        files = _track_files(src, track, profile)
         rel = files[0][2]
         if src.stat().st_size >= _MAX_CARD_FILE_BYTES:
-            plan.too_large.append(rel)
-            plan.skip[track.id] = "too large for the card"
-            continue
+            # Asked only for a file this big: on WSL2 the filesystem comes from a PowerShell call.
+            if fat_limit is None:
+                fat_limit = _fat_file_limit(target)
+            if fat_limit:
+                plan.too_large.append(rel)
+                plan.skip[track.id] = "too large for the card"
+                continue
         if long_paths_fail and len(rel) + 3 > _MAX_CARD_PATH:
             plan.too_long.append(rel)
             plan.skip[track.id] = "path too long for the card"
@@ -509,6 +568,7 @@ class _SyncRun:
     """State of one sync that is committed in batches."""
     card_id: str
     known: dict
+    profile: str = CARD_PROFILE_STOCK
     counts: _SyncCounts = field(default_factory=_SyncCounts)
     errors: list[str] = field(default_factory=list)
     copied: list[Track] = field(default_factory=list)
@@ -541,43 +601,35 @@ def _superseded_on_card(card_id: str | None) -> tuple:
             or_(SupersededFile.basis != "card_copy", SupersededFile.last_removed_at.is_(None)))
 
 
+async def _library_tracks(session: AsyncSession) -> dict[int, Track]:
+    return {t.id: t for t in (await session.scalars(select(Track).where(Track.file_path.is_not(None)))).all()}
+
+
+def _live_card_paths(tracks: dict[int, Track]) -> tuple[set[str], set[str]]:
+    """The casefolded card paths (audio and sidecars) and album folders every library row maps to."""
+    live, album_dirs = set(), set()
+    for t in tracks.values():
+        rel = _audio_rel_path(t)
+        live.update(p.casefold() for p in (rel, sidecar_rel(rel, ".jpg"), sidecar_rel(rel, ".lrc")))
+        album_dirs.add(PurePosixPath(rel).parent.as_posix().casefold())
+    return live, album_dirs
+
+
 async def _load_superseded(session: AsyncSession, card_id: str | None) -> tuple[list[_SupersededCopy], set[str]]:
     """The records to judge, plus the casefolded card paths every library row maps to (the live set)."""
     records = (await session.scalars(select(SupersededFile).where(*_superseded_on_card(card_id))
                                      .order_by(SupersededFile.id))).all()
     if not records:
         return [], set()
-    tracks = {t.id: t for t in (await session.scalars(select(Track).where(Track.file_path.is_not(None)))).all()}
-    live = set()
-    for t in tracks.values():
-        ext = Path(t.file_path).suffix.lstrip(".")
-        live.update(_device_rel_path(t, e).casefold() for e in (ext, "jpg", "lrc"))
+    tracks = await _library_tracks(session)
+    live, _ = _live_card_paths(tracks)
     copies = []
     for rec in records:
         t = tracks.get(rec.track_id)
-        replacement = ((Path(t.file_path), _device_rel_path(t, Path(t.file_path).suffix.lstrip(".")))
-                       if t and t.status == "done" else None)
+        replacement = (Path(t.file_path), _audio_rel_path(t)) if t and t.status == "done" else None
         copies.append(_SupersededCopy(rec.id, rec.kind, rec.rel_path, rec.size, rec.mtime, rec.head_sha256,
                                       t.title if t else "", t.artist if t else "", replacement))
     return copies, live
-
-
-def _safe_card_rel(rel: str) -> bool:
-    """Artist/Album/File as build_device_path makes it: relative, POSIX, nothing that climbs out."""
-    parts = rel.split("/")
-    return len(parts) == 3 and "\\" not in rel and ":" not in rel and all(p and p not in (".", "..") for p in parts)
-
-
-def _is_link(path: Path) -> bool:
-    is_junction = getattr(os.path, "isjunction", None)
-    return path.is_symlink() or bool(is_junction and is_junction(path))
-
-
-def _inside_real_dirs(target: Path, rel: str) -> bool:
-    artist, album, _ = rel.split("/")
-    if _is_link(target / artist) or _is_link(target / artist / album):
-        return False
-    return target.resolve() in (target / rel).resolve().parents
 
 
 def _same_copy(path: Path, rec: _SupersededCopy) -> bool:
@@ -593,7 +645,8 @@ def _same_copy(path: Path, rec: _SupersededCopy) -> bool:
 
 def _judge_superseded(target: Path, rec: _SupersededCopy, live: set[str]) -> str:
     """The verdict on one record: "ready" when its card copy may be deleted, else why not (thread-side)."""
-    if not _safe_card_rel(rec.rel_path) or not _inside_real_dirs(target, rec.rel_path):
+    if (is_protected_card_path(rec.rel_path) or not safe_card_rel(rec.rel_path)
+            or not inside_real_dirs(target, rec.rel_path)):
         return "unsafe"
     path = target / rec.rel_path
     if not path.is_symlink() and not path.exists():
@@ -608,17 +661,6 @@ def _judge_superseded(target: Path, rec: _SupersededCopy, live: set[str]) -> str
     if src is None or not src.is_file() or not _is_current(src, target / rel):
         return "waiting"
     return "ready"
-
-
-def _remove_empty_dirs(target: Path, folder: Path) -> None:
-    root = target.resolve()
-    for d in (folder, folder.parent):
-        if root not in d.resolve().parents:
-            return
-        try:
-            d.rmdir()
-        except OSError:
-            return
 
 
 def _sweep_superseded(target: Path, records: list[_SupersededCopy], live: set[str]) -> list[str]:
@@ -639,7 +681,7 @@ def _sweep_superseded(target: Path, records: list[_SupersededCopy], live: set[st
                 logger.warning("Could not remove the superseded copy %s: %s", path, e)
                 verdict = "failed"
             else:
-                _remove_empty_dirs(target, path.parent)
+                remove_empty_card_dirs(target, path.parent)
                 removed.add(key)
                 verdict = "removed"
         verdicts.append(verdict)
@@ -691,33 +733,34 @@ async def _superseded_audio_by_track(session: AsyncSession, card_id: str) -> dic
         .order_by(SupersededFile.id.desc()))
     by_track: dict[int, list[str]] = {}
     for track_id, rel in rows:
-        if _safe_card_rel(rel):
+        if safe_card_rel(rel):
             by_track.setdefault(track_id, []).append(rel)
     return by_track
 
 
-def _generate_card_playlist(name: str, tracks: list[dict], target: Path) -> Path:
+def _generate_card_playlist(name: str, tracks: list[dict], target: Path, profile: str) -> Path:
     """generate_m3u with each entry pointing at the copy really on the card: the current file, or the
     superseded one while its replacement could not be copied (thread-side)."""
     for track in tracks:
         fallbacks = track.pop("superseded_rel_paths")
         if not (target / track["rel_path"]).is_file():
             track["rel_path"] = next((rel for rel in fallbacks if (target / rel).is_file()), track["rel_path"])
-    return generate_m3u(name, tracks, target)
+    return generate_m3u(name, tracks, target, profile)
 
 
-async def _write_playlists(session: AsyncSession, target: Path, errors: list[str], card_id: str) -> int:
-    """Regenerate the .m3u8 files for DB playlists at the card root and reclaim the
-    ones Leasure wrote earlier that no longer exist. User-made playlists are left alone."""
+async def _write_playlists(session: AsyncSession, target: Path, errors: list[str], card_id: str, profile: str) -> int:
+    """Regenerate the .m3u8 files for DB playlists (card root, or /Playlists on a Rockbox card), then
+    reclaim the ones Leasure wrote earlier that no longer exist or moved. User-made playlists are left alone."""
     playlists_generated = 0
     try:
+        try:
+            await asyncio.to_thread(prepare_playlist_dir, target, profile)
+        except NotADirectoryError:
+            errors.append(f"Rockbox playlists not written: /{PLAYLIST_DIR_ROCKBOX} is not a folder")
+            return 0
         playlist_result = await session.execute(select(Playlist))
         db_playlists = playlist_result.scalars().all()
-
         keep_stems = {sanitize_playlist_stem(pl.name) for pl in db_playlists}
-        removed = await asyncio.to_thread(sweep_orphan_playlists, target, keep_stems)
-        if removed:
-            logger.info("Removed %d orphan playlist file(s): %s", len(removed), removed)
 
         superseded = await _superseded_audio_by_track(session, card_id)
         written: list[Path] = []
@@ -738,14 +781,23 @@ async def _write_playlists(session: AsyncSession, target: Path, errors: list[str
                          "track_number": t.track_number, "disc_number": t.disc_number,
                          "total_discs": t.total_discs, "title": t.title, "format": t.format,
                          "duration_ms": t.duration_ms,
-                         "rel_path": _device_rel_path(t, Path(t.file_path).suffix.lstrip(".")),
+                         "rel_path": _audio_rel_path(t),
                          "superseded_rel_paths": superseded.get(t.id, [])}
                     )
-            if pl_tracks:
-                written.append(await asyncio.to_thread(_generate_card_playlist, pl.name, pl_tracks, target))
+            if not pl_tracks:
+                continue
+            try:
+                written.append(await asyncio.to_thread(_generate_card_playlist, pl.name, pl_tracks, target, profile))
                 playlists_generated += 1
+            except ForeignPlaylistError as e:
+                errors.append(f"Playlist '{pl.name}' not written: {e}. Rename the playlist in Leasure or that file "
+                              "on the card.")
         if written:
             await asyncio.to_thread(record_generated_playlists, target, written)
+        # After writing: a playlist that moved between the root and /Playlists goes only once its new copy exists.
+        removed = await asyncio.to_thread(sweep_orphan_playlists, target, keep_stems, profile)
+        if removed:
+            logger.info("Removed %d orphan playlist file(s): %s", len(removed), removed)
     except Exception as e:
         errors.append(f"Playlist generation error: {e}")
         logger.exception("Failed to generate playlists")
@@ -787,6 +839,7 @@ async def sync_to_device(
                                           "removed_paths": result["removed_paths"],
                                           "kept": result["kept"],
                                           "kept_paths": result["kept_paths"],
+                                          "reminder": result["reminder"],
                                       })
 
 
@@ -817,10 +870,28 @@ async def _record_sync(session: AsyncSession, target: Path, run: _SyncRun, remov
         logger.exception("Failed to record sync history")
 
 
-def _done_event(counts: _SyncCounts, total: int, playlists: int, errors: list[str], cleanup: _CleanupResult) -> dict:
+def _db_reminder(profile: str) -> str | None:
+    return ROCKBOX_DB_REMINDER if profile == CARD_PROFILE_ROCKBOX else None
+
+
+@dataclass
+class _CardExtras:
+    """What a sync does for the card's profile: Rockbox covers written and Leasure's covers removed."""
+    profile: str
+    covers: CoverResult = field(default_factory=CoverResult)
+    covers_removed: list[str] = field(default_factory=list)
+
+    def event_fields(self) -> dict:
+        return {"profile": self.profile, "reminder": _db_reminder(self.profile),
+                "covers_written": self.covers.written + self.covers.replaced,
+                "covers_removed": len(self.covers_removed)}
+
+
+def _done_event(counts: _SyncCounts, total: int, playlists: int, errors: list[str], cleanup: _CleanupResult,
+                extras: _CardExtras) -> dict:
     return {"type": "done", "synced": counts.synced, "copied": counts.copied, "skipped": counts.skipped,
             "total": total, "size_mb": round(counts.total_size / (1024 * 1024), 1), "playlists": playlists,
-            "errors": errors, **cleanup.event_fields()}
+            "errors": errors, **cleanup.event_fields(), **extras.event_fields()}
 
 
 async def _copy_tracks(session: AsyncSession, target: Path, tracks: list[Track], skip: dict[int, str],
@@ -834,7 +905,8 @@ async def _copy_tracks(session: AsyncSession, target: Path, tracks: list[Track],
             run.errors.append(f"Source missing: {track.title}")
         else:
             try:
-                written, card_rows = await asyncio.to_thread(_sync_track, src, target, track, run.card_id, run.known)
+                written, card_rows = await asyncio.to_thread(_sync_track, src, target, track, run.card_id, run.known,
+                                                                run.profile)
                 run.counts.add(written)
                 run.copied.append(track)
                 run.card_rows.extend(card_rows)
@@ -848,14 +920,44 @@ async def _copy_tracks(session: AsyncSession, target: Path, tracks: list[Track],
     await _flush(session, run)
 
 
+def _album_cover_sources(tracks: list[Track]) -> dict[str, Path]:
+    """Album folder on the card -> the sidecar art of its first track (album order) that has one (thread-side)."""
+    albums: dict[str, Path] = {}
+    seen: set[str] = set()
+    for track in tracks:
+        album_dir = PurePosixPath(_audio_rel_path(track)).parent.as_posix()
+        sidecar = Path(track.file_path).with_suffix(".jpg")
+        if album_dir.casefold() not in seen and sidecar.is_file():
+            seen.add(album_dir.casefold())
+            albums[album_dir] = sidecar
+    return albums
+
+
+async def _sync_album_covers(session: AsyncSession, target: Path, tracks: list[Track], extras: _CardExtras,
+                             errors: list[str]) -> None:
+    """Rockbox: cover.jpg per album of this sync. Any card: remove Leasure's covers of albums gone from the
+    library. A failure here is listed and never aborts the sync."""
+    try:
+        if extras.profile == CARD_PROFILE_ROCKBOX:
+            sources = await asyncio.to_thread(_album_cover_sources, tracks)
+            extras.covers = await asyncio.to_thread(write_album_covers, target, sources)
+            errors.extend(extras.covers.errors)
+        _, live_album_dirs = _live_card_paths(await _library_tracks(session))
+        extras.covers_removed = await asyncio.to_thread(sweep_album_covers, target, live_album_dirs)
+    except Exception as e:
+        logger.exception("Album covers on %s failed", target)
+        errors.append(f"Album covers: {e}")
+
+
 async def _sync_library_to_device(session: AsyncSession, target: Path, scope: str, publish) -> None:
     tracks = await _load_sync_tracks(session, scope)
     total = len(tracks)
+    extras = _CardExtras(profile=await asyncio.to_thread(card_profile, target))
     if total == 0:
-        publish(_done_event(_SyncCounts(), 0, 0, [], _CleanupResult()))
+        publish(_done_event(_SyncCounts(), 0, 0, [], _CleanupResult(), extras))
         return
 
-    plan = await asyncio.to_thread(_plan_space, target, tracks)
+    plan = await asyncio.to_thread(_plan_space, target, tracks, extras.profile)
     if not plan.fits:
         publish({"type": "error", "message": f"Not enough space on the card: this sync needs "
                                              f"{_size_label(plan.needed_bytes)} and {_size_label(plan.free_bytes)} "
@@ -870,14 +972,15 @@ async def _sync_library_to_device(session: AsyncSession, target: Path, scope: st
         return
 
     publish({"type": "start", "total": total})
-    run = _SyncRun(card_id=card_id, known=await _known_card_copies(session, card_id))
+    run = _SyncRun(card_id=card_id, known=await _known_card_copies(session, card_id), profile=extras.profile)
     playlists_generated = 0
     cleanup = _CleanupResult()
     try:
         await _copy_tracks(session, target, tracks, plan.skip, run, publish)
         publish({"type": "playlists", "message": "Generating playlists..."})
-        playlists_generated = await _write_playlists(session, target, run.errors, card_id)
+        playlists_generated = await _write_playlists(session, target, run.errors, card_id, extras.profile)
         cleanup = await _remove_superseded(target, card_id, session)
+        await _sync_album_covers(session, target, tracks, extras, run.errors)
     except Exception as e:
         # Anything outside the per-track try (DB, playlist step, cleanup)
         logger.exception("Sync to %s aborted", target)
@@ -886,7 +989,7 @@ async def _sync_library_to_device(session: AsyncSession, target: Path, scope: st
         # Whatever happened, keep what was copied and record the run.
         await _record_sync(session, target, run, len(cleanup.removed_paths))
 
-    publish(_done_event(run.counts, total, playlists_generated, run.errors, cleanup))
+    publish(_done_event(run.counts, total, playlists_generated, run.errors, cleanup, extras))
 
 
 async def _run_sync(job: dict) -> None:
@@ -975,13 +1078,17 @@ async def _resolve_readable_target(device_path: str) -> Path | None:
 
 
 def _scan_device_audio(target: Path) -> set[str]:
-    """Relative POSIX paths of every audio file on the card (thread-side)."""
+    """Relative POSIX paths of every audio file on the card outside the protected folders (thread-side)."""
     found = set()
-    for f in target.rglob("*"):
-        if f.suffix.lower() in DEVICE_AUDIO_EXTS:
-            # as_posix() so the comparison works on native Windows too, where
-            # relative_to() would produce backslashes.
-            found.add(f.relative_to(target).as_posix())
+    for dirpath, dirnames, filenames in os.walk(target):
+        folder = Path(dirpath)
+        if folder == target:
+            dirnames[:] = [d for d in dirnames if not is_protected_card_path(d)]
+        for name in filenames:
+            if Path(name).suffix.lower() in DEVICE_AUDIO_EXTS:
+                # as_posix() so the comparison works on native Windows too, where
+                # relative_to() would produce backslashes.
+                found.add((folder / name).relative_to(target).as_posix())
     return found
 
 
@@ -1052,8 +1159,12 @@ async def sync_diff_html(
 
     # Remaining device_files are on device but not in library
     on_device_only = sorted(device_files)
-    space = await asyncio.to_thread(_plan_space, target, tracks)
+    profile = await asyncio.to_thread(card_profile, target)
+    space = await asyncio.to_thread(_plan_space, target, tracks, profile)
     to_remove, kept = await _superseded_preview(target, session)
+    # Only on Rockbox: on WSL2 the filesystem comes from a PowerShell call.
+    fs_warning = (rockbox_fs_warning(await asyncio.to_thread(card_filesystem, str(target)))
+                  if profile == CARD_PROFILE_ROCKBOX else None)
 
     return templates.TemplateResponse(request=request, name="partials/sync_diff.html",
                                       context={
@@ -1063,6 +1174,10 @@ async def sync_diff_html(
                                           "space": space.context(),
                                           "to_remove": to_remove,
                                           "kept": kept,
+                                          "profile": profile,
+                                          "fs_warning": fs_warning,
+                                          "db_reminder": _db_reminder(profile),
+                                          "playlist_dir": f"/{playlist_dir(profile)}",
                                       })
 
 
@@ -1080,18 +1195,31 @@ async def device_info(device_path: str):
     }
 
 
-def _scan_device_tree(target: Path) -> tuple[dict[str, list], int, list[str]]:
-    """Artist → albums → files listing of the card (thread-side)."""
+def _card_playlist_names(target: Path) -> list[str]:
+    """Playlist stems at the card root, plus "Playlists/<stem>" on a Rockbox card."""
+    def stems(folder: Path) -> list[str]:
+        return sorted(f.stem for f in folder.iterdir() if f.is_file() and f.suffix.lower() in (".m3u", ".m3u8")
+                      and not is_protected_card_path(f.relative_to(target).as_posix()))
+
+    names = stems(target)
+    rockbox_dir = target / PLAYLIST_DIR_ROCKBOX
+    if card_profile(target) == CARD_PROFILE_ROCKBOX and rockbox_dir.is_dir() and not rockbox_dir.is_symlink():
+        names += [f"{PLAYLIST_DIR_ROCKBOX}/{stem}" for stem in stems(rockbox_dir)]
+    return names
+
+
+def _scan_device_tree(target: Path) -> dict:
+    """Artist → albums → files listing of the card, its playlists, and the protected root entries
+    it left out (thread-side)."""
     artists: dict[str, list] = {}
     total_tracks = 0
-
-    playlists = sorted(
-        f.stem for f in target.iterdir()
-        if f.is_file() and f.suffix.lower() in (".m3u", ".m3u8")
-    )
+    protected = []
 
     for artist_dir in sorted(target.iterdir()):
-        if not artist_dir.is_dir() or artist_dir.name in SYSTEM_FOLDER_NAMES:
+        if is_protected_card_path(artist_dir.name):
+            protected.append(artist_dir.name)
+            continue
+        if not artist_dir.is_dir():
             continue
 
         artist_albums = []
@@ -1123,7 +1251,8 @@ def _scan_device_tree(target: Path) -> tuple[dict[str, list], int, list[str]]:
         if artist_albums:
             artists[artist_dir.name] = artist_albums
 
-    return artists, total_tracks, playlists
+    return {"artists": artists, "total_tracks": total_tracks, "playlists": _card_playlist_names(target),
+            "protected": protected}
 
 
 @router.get("/files/html")
@@ -1133,6 +1262,5 @@ async def device_files_html(request: Request, device_path: str):
         return templates.TemplateResponse(request=request, name="partials/device_files.html",
                                           context={"error": f"Drive {device_path} not found"})
 
-    artists, total_tracks, playlists = await asyncio.to_thread(_scan_device_tree, target)
     return templates.TemplateResponse(request=request, name="partials/device_files.html",
-                                      context={"artists": artists, "total_tracks": total_tracks, "playlists": playlists})
+                                      context=await asyncio.to_thread(_scan_device_tree, target))

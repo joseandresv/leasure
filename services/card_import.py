@@ -8,6 +8,7 @@ import json
 import logging
 import math
 import os
+import posixpath
 import re
 import shutil
 import time
@@ -24,15 +25,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings
 from db import async_session
 from models import Playlist, PlaylistTrack, Track, utc_now
-from services import spotify_client, tagger, youtube_client
-from services.device import AUDIO_EXTS, artist_folder, build_device_path, resolve_sync_target
-from services.playlist import PLAYLIST_EXT, read_manifest, sanitize_playlist_stem
+from services import artwork, spotify_client, tagger, youtube_client
+from services.covers import COVER_NAME
+from services.device import (
+    AUDIO_EXTS,
+    CARD_PROFILE_ROCKBOX,
+    artist_folder,
+    build_device_path,
+    card_profile,
+    is_link,
+    is_protected_card_path,
+    is_protected_on_card,
+    resolve_sync_target,
+)
+from services.playlist import PLAYLIST_DIR_ROCKBOX, PLAYLIST_EXT, read_manifest, sanitize_playlist_stem
 from services.tracks import relocate_library_file
 from services.yt_engine import _bitrate_tier, _quality_label, _track_stem, with_audio_suffix
 
 logger = logging.getLogger(__name__)
 
-SKIP_DIRS = {"$RECYCLE.BIN", "System Volume Information"}
 UNKNOWN_ALBUM_DIRS = {"unknown album", "unknown"}
 SIDECAR_SUFFIXES = (".jpg", ".lrc")
 LOSSLESS_CODECS = {"flac", "alac", "wav"}
@@ -221,10 +232,12 @@ def read_card_file(root: Path, path: Path) -> CardFile:
 
 
 def scan_card(root: Path) -> tuple[list[CardFile], list[dict]]:
-    """Every audio file under the card's artist folders, with the files it could not read."""
+    """Every audio file under the card's artist folders, with the files it could not read.
+    Dot-folders and the protected system folders (/.rockbox, ...) are never read."""
     found, errors = [], []
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS and not d.startswith("."))
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith(".")
+                             and not is_protected_on_card(root, Path(dirpath) / d))
         if Path(dirpath) == root:
             continue
         for name in sorted(filenames):
@@ -751,6 +764,21 @@ def _keep_mtime(path: Path, mtime: float) -> None:
         logger.debug("Could not set the mtime of %s: %s", path, e)
 
 
+def _install_baseline_art(card_jpg: Path, dest: Path) -> bool:
+    """Store a progressive (or non-JPEG) card sidecar re-encoded as baseline JPEG, which Rockbox can show.
+    False when the card's file is fine as it is, or cannot be decoded, and is to be copied verbatim."""
+    data = card_jpg.read_bytes()
+    if artwork.is_baseline_jpeg(data):
+        return False
+    baseline = artwork.prepare_cover(data, settings.artwork_size)
+    if baseline is None:
+        return False
+    part = dest.with_name(f"{dest.name}.part")
+    part.write_bytes(baseline)
+    os.replace(part, dest)
+    return True
+
+
 def install_file(plan: Planned) -> int:
     """Copy one card file and its sidecars into the library, retagging offline when the
     metadata changed. Returns the library file's size. Thread-side; the card is only read."""
@@ -760,6 +788,8 @@ def install_file(plan: Planned) -> int:
     for suffix in SIDECAR_SUFFIXES:
         sidecar = f.path.with_suffix(suffix)
         if sidecar.exists():
+            if suffix == ".jpg" and _install_baseline_art(sidecar, dest.with_suffix(suffix)):
+                continue
             shutil.copyfile(sidecar, dest.with_suffix(suffix))
             _keep_mtime(dest.with_suffix(suffix), sidecar.stat().st_mtime)
         elif suffix == ".jpg":
@@ -846,10 +876,44 @@ def backup_playlist(path: Path, backup_dir: Path) -> Path:
     return target
 
 
+def _card_playlist_files(root: Path, suffixes: tuple[str, ...]) -> list[tuple[str, Path]]:
+    """(card rel, path) of the playlist files at the card root, then in /Playlists on a Rockbox card."""
+    folders = [root]
+    rockbox_dir = root / PLAYLIST_DIR_ROCKBOX
+    if card_profile(root) == CARD_PROFILE_ROCKBOX and rockbox_dir.is_dir() and not is_link(rockbox_dir):
+        folders.append(rockbox_dir)
+    found = []
+    for folder in folders:
+        for path in sorted(folder.iterdir()):
+            rel = path.relative_to(root).as_posix()
+            if path.is_file() and path.suffix.lower() in suffixes and not is_protected_on_card(root, path):
+                found.append((rel, path))
+    return found
+
+
+def _playlist_entries(rel: str, path: Path) -> list[str]:
+    """The playlist's entries as card paths. Rockbox resolves a relative entry against the playlist's
+    folder, so one in /Playlists is joined to it; an entry that climbs above the card stays unresolvable."""
+    entries = read_playlist(path)
+    folder = posixpath.dirname(rel)
+    if not folder:
+        return entries
+    out = []
+    for entry in entries:
+        entry = entry.replace("\\", "/")
+        out.append(entry.lstrip("/") if entry.startswith("/") else posixpath.normpath(f"{folder}/{entry}"))
+    return out
+
+
 def card_playlists(root: Path, backup_dir: Path) -> list[tuple[str, list[str], Path]]:
-    """The .m3u8 playlists at the card root with their backups; older .m3u files are left alone."""
-    return [(p.stem, read_playlist(p), backup_playlist(p, backup_dir)) for p in sorted(root.iterdir())
-            if p.is_file() and p.suffix.lower() == PLAYLIST_EXT]
+    """The .m3u8 playlists at the card root (and /Playlists on a Rockbox card; a name at the root wins)
+    with their backups; older .m3u files are left alone."""
+    seen, found = set(), []
+    for rel, path in _card_playlist_files(root, (PLAYLIST_EXT,)):
+        if path.stem not in seen:
+            seen.add(path.stem)
+            found.append((path.stem, _playlist_entries(rel, path), backup_playlist(path, backup_dir)))
+    return found
 
 
 async def _store_playlist(session: AsyncSession, name: str, tracks: list[Track]) -> None:
@@ -1131,13 +1195,21 @@ def write_report(report: ImportReport, report_path: Path) -> None:
 
 def _on_card(root: Path, rel: str) -> Path | None:
     parts = PurePosixPath(rel).parts
-    if not parts or PurePosixPath(rel).is_absolute() or ".." in parts:
+    if not parts or PurePosixPath(rel).is_absolute() or ".." in parts or is_protected_card_path(rel):
         return None
-    return root.joinpath(*parts)
+    path = root.joinpath(*parts)
+    return None if is_protected_on_card(root, path) else path
+
+
+def _in_protected_folder(rel: str) -> bool:
+    parts = PurePosixPath(rel).parts
+    return bool(parts) and ".." not in parts and is_protected_card_path(rel)
 
 
 def _keep_reason(root: Path, entry: dict, targets: dict[str, Track]) -> str | None:
     """Why a stale card copy must stay; None once its replacement is on the card, as big as the library file."""
+    if _in_protected_folder(entry["card"]):
+        return "in a protected system folder on the card"
     stale, replacement = _on_card(root, entry["card"]), _on_card(root, entry["replaced_by"])
     if stale is None or replacement is None or stale.suffix.lower() not in AUDIO_EXTS:
         return "not an audio path on the card"
@@ -1158,14 +1230,19 @@ def _stale_sidecars(stale: Path) -> list[Path]:
     # A sidecar named like another audio file in the folder (the kept copy of a duplicate, say) is that file's too.
     if any(stale.with_suffix(ext).exists() for ext in AUDIO_EXTS if ext != stale.suffix.lower()):
         return []
-    return [stale.with_suffix(suffix) for suffix in SIDECAR_SUFFIXES if stale.with_suffix(suffix).is_file()]
+    # A "cover.jpg" sidecar is the album's cover on a Rockbox card (FAT ignores case), not the track's.
+    return [path for path in (stale.with_suffix(suffix) for suffix in SIDECAR_SUFFIXES)
+            if path.is_file() and path.name.casefold() != COVER_NAME]
 
 
 def _remove_with_empty_parents(root: Path, paths: list[Path]) -> None:
+    protected = [p for p in paths if is_protected_on_card(root, p)]
+    if protected:
+        raise OSError(f"refusing to delete a protected card path: {protected[0]}")
     for path in paths:
         path.unlink()
     for parent in paths[0].parents:
-        if parent == root or not parent.is_relative_to(root):
+        if parent == root or not parent.is_relative_to(root) or is_protected_on_card(root, parent):
             break
         try:
             parent.rmdir()
@@ -1177,15 +1254,15 @@ def _playlists_naming(root: Path, removed: set[str]) -> list[str]:
     """Card playlists Leasure does not manage (the sync rewrites its own) that list a removed file."""
     managed = read_manifest(root)
     hits = []
-    for path in sorted(root.iterdir()):
-        if not path.is_file() or path.suffix.lower() not in (".m3u", PLAYLIST_EXT) or path.name in managed:
+    for rel, path in _card_playlist_files(root, (".m3u", PLAYLIST_EXT)):
+        if rel in managed:
             continue
         try:
-            entries = read_playlist(path)
+            entries = _playlist_entries(rel, path)
         except (OSError, ValueError):
             continue
         if any(card_key(e) in removed for e in entries):
-            hits.append(path.name)
+            hits.append(rel)
     return hits
 
 

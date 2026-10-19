@@ -38,6 +38,8 @@ _AUDIO_SUFFIXES = (".m4a", ".mp3", ".opus", ".ogg", ".webm", ".flac", ".wav")
 _NETWORK_MARKERS = ("urlopen error", "temporary failure in name resolution", "timed out", "timeout",
                     "connection reset", "network is unreachable", "failed to resolve", "getaddrinfo")
 _GONE_MARKERS = ("video unavailable", "private video", "removed by the uploader", "has been terminated")
+# Rows the album view created from MusicBrainz/Deezer facts: no provider id, found by searching.
+SEARCHABLE_SOURCES = frozenset({"musicbrainz", "deezer"})
 
 
 class DownloadFailed(RuntimeError):
@@ -355,6 +357,16 @@ async def _resolve_source(title: str, artist: str, duration_ms: int) -> tuple[st
     return match[0].video_id, engine, match
 
 
+async def _refuse_duplicate_video(track_id: int, video_id: str) -> None:
+    """A searched album-view row must not become a second copy of a video another row already is."""
+    async with async_session() as session:
+        other = (await session.scalars(select(Track).where(
+            Track.id != track_id, Track.youtube_id == video_id,
+            Track.status.in_(("done", "pending", "downloading"))).limit(1))).first()
+    if other:
+        raise DownloadFailed(f"Already in your library as '{other.title}' on '{other.album or 'no album'}'.")
+
+
 async def _record_provenance(track_id: int, result: DownloadResult, engine: str,
                              match: tuple[Candidate, float] | None) -> None:
     async with async_session() as session:
@@ -414,12 +426,15 @@ async def download(track_id: int) -> Path:
         artist = track.artist or "Unknown"
         duration_ms = track.duration_ms or 0
         stem = _track_stem(track)
+        searchable = track.source in SEARCHABLE_SOURCES
 
     match: tuple[Candidate, float] | None = None
     if youtube_id:
         video_id, engine = youtube_id, "youtube"
     else:
         video_id, engine, match = await _resolve_source(title, artist, duration_ms)
+        if searchable:
+            await _refuse_duplicate_video(track_id, video_id)
 
     # music.youtube.com, not www: the Premium 141/774 streams are only offered there.
     result = await asyncio.to_thread(

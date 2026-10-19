@@ -33,6 +33,9 @@ window.leasureDrives = ({{ devices | tojson }} || [])
                 Drive
             {% endif %}
             {% if d.has_music_files %} &middot; Music files found{% endif %}
+            {% if d.device_type != 'system' %}
+            {% if d.profile | default("stock") == "rockbox" %}<span class="card-profile card-profile-rockbox">Rockbox card</span>{% else %}<span class="card-profile card-profile-stock">Stock H2</span>{% endif %}
+            {% endif %}
         </small>
     </div>
     {% if d.device_type != 'system' %}

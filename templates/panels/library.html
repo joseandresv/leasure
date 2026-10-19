@@ -12,6 +12,7 @@
 <div x-data="{ view: 'list' }">
     <div class="view-toggle">
         <button @click="view = 'list'" :class="view === 'list' && 'active'">List</button>
+        <button @click="view = 'albums'" :class="view === 'albums' && 'active'">Albums</button>
         <button @click="view = 'graph'" :class="view === 'graph' && 'active'">Genre Map</button>
     </div>
 
@@ -33,6 +34,29 @@
         </div>
     </div>
 
+    <div x-show="view === 'albums'" x-cloak>
+        <div class="lib-albums-controls">
+            <input type="search" id="library-albums-q" name="q" placeholder="search albums or artists..."
+                   aria-label="Search albums"
+                   hx-get="/api/albums/html" hx-trigger="keyup changed delay:300ms, search"
+                   hx-include="#library-albums-sort" hx-target="#library-albums" hx-swap="innerHTML">
+            <select id="library-albums-sort" name="sort" aria-label="Sort albums"
+                    hx-get="/api/albums/html" hx-trigger="change"
+                    hx-include="#library-albums-q" hx-target="#library-albums" hx-swap="innerHTML">
+                <option value="artist">By artist</option>
+                <option value="album">By album name</option>
+                <option value="year">Newest first</option>
+                <option value="recent">Recently downloaded</option>
+                <option value="size">Most songs</option>
+            </select>
+        </div>
+        {# hx-disinherit: the album cards must not send the grid's search and sort along. #}
+        <div id="library-albums" hx-get="/api/albums/html" hx-trigger="intersect once"
+             hx-include="#library-albums-q, #library-albums-sort" hx-swap="innerHTML" hx-disinherit="*">
+            <i style="color: var(--text-muted);">loading...</i>
+        </div>
+    </div>
+
     <div x-show="view === 'graph'" x-cloak>
         <div id="genre-legend"></div>
         <div id="genre-graph"
@@ -45,8 +69,16 @@
 <div class="menu-foot" aria-hidden="true">
     {{ ctl('⌨', 'SEARCH') }}
     {{ ctl('↵', 'DETAIL') }}
-    {{ ctl('☰', 'LIST / GENRE MAP') }}
+    {{ ctl('☰', 'LIST / ALBUMS / GENRE MAP') }}
 </div>
+
+<dialog id="library-detail-modal" aria-label="Album">
+    <header>
+        <span>details</span>
+        <button onclick="this.closest('dialog').close()" aria-label="Close">&times;</button>
+    </header>
+    <div id="library-detail" class="modal-body"></div>
+</dialog>
 
 </div>
 </div>

@@ -677,3 +677,18 @@ def test_a_report_entry_outside_the_card_is_never_removed(tmp_path):
                                              [], apply=True)
 
     assert result["kept"][0]["reason"] == "not an audio path on the card" and outside.exists()
+
+
+def test_a_stale_copy_named_cover_leaves_the_albums_cover_jpg(tmp_path):
+    card, library = tmp_path / "card", tmp_path / "library"
+    (card / "Artist" / "Album").mkdir(parents=True)
+    library.mkdir()
+    for name in ("cover.mp3", "cover.jpg", "cover.lrc", "Song.m4a"):
+        (card / "Artist" / "Album" / name).write_bytes(b"x" * 10)
+    (library / "Song.m4a").write_bytes(b"x" * 10)
+    entry = {"card": "Artist/Album/cover.mp3", "replaced_by": "Artist/Album/Song.m4a", "reason": "duplicate"}
+
+    result = card_import.remove_stale_copies(card, [entry], [_done_row(library / "Song.m4a")], apply=True)
+
+    assert result["removed"][0]["sidecars"] == ["cover.lrc"]
+    assert sorted(p.name for p in (card / "Artist" / "Album").iterdir()) == ["Song.m4a", "cover.jpg"]

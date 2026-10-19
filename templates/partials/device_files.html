@@ -8,6 +8,10 @@
 <hr>
 {% endif %}
 
+{% if protected %}
+<p class="card-protected">Left alone: {{ protected | join(", ") }}</p>
+{% endif %}
+
 {% if artists %}
 <div style="margin-bottom: var(--space-md);">
     <strong>{{ total_tracks }}</strong> track{{ "s" if total_tracks != 1 }} &middot; <strong>{{ artists | length }}</strong> artist{{ "s" if artists | length != 1 }}

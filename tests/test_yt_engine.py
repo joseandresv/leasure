@@ -307,3 +307,22 @@ async def test_recovery_requeues_pending_tracks_in_id_order(db):
     await worker._recover_orphaned()
 
     assert [worker.queue.get_nowait()[2] for _ in ids] == ids
+
+
+async def test_a_searched_album_view_row_never_duplicates_a_library_video(db, fake_ytdlp, monkeypatch):
+    await _seed_track(db, youtube_id="vid-1", status="done", title="Blue Monday '88")
+    track_id = await _seed_track(db, youtube_id=None, source="deezer")
+    monkeypatch.setattr(yt_engine, "search_ytmusic", lambda *a, **k: (yt_engine.Candidate("vid-1", "Blue Monday"), 9.0))
+
+    with pytest.raises(yt_engine.DownloadFailed, match="Already in your library as 'Blue Monday '88' on 'Substance'"):
+        await yt_engine.download(track_id)
+
+    assert fake_ytdlp.calls == []
+
+
+async def test_a_searched_spotify_row_is_not_checked_for_duplicates(db, fake_ytdlp, monkeypatch):
+    await _seed_track(db, youtube_id="vid-1", status="done")
+    track_id = await _seed_track(db, youtube_id=None, spotify_uri="spotify:track:x", source="spotify")
+    monkeypatch.setattr(yt_engine, "search_ytmusic", lambda *a, **k: (yt_engine.Candidate("vid-1", "Blue Monday"), 9.0))
+
+    assert (await yt_engine.download(track_id)).exists()
